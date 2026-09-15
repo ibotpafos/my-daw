@@ -135,8 +135,14 @@ typedef struct { uint32_t struct_size; uint32_t id; float minimum; float maximum
 typedef struct { uint32_t struct_size; uint64_t frame; double normalized_value; } daw_plugin_parameter_automation_point;
 typedef struct { uint32_t struct_size; int32_t status; uint32_t available_count; uint32_t quarantined_count; char error[512]; } daw_au_scan_status;
 /* VST3 metadata is bounded and comes exclusively from the isolated helper.
- * class_id is a canonical 32-hex FUID; module_fingerprint is SHA-256 hex. */
-typedef struct { uint32_t struct_size; int32_t available; char class_id[33]; char module_fingerprint[65]; char module_path[4097]; char name[481]; char vendor[481]; char version[257]; char quarantine_reason[513]; } daw_vst3_component;
+ * class_id is a canonical 32-hex FUID; module_fingerprint is SHA-256 hex.
+ * flags is a bit set of scanner-confirmed class capabilities. It is
+ * meaningful only when available != 0; unused bits are always reported as
+ * zero, so callers must mask, never compare the field for equality.
+ * DAW_VST3_FLAG_INSTRUMENT marks a class whose sub-categories declare
+ * "Instrument". The struct_size gate rejects buffers from a pre-flags build. */
+enum { DAW_VST3_FLAG_INSTRUMENT = 1u };
+typedef struct { uint32_t struct_size; int32_t available; uint32_t flags; char class_id[33]; char module_fingerprint[65]; char module_path[4097]; char name[481]; char vendor[481]; char version[257]; char quarantine_reason[513]; } daw_vst3_component;
 typedef struct { uint32_t struct_size; int32_t status; uint32_t available_count; uint32_t quarantined_count; char error[512]; } daw_vst3_scan_status;
 /* kind: 1 rename track, 2 set track gain. */
 typedef struct { uint32_t struct_size; int32_t kind; uint64_t track_id; double gain_db; char name[481]; } daw_workflow_operation;

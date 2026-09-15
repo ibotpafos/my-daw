@@ -31,6 +31,10 @@ final class WaveformView: NSView {
     var sourceFrames: UInt64 = 0
     var playableFrames: UInt64 = 0
     var snapFrames: UInt64 = 12000
+    /// Beat-grid квант для произвольного кадра: (опора — кадр ближайшей темпо-точки назад от
+    /// позиции, размер деления в кадрах). Пиксель↔кадр маппинг не тронут — заменён только
+    /// источник кванта; nil оставляет прежнюю сетку от нуля таймлайна.
+    var snapGrid: ((Int64) -> (anchor: UInt64, quantum: UInt64))?
     var rangeStart: UInt64? { didSet { needsDisplay = true } }
     var rangeEnd: UInt64? { didSet { needsDisplay = true } }
     var loopEnabled = false { didSet { needsDisplay = true } }
@@ -90,6 +94,15 @@ final class WaveformView: NSView {
     }
     private func snap(_ value:Int64,_ event:NSEvent)->Int64 {
         guard !event.modifierFlags.contains(.shift), snapFrames > 0 else { return value }
+        if let snapGrid {
+            // Сетка считается от темпо-точки, которой принадлежит позиция (tempo map last-holds),
+            // а не от нуля таймлайна: при смене темпа деления едут вместе с точкой.
+            let (anchor, quantum) = snapGrid(value)
+            guard quantum > 0 else { return value }
+            let base = Int64(anchor)
+            let steps = (Double(max(0, value - base))/Double(quantum)).rounded()
+            return base + Int64(steps*Double(quantum))
+        }
         return Int64((Double(value)/Double(snapFrames)).rounded())*Int64(snapFrames)
     }
     private func seek(_ frame: UInt64) { playhead = min(frame, playableFrames); onSeek?(playhead) }

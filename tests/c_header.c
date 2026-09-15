@@ -30,6 +30,10 @@ _Static_assert(offsetof(daw_midi_note, struct_size) == 0, "MIDI note prefix");
 _Static_assert(sizeof(daw_midi_note) == 32, "MIDI note ABI size");
 _Static_assert(offsetof(daw_midi_clip, struct_size) == 0, "MIDI clip prefix");
 _Static_assert(sizeof(daw_midi_clip) == 32, "MIDI clip ABI size");
+_Static_assert(DAW_VST3_FLAG_INSTRUMENT == 1u, "VST3 component flag ABI value");
+_Static_assert(offsetof(daw_vst3_component, struct_size) == 0, "VST3 component prefix");
+_Static_assert(offsetof(daw_vst3_component, available) == 4 && offsetof(daw_vst3_component, flags) == 8 && offsetof(daw_vst3_component, class_id) == 12, "VST3 component flag placement");
+_Static_assert(sizeof(daw_vst3_component) == 5940, "VST3 component ABI size");
 int main(void) {
     daw_session* session = daw_create();
     if (!session) return 1;
@@ -82,6 +86,18 @@ int main(void) {
     /* Undo(9) left a MIDI-only session; since the instrument-voice rule (MIDI clips or
        inserts make a track renderable) such a project previews as silent, not error. */
     if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 0) result |= 1;
+    /* VST3 component ABI smoke: a headless run has no installed plug-ins, so
+     * the catalog is empty and this covers only the ABI shape plus the new
+     * flags field structurally; the instrument bit itself is produced by the
+     * scanner helper and round-tripped by the v2 cache. */
+    uint32_t vst3_count = 0;
+    result |= daw_get_installed_vst3_count(session, &vst3_count);
+    if (vst3_count != 0) result |= 1;
+    daw_vst3_component vst3 = {0}; vst3.struct_size = sizeof(vst3); vst3.flags = DAW_VST3_FLAG_INSTRUMENT;
+    if (daw_get_installed_vst3(session, 0, &vst3) == 0) result |= 1; /* empty catalog must reject */
+    if (vst3.flags != DAW_VST3_FLAG_INSTRUMENT) result |= 1; /* rejection must not touch caller storage */
+    daw_vst3_component stale = vst3; stale.struct_size = sizeof(stale) - 4;
+    if (daw_get_installed_vst3(session, 0, &stale) == 0) result |= 1; /* pre-flags buffers are rejected */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

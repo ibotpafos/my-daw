@@ -21,6 +21,133 @@ enum BackgroundImportIntent {
     case take(path: URL, name: String, trackID: UInt64, startFrame: UInt64)
 }
 
+// MARK: - Темпо-карта проекта: Swift-зеркало доменного пересчёта beats↔frames
+//
+// Домен (engine/domain/session.cpp: State::beatsAtFrame/frameAtBeats) остаётся
+// единственным источником истины; приложение только читает карту через C-ABI
+// (daw_get_tempo_count/daw_get_tempo_point, daw_get_time_signature_count/
+// daw_get_time_signature_point) и пишет её одной revision-aware командой
+// daw_set_tempo. Формулы ниже — сверенное зеркало, а не молча скопированный код:
+// на Apple arm64 `long double` — это 64-битный double, поэтому накопление
+// сегментов в Double даёт побитово тот же результат, что и домен.
+// Один бит = 60/bpm секунд при проектных 48 кГц, то есть 2 880 000 / bpm
+// кадров; 120 BPM = 24 000 кадров на бит, 60 BPM = 48 000 кадров на бит.
+
+/// Точка темпа из карты проекта (POD daw_tempo_point).
+struct ProjectTempoPoint {
+    var frame: UInt64
+    var bpm: Double
+}
+
+/// Точка размера из карты проекта (POD daw_time_signature_point).
+struct ProjectSignaturePoint {
+    var frame: UInt64
+    var numerator: UInt8
+    var denominator: UInt8
+}
+
+/// Начало такта: кадр, позиция в битах и порядковый номер для линейки.
+struct ProjectBarStart {
+    var frame: UInt64
+    var beats: Double
+    var number: Int
+}
+
+struct BeatFrameMap {
+    /// 48 000 кадров/с × 60 с — кадр/бит = framesPerMinute / bpm.
+    static let framesPerMinute = 2_880_000.0
+    static let timelineLimitFrame: UInt64 = 1 << 40
+    static let ticksPerBeat = 480
+    var tempo: [ProjectTempoPoint] = [ProjectTempoPoint(frame: 0, bpm: 120)]
+    var signatures: [ProjectSignaturePoint] = [ProjectSignaturePoint(frame: 0, numerator: 4, denominator: 8)]
+
+    /// Темп на позиции: последняя точка не позже кадра (карта действует last-holds).
+    func tempoPoint(atFrame frame: UInt64) -> ProjectTempoPoint {
+        var chosen = tempo[0]
+        for candidate in tempo where candidate.frame <= frame { chosen = candidate }
+        return chosen
+    }
+    func bpm(atFrame frame: UInt64) -> Double { tempoPoint(atFrame: frame).bpm }
+    func framesPerBeat(atFrame frame: UInt64) -> Double { Self.framesPerMinute / bpm(atFrame: frame) }
+    func signature(atFrame frame: UInt64) -> ProjectSignaturePoint {
+        var chosen = signatures[0]
+        for candidate in signatures where candidate.frame <= frame { chosen = candidate }
+        return chosen
+    }
+
+    /// Зеркало State::beatsAtFrame: сумма целых сегментов, одно округление в конце.
+    func beats(atFrame frame: UInt64) -> Double {
+        let lane = tempo.sorted { $0.frame < $1.frame }
+        var beats = 0.0
+        var index = 0
+        while index + 1 < lane.count, lane[index + 1].frame <= frame {
+            beats += Double(lane[index + 1].frame - lane[index].frame) * lane[index].bpm / Self.framesPerMinute
+            index += 1
+        }
+        beats += (frame > lane[index].frame ? Double(frame - lane[index].frame) : 0) * lane[index].bpm / Self.framesPerMinute
+        return beats
+    }
+
+    /// Зеркало State::frameAtBeats: обратный ход по тем же сегментам.
+    func frame(atBeats beats: Double) -> UInt64 {
+        let lane = tempo.sorted { $0.frame < $1.frame }
+        guard beats.isFinite, beats >= 0 else { return lane[0].frame }
+        var remaining = beats
+        var index = 0
+        while true {
+            let perBeat = Self.framesPerMinute / lane[index].bpm
+            if index + 1 < lane.count {
+                let segment = Double(lane[index + 1].frame - lane[index].frame) / perBeat
+                if remaining == segment { return lane[index + 1].frame }
+                if remaining > segment { remaining -= segment; index += 1; continue }
+            }
+            let value = Double(lane[index].frame) + remaining * perBeat
+            guard value >= 0 else { return 0 }
+            guard value < Double(Self.timelineLimitFrame) else { return Self.timelineLimitFrame }
+            return UInt64(value.rounded())
+        }
+    }
+
+    /// Такты: длина такта = numerator × 4 / denominator четвертных бит (бит домена — всегда
+    /// четвертная): 4/8 → 2 бита, 4/4 → 4, 3/4 → 3. Размер читается из карты на кадре
+    /// текущей границы, а сама точка смены размера всегда становится началом такта —
+    /// при смене размера сетка тактов двигается.
+    func barStarts(upToFrame limit: UInt64) -> [ProjectBarStart] {
+        var marks: [ProjectBarStart] = []
+        let changes = signatures.sorted { $0.frame < $1.frame }
+        var beats = 0.0
+        var frame: UInt64 = 0
+        var number = 1
+        while marks.count < 4096 {
+            if frame > limit { break }
+            marks.append(ProjectBarStart(frame: frame, beats: beats, number: number))
+            let signature = self.signature(atFrame: frame)
+            var nextBeats = beats + Double(max(1, Int(signature.numerator))) * 4 / Double(max(1, Int(signature.denominator)))
+            var nextFrame = self.frame(atBeats: nextBeats)
+            if let change = changes.first(where: { $0.frame > frame && $0.frame <= nextFrame }) {
+                nextBeats = self.beats(atFrame: change.frame)
+                nextFrame = change.frame
+            }
+            guard nextFrame > frame else { break }
+            beats = nextBeats
+            frame = nextFrame
+            number += 1
+        }
+        return marks
+    }
+
+    /// 'такт.бит.тики' по позиции; тики — доли бита (480 на бит).
+    func barBeatTick(atFrame frame: UInt64, bars: [ProjectBarStart]) -> String {
+        let beats = max(0, self.beats(atFrame: frame))
+        var anchor = ProjectBarStart(frame: 0, beats: 0, number: 1)
+        for mark in bars where mark.beats <= beats + 1e-9 { anchor = mark }
+        let offset = max(0, beats - anchor.beats)
+        let whole = floor(offset)
+        let tick = min(Self.ticksPerBeat - 1, Int((offset - whole) * Double(Self.ticksPerBeat)))
+        return String(format: "%d.%d.%03d", anchor.number, Int(whole) + 1, max(0, tick))
+    }
+}
+
 @MainActor
 final class DraftCanvas: NSView { override var isFlipped: Bool { true } }
 
@@ -39,10 +166,32 @@ final class AutomationSlider: NSSlider {
 final class TimelineRulerView: NSView {
     var projectFrames: UInt64 = 48000 * 12 { didSet { needsDisplay = true } }
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
+    /// Тактовые метки из темпо-карты проекта; пустой массив — прежняя секундная шкала без второго слоя.
+    var barMarks: [ProjectBarStart] = [] { didSet { needsDisplay = true } }
+    /// Высота верхней полосы под номера тактов; секундная шкала остаётся ниже.
+    static let barBand: CGFloat = 14
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         NSColor(white: 0.07, alpha: 1).setFill();bounds.fill();let frames=max(UInt64(1),projectFrames);let seconds=Double(frames)/48000;let raw=max(1,seconds/Double(max(1,Int(bounds.width/110))));let step:Double=raw <= 1 ? 1:(raw <= 2 ? 2:(raw <= 5 ? 5:10));let attributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:10,weight:.regular),.foregroundColor:NSColor.secondaryLabelColor]
-        var second:Double=0;while second<=seconds {let x=CGFloat(second/seconds)*bounds.width;NSColor(white:1,alpha:0.16).setStroke();let line=NSBezierPath();line.move(to:NSPoint(x:x,y:bounds.height-8));line.line(to:NSPoint(x:x,y:bounds.height));line.stroke();String(format:"%.0f",second).draw(at:NSPoint(x:x+3,y:4),withAttributes:attributes);second+=step};let cursor=CGFloat(Double(min(playhead,frames))/Double(frames))*bounds.width;NSColor.systemMint.setStroke();let cursorLine=NSBezierPath();cursorLine.move(to:NSPoint(x:cursor,y:0));cursorLine.line(to:NSPoint(x:cursor,y:bounds.height));cursorLine.stroke()
+        // Второй слой: номера тактов из темпо-карты в верхней полосе. Горизонтальный
+        // маппинг кадр↔пиксель тот же, что у секундной шкалы; меняется только то,
+        // что метки приходят из карты, а не из локального темпа.
+        if !barMarks.isEmpty {
+            let barAttributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:9,weight:.medium),.foregroundColor:NSColor.systemMint.withAlphaComponent(0.86)]
+            NSColor(white:1,alpha:0.08).setFill();NSBezierPath(rect:NSRect(x:0,y:0,width:bounds.width,height:Self.barBand)).fill()
+            NSColor(white:1,alpha:0.14).setStroke();let divider=NSBezierPath();divider.move(to:NSPoint(x:0,y:Self.barBand));divider.line(to:NSPoint(x:bounds.width,y:Self.barBand));divider.stroke()
+            var lastLabelX:CGFloat = -60
+            for mark in barMarks {
+                if mark.frame > frames { break }
+                let x=CGFloat(Double(mark.frame)/Double(frames))*bounds.width
+                NSColor(white:1,alpha:0.26).setStroke();let tick=NSBezierPath();tick.move(to:NSPoint(x:x,y:Self.barBand-9));tick.line(to:NSPoint(x:x,y:Self.barBand));tick.stroke()
+                guard x-lastLabelX >= 20 else { continue }
+                lastLabelX=x
+                String(mark.number).draw(at:NSPoint(x:x+3,y:1),withAttributes:barAttributes)
+            }
+        }
+        let baseline=Self.barBand
+        var second:Double=0;while second<=seconds {let x=CGFloat(second/seconds)*bounds.width;NSColor(white:1,alpha:0.16).setStroke();let line=NSBezierPath();line.move(to:NSPoint(x:x,y:bounds.height-8));line.line(to:NSPoint(x:x,y:bounds.height));line.stroke();String(format:"%.0f",second).draw(at:NSPoint(x:x+3,y:baseline+2),withAttributes:attributes);second+=step};let cursor=CGFloat(Double(min(playhead,frames))/Double(frames))*bounds.width;NSColor.systemMint.setStroke();let cursorLine=NSBezierPath();cursorLine.move(to:NSPoint(x:cursor,y:0));cursorLine.line(to:NSPoint(x:cursor,y:bounds.height));cursorLine.stroke()
     }
 }
 
@@ -139,7 +288,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let rangeLabel = NSTextField(labelWithString: "Диапазон: весь проект")
     let tempoLabel = NSTextField(labelWithString: "120 BPM")
     let tempoStepper = NSStepper()
+    let tempoField = NSTextField(string: "120")
     let gridPopup = NSPopUpButton()
+    let gridLabel = NSTextField(labelWithString: "Сетка: 1/8 @ 120")
+    let positionLabel = NSTextField(labelWithString: "1.1.000")
     let masterSlider = AutomationSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
     let masterLabel = NSTextField(labelWithString: "+0.0 dB")
     let masterAutomationButton = NSButton(title:"AUTO",target:nil,action:nil)
@@ -156,7 +308,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var rangeStart: UInt64?
     var rangeEnd: UInt64?
     var loopEnabled = false
-    var tempo = 120
+    // Темпо-карта проекта — единственный источник истины о темпе и размере; UI её
+    // только читает (reloadTempoMap) и пишет одной командой daw_set_tempo.
+    var tempoMap = BeatFrameMap()
+    var tempoBars: [ProjectBarStart] = []
+    var playheadFrame: UInt64 = 0
+    /// Темп под позицией воспроизведения (последняя точка карты ≤ playhead).
+    var tempo: Double { tempoMap.bpm(atFrame: playheadFrame) }
+    /// Деления сетки в бит: выкл, 1/1, 1/2, 1/4, 1/8, 1/16, 1/32.
+    let gridDivisions: [Double] = [0, 4, 2, 1, 0.5, 0.25, 0.125]
     var transportTimer: Timer?
     var hasAudio = false
     var hasMidiContent = false
@@ -175,7 +335,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var newSendTargets: [ObjectIdentifier: UInt64] = [:]
     var sendControlTargets: [ObjectIdentifier: (track: UInt64, bus: UInt64, gain: Double, pre: Bool)] = [:]
     var auCatalog: [(type: UInt32, subtype: UInt32, manufacturer: UInt32, name: String)] = []
-    var vst3Catalog: [(index: UInt32, name: String, vendor: String, available: Bool)] = []
+    var vst3Catalog: [(index: UInt32, name: String, vendor: String, available: Bool, instrument: Bool)] = []
     var pluginControlTargets: [ObjectIdentifier: (id: UInt64, bypassed: Bool, index: UInt32)] = [:]
     var pluginEditorTargets: [ObjectIdentifier: (id: UInt64, isolatedVST3: Bool)] = [:]
     var pluginParameterTargets: [ObjectIdentifier: (plugin: UInt64, parameter: UInt32)] = [:]
@@ -333,10 +493,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         workspaceMode.selectedSegment = max(0, min(3, UserDefaults.standard.integer(forKey: "workspace.mode"))); workspaceMode.target = self; workspaceMode.action = #selector(changeWorkspaceMode); workspaceMode.controlSize = .small
         undoButton.target = self; undoButton.action = #selector(undo)
         redoButton.target = self; redoButton.action = #selector(redo)
-        tempoStepper.minValue = 40; tempoStepper.maxValue = 240; tempoStepper.increment = 1; tempoStepper.integerValue = tempo
-        tempoStepper.target = self; tempoStepper.action = #selector(changeTempo(_:));tempoStepper.setAccessibilityLabel("Темп проекта, BPM");tempoStepper.setAccessibilityHelp("Изменяет темп от 40 до 240 BPM")
-        gridPopup.addItems(withTitles: ["Сетка выкл.", "1/4", "1/8", "1/16"]); gridPopup.selectItem(at: 2)
-        gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:));gridPopup.setAccessibilityLabel("Сетка таймлайна")
+        // Значение степпера и поля — из темпо-карты под позицией воспроизведения; локального
+        // «настроенного темпа» больше нет, любое изменение уходит в daw_set_tempo.
+        tempoStepper.minValue = 21; tempoStepper.maxValue = 999; tempoStepper.increment = 1; tempoStepper.integerValue = Int(tempo.rounded())
+        tempoStepper.target = self; tempoStepper.action = #selector(changeTempo(_:));tempoStepper.setAccessibilityLabel("Темп темпо-карты под позицией воспроизведения, BPM");tempoStepper.setAccessibilityHelp("Добавляет или заменяет точку темпа на позиции воспроизведения. Темпо-карта допускает значения свыше 20 и не выше 999 BPM.")
+        tempoField.alignment = .right; tempoField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); tempoField.placeholderString = "BPM"
+        tempoField.delegate = self; tempoField.target = self; tempoField.action = #selector(commitTempoField(_:)); tempoField.tag = -1
+        tempoField.setAccessibilityLabel("Поле темпа темпо-карты, BPM"); tempoField.setAccessibilityHelp("Введи значение от 20 до 999 BPM; Enter пишет точку темпа на позицию воспроизведения")
+        let tempoFieldWidth=tempoField.widthAnchor.constraint(equalToConstant:54);tempoFieldWidth.priority = .defaultHigh;tempoFieldWidth.isActive=true
+        gridPopup.addItems(withTitles: ["Сетка выкл.", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32"]); gridPopup.selectItem(at: 4)
+        gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:));gridPopup.setAccessibilityLabel("Деление сетки таймлайна в битах темпо-карты")
+        gridLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular); gridLabel.textColor = .secondaryLabelColor
+        timelineRuler.setAccessibilityLabel("Линейка проекта: верхний слой — такты из темпо-карты, нижний — секунды"); timelineRuler.setAccessibilityHelp("Номера тактов считаются по карте темпа и размеров; точка смены размера двигает сетку тактов")
+        gridLabel.setAccessibilityLabel("Сетка таймлайна: деление и темп под позицией воспроизведения")
         rangeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); rangeLabel.textColor = .secondaryLabelColor
         tempoLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); tempoLabel.textColor = .secondaryLabelColor
         let importButton=button("Импорт…",#selector(importWav));let addTrackButton=button("＋ Track",#selector(addTrack));let addMidiTrackButton=button("＋ MIDI",#selector(addMidiTrack));let addBusButton=button("＋ Bus",#selector(addBus));let workflowButton=button("Workflow…",#selector(runVocalWorkflow))
@@ -362,7 +531,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
         let saveButton=button("Сохранить",#selector(saveDraft));styleIconButton(saveButton,icon:.saveProject)
         styleIconButton(exportButton,icon:.exportAudio);styleIconButton(dawprojectButton,icon:.exportProject);styleIconButton(cancelExportButton,icon:.cancel)
-        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addMidiTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
+        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addMidiTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,tempoField,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
         rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         content.addArrangedSubview(toolbar);toolbar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         playButton.target = self; playButton.action = #selector(playAudio)
@@ -384,7 +553,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         document.addSubview(timelineRuler);document.addSubview(rows); scroll.documentView = document
         timelineZoom=CGFloat(UserDefaults.standard.double(forKey:"timelineZoom"));if timelineZoom < 1{timelineZoom=1}
         timelineWidthConstraint=document.widthAnchor.constraint(equalToConstant:1400*timelineZoom);timelineWidthConstraint?.isActive=true
-        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:28).isActive=true
+        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.barBand+28).isActive=true
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),timelineRuler.leadingAnchor.constraint(equalTo:document.leadingAnchor),timelineRuler.trailingAnchor.constraint(equalTo:document.trailingAnchor),timelineRuler.topAnchor.constraint(equalTo:document.topAnchor),
             rows.leadingAnchor.constraint(equalTo: document.leadingAnchor), rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
@@ -393,7 +562,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let headerScroll=NSScrollView();trackHeaderScroll=headerScroll;headerScroll.hasVerticalScroller=false;headerScroll.hasHorizontalScroller=false;headerScroll.drawsBackground=false
         trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=8;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
         let headerDocument=DraftCanvas();headerDocument.translatesAutoresizingMaskIntoConstraints=false;let tracksHeading=label("TRACKS",size:10,color:.tertiaryLabelColor);tracksHeading.font = .systemFont(ofSize:10,weight:.semibold);tracksHeading.translatesAutoresizingMaskIntoConstraints=false;headerDocument.addSubview(tracksHeading);headerDocument.addSubview(trackHeaderRows);headerScroll.documentView=headerDocument
-        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
+        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
         scroll.contentView.postsBoundsChangedNotifications=true;headerScroll.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:headerScroll.contentView)
@@ -421,8 +590,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
         let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton]);transportControls.spacing=4;transportControls.alignment = .centerY
-        let statusBar=NSStackView(views:[summary,status,flexibleSpace(),transportControls,transportLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
+        let statusBar=NSStackView(views:[summary,status,gridLabel,flexibleSpace(),transportControls,transportLabel,positionLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        gridLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        positionLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); positionLabel.textColor = DAWDesignTokens.Color.secondaryText
+        positionLabel.setAccessibilityLabel("Позиция воспроизведения: такт.бит.тики"); positionLabel.setAccessibilityHelp("Формат такт.бит.тики по темпо-карте проекта, 480 тиков на бит")
+        positionLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal)
         mixerWorkspace.onSelect = { [weak self] id in guard let self else{return};self.selectedMixerID=id;self.refresh();self.updateMixerInspector(id) }
         mixerWorkspace.onArm = { [weak self] id,armed in guard let self, self.mixerKinds[id] == .track else{return};self.armedTrackID=armed ? id:nil;self.refresh() }
         mixerWorkspace.onMute = { [weak self] id,muted in self?.mixerSetMute(id,muted) }
@@ -685,7 +858,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func refreshBrowserCatalog() {
         browserPluginTargets.removeAll();var items:[InspectorBrowserItem]=[]
         for plugin in auCatalog {let isInstrument = plugin.subtype == 0x61616D69 || plugin.subtype == 0x61756961 /* aami, auia */;let item=InspectorBrowserItem(title:plugin.name,detail:isInstrument ? "Audio Unit · инструмент · experimental":"Audio Unit",available:true);browserPluginTargets[item.id] = .audioUnit(type:plugin.type,subtype:plugin.subtype,manufacturer:plugin.manufacturer);items.append(item)}
-        for plugin in vst3Catalog {let item=InspectorBrowserItem(title:plugin.name,detail:plugin.vendor.isEmpty ? "VST3":"VST3 · \(plugin.vendor)",available:plugin.available);browserPluginTargets[item.id] = .vst3(index:plugin.index);items.append(item)}
+        for plugin in vst3Catalog {let kind=plugin.instrument ? "VST3 · инструмент":"VST3";let item=InspectorBrowserItem(title:plugin.name,detail:plugin.vendor.isEmpty ? kind:"\(kind) · \(plugin.vendor)",available:plugin.available);browserPluginTargets[item.id] = .vst3(index:plugin.index);items.append(item)}
         inspectorBrowser.pluginItems=items.sorted{$0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending}
     }
     func addBrowserFolder() {
@@ -740,11 +913,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func reloadAudioUnitPopup(_ count:UInt32){auCatalog.removeAll();while masterAUPopup.numberOfItems>1{masterAUPopup.removeItem(at:1)};for index in 0..<count{var item=daw_au_component();item.struct_size=UInt32(MemoryLayout<daw_au_component>.size);guard check(daw_get_supported_au(session,index,&item))else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};auCatalog.append((item.type,item.subtype,item.manufacturer,name));masterAUPopup.addItem(withTitle:name)};masterAUPopup.isEnabled = !auCatalog.isEmpty;refreshBrowserCatalog()}
     var vst3CacheURL: URL? { try? FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true).appendingPathComponent("My DAW/vst3-scan-cache-v1.txt") }
     func loadInstalledVST3(){let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_vst3_scan_helper").path;var available:UInt32=0;var quarantined:UInt32=0;var invalidated:UInt32=0;if let cache=vst3CacheURL,daw_load_installed_vst3_scan_cache(session,helper,cache.path,&available,&quarantined,&invalidated)==0{reloadVST3Popup();let stale=invalidated>0 ? ", обновить \(invalidated)":"";scanVST3Button.title=quarantined==0 ? "VST3: \(available)\(stale)":"VST3: \(available), карантин \(quarantined)\(stale)"}}
-    func reloadVST3Popup(){vst3Catalog.removeAll();while masterVST3Popup.numberOfItems>1{masterVST3Popup.removeItem(at:1)};var count:UInt32=0;guard daw_get_installed_vst3_count(session,&count)==0 else{return};for index in 0..<count{var item=daw_vst3_component();item.struct_size=UInt32(MemoryLayout<daw_vst3_component>.size);guard daw_get_installed_vst3(session,index,&item)==0 else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let vendor=withUnsafeBytes(of:item.vendor){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};vst3Catalog.append((index,name,vendor,item.available != 0));if item.available != 0{masterVST3Popup.addItem(withTitle:vendor.isEmpty ? name:"\(name) — \(vendor)");masterVST3Popup.lastItem?.representedObject=NSNumber(value:index)}};masterVST3Popup.isEnabled = masterVST3Popup.numberOfItems>1;refreshBrowserCatalog()}
+    func reloadVST3Popup(){vst3Catalog.removeAll();while masterVST3Popup.numberOfItems>1{masterVST3Popup.removeItem(at:1)};var count:UInt32=0;guard daw_get_installed_vst3_count(session,&count)==0 else{return};for index in 0..<count{var item=daw_vst3_component();item.struct_size=UInt32(MemoryLayout<daw_vst3_component>.size);guard daw_get_installed_vst3(session,index,&item)==0 else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let vendor=withUnsafeBytes(of:item.vendor){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let instrument=item.available != 0 && (item.flags & UInt32(DAW_VST3_FLAG_INSTRUMENT)) != 0;/* flags осмысленны только при available != 0 — контракт моста */vst3Catalog.append((index,name,vendor,item.available != 0,instrument));if item.available != 0{masterVST3Popup.addItem(withTitle:(instrument ? "🎹 " : "") + (vendor.isEmpty ? name:"\(name) — \(vendor)"));masterVST3Popup.lastItem?.representedObject=NSNumber(value:index)}};masterVST3Popup.isEnabled = masterVST3Popup.numberOfItems>1;refreshBrowserCatalog()}
     func refresh() {
         var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
         guard check(daw_get_snapshot(session, &snapshot)) else { return }
         revision = snapshot.revision
+        reloadTempoMap()
         masterSlider.doubleValue=snapshot.master_gain_db;masterLabel.stringValue=String(format:"%+.1f dB",snapshot.master_gain_db)
         var masterAutomationCount:UInt32=0;guard check(daw_get_master_gain_automation_count(session,&masterAutomationCount))else{return};masterAutomationButton.title=masterAutomationCount==0 ? "AUTO":"AUTO \(masterAutomationCount)";masterAutomationButton.contentTintColor=masterAutomationCount==0 ? .secondaryLabelColor:.systemCyan
         undoButton.isEnabled = snapshot.can_undo != 0; redoButton.isEnabled = snapshot.can_redo != 0
@@ -763,6 +937,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         for busIndex in 0..<snapshot.bus_count {var bus=daw_bus();bus.struct_size=UInt32(MemoryLayout<daw_bus>.size);guard check(daw_get_bus(session,busIndex,&bus))else{return};let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};orderedBuses.append((bus.id,name))}
         var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
         guard check(daw_get_transport(session, &transport)) else { return }
+        playheadFrame = transport.frame
         loopEnabled=transport.loop_enabled != 0
         if let end=rangeEnd,end>transport.duration { rangeStart=nil;rangeEnd=nil }
         if snapshot.track_count == 0 {
@@ -847,7 +1022,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.peaks = peaks; wave.clips = clips; wave.sourceFrames = track.audio_frames
                 wave.automationPoints=automationPoints
                 wave.panAutomationPoints=panAutomationPoints
-                wave.snapFrames = gridFrames; wave.rangeStart = rangeStart; wave.rangeEnd = rangeEnd;wave.loopEnabled=loopEnabled
+                wave.snapFrames = gridFrames; wave.snapGrid = { [weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0) }; wave.rangeStart = rangeStart; wave.rangeEnd = rangeEnd;wave.loopEnabled=loopEnabled
                 wave.selectedIndex=min(selectedClips[track.id] ?? 0,max(0,clips.count-1)); selectedClips[track.id]=wave.selectedIndex
                 wave.projectFrames = min(48000 * 600, max(48000 * 12, transport.duration + 48000 * 2))
                 wave.playableFrames = transport.duration; wave.playhead = transport.frame
@@ -1031,7 +1206,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func toggleInsertDisclosure(_ sender: NSButton) { guard let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return};let key=insertOwnerKey(target.owner,target.ownerID);if expandedInsertOwners.contains(key){expandedInsertOwners.remove(key)}else{expandedInsertOwners.insert(key)};refresh() }
     @objc func addOwnerInsert(_ sender: NSButton) {
-        guard !isRecording,let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return};let choices=auCatalog.map{("AU · \($0.name)",false,$0.type,$0.subtype,$0.manufacturer,UInt32(0))}+vst3Catalog.filter{$0.available}.map{("VST3 · \($0.name)\($0.vendor.isEmpty ? "":" — \($0.vendor)")",true,UInt32(0),UInt32(0),UInt32(0),$0.index)}
+        guard !isRecording,let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return};let choices=auCatalog.map{("AU · \($0.name)",false,$0.type,$0.subtype,$0.manufacturer,UInt32(0))}+vst3Catalog.filter{$0.available}.map{("\($0.instrument ? "🎹 ":"")VST3 · \($0.name)\($0.vendor.isEmpty ? "":" — \($0.vendor)")",true,UInt32(0),UInt32(0),UInt32(0),$0.index)}
         guard !choices.isEmpty else{storageMessage("Сначала отсканируй AU или VST3 плагины.");return};let popup=NSPopUpButton();for choice in choices{popup.addItem(withTitle:choice.0)};popup.widthAnchor.constraint(equalToConstant:440).isActive=true;let alert=NSAlert();alert.messageText="Добавить insert: \(target.title)";alert.informativeText="Плагин создаётся на выбранной полосе.";alert.accessoryView=popup;alert.addButton(withTitle:"Добавить");alert.addButton(withTitle:"Отмена");guard alert.runModal() == .alertFirstButtonReturn else{return};let choice=choices[popup.indexOfSelectedItem];_ = daw_stop(session);let result=choice.1 ? daw_add_insert_vst3(session,target.owner,target.ownerID,choice.5,revision):daw_add_insert_au(session,target.owner,target.ownerID,choice.2,choice.3,choice.4,revision);if check(result){expandedInsertOwners.insert(insertOwnerKey(target.owner,target.ownerID));refresh();pollTransport()}
     }
     @objc func toggleOwnerInsert(_ sender:NSButton){guard !isRecording,let target=insertControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_set_insert_bypass(session,target.owner,target.ownerID,target.id,target.bypassed ? 0:1,revision)){refresh();pollTransport()}}
@@ -1152,13 +1327,39 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             recordingAlert("Разреши My DAW доступ к микрофону в Системных настройках → Конфиденциальность и безопасность → Микрофон.")
         }
     }
+    /// Деление сетки в битах (0 = сетка выключена).
+    var gridDivisionBeats: Double {
+        gridDivisions[max(0, min(gridPopup.indexOfSelectedItem, gridDivisions.count - 1))]
+    }
+    /// Квант сетки в кадрах: кадр/бит берётся из темпо-карты под позицией, а не из локального темпа.
     var gridFrames: UInt64 {
-        let divisions = [0.0, 1.0, 0.5, 0.25]
-        let beats = divisions[max(0, min(gridPopup.indexOfSelectedItem, divisions.count - 1))]
-        return beats == 0 ? 0 : UInt64((Double(48000 * 60) / Double(tempo) * beats).rounded())
+        let beats = gridDivisionBeats
+        return beats == 0 ? 0 : max(1, UInt64((BeatFrameMap.framesPerMinute / tempoMap.bpm(atFrame: playheadFrame) * beats).rounded()))
+    }
+    /// Beat-grid для произвольной позиции: опора — темпо-точка, которой принадлежит кадр,
+    /// квант — деление в битах на bpm этой точки (120 BPM ⇒ 24 000 кадров на бит).
+    func gridSnap(atFrame frame: Int64) -> (anchor: UInt64, quantum: UInt64) {
+        let beats = gridDivisionBeats
+        guard beats > 0 else { return (0, 0) }
+        let point = tempoMap.tempoPoint(atFrame: UInt64(max(0, frame)))
+        let quantum = max(1, UInt64((BeatFrameMap.framesPerMinute / point.bpm * beats).rounded()))
+        return (point.frame, quantum)
+    }
+    /// Формат темпа как в соседних строках панели: целое без дробного нуля, иначе — %.2f.
+    func formattedBpm(_ value: Double) -> String {
+        abs(value - value.rounded()) < 0.005 ? String(format: "%.0f", value.rounded()) : String(format: "%.2f", value)
     }
     func updateTimelineTools() {
-        tempoLabel.stringValue = "\(tempo) BPM"
+        let bpmAtPlayhead = tempoMap.bpm(atFrame: playheadFrame)
+        let bpmText = formattedBpm(bpmAtPlayhead)
+        tempoLabel.stringValue = "\(bpmText) BPM"
+        tempoLabel.toolTip = "Темп из темпо-карты на позиции воспроизведения"
+        if window?.firstResponder !== tempoField, tempoField.currentEditor() == nil { tempoField.stringValue = bpmText }
+        tempoStepper.integerValue = Int(bpmAtPlayhead.rounded())
+        let gridTitle = gridPopup.titleOfSelectedItem ?? "выкл."
+        gridLabel.stringValue = gridDivisionBeats == 0 ? "Сетка: выкл." : "Сетка: \(gridTitle) @ \(bpmText)"
+        gridLabel.toolTip = "Деления 1/1…1/32 считаются в битах от темпо-точки под позицией"
+        gridPopup.toolTip = gridLabel.stringValue
         if let start=rangeStart, let end=rangeEnd {
             rangeLabel.stringValue=String(format:"%.2f–%.2f с · %.2f с",Double(start)/48000,Double(end)/48000,Double(end-start)/48000)
         } else if let start=rangeStart { rangeLabel.stringValue=String(format:"начало %.2f с · выбери конец",Double(start)/48000) }
@@ -1167,7 +1368,60 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         loopButton.title=loopEnabled ? "↻ Цикл вкл." : "↻ Цикл"
         loopButton.state=loopEnabled ? .on:.off
         loopButton.isEnabled=rangeStart != nil && rangeEnd != nil && !isRecording
-        for wave in waveforms { wave.snapFrames=gridFrames; wave.rangeStart=rangeStart; wave.rangeEnd=rangeEnd;wave.loopEnabled=loopEnabled }
+        for wave in waveforms { wave.snapFrames=gridFrames; wave.snapGrid={[weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0)}; wave.rangeStart=rangeStart; wave.rangeEnd=rangeEnd;wave.loopEnabled=loopEnabled }
+        refreshBarMarks()
+        positionLabel.stringValue = tempoMap.barBeatTick(atFrame: playheadFrame, bars: tempoBars)
+    }
+    /// Читает темпо-карту и карту размеров из сессии (единственный источник истины).
+    func reloadTempoMap() {
+        guard session != nil else { return }
+        var tempoCount: UInt32 = 0
+        if daw_get_tempo_count(session, &tempoCount) == 0, tempoCount > 0 {
+            var points: [ProjectTempoPoint] = []
+            for index in 0..<tempoCount {
+                var point = daw_tempo_point(); point.struct_size = UInt32(MemoryLayout<daw_tempo_point>.size)
+                guard daw_get_tempo_point(session, index, &point) == 0 else { continue }
+                points.append(ProjectTempoPoint(frame: point.frame, bpm: point.bpm))
+            }
+            if !points.isEmpty { tempoMap.tempo = points }
+        }
+        var signatureCount: UInt32 = 0
+        if daw_get_time_signature_count(session, &signatureCount) == 0, signatureCount > 0 {
+            var points: [ProjectSignaturePoint] = []
+            for index in 0..<signatureCount {
+                var point = daw_time_signature_point(); point.struct_size = UInt32(MemoryLayout<daw_time_signature_point>.size)
+                guard daw_get_time_signature_point(session, index, &point) == 0 else { continue }
+                points.append(ProjectSignaturePoint(frame: point.frame, numerator: point.numerator, denominator: point.denominator))
+            }
+            if !points.isEmpty { tempoMap.signatures = points }
+        }
+    }
+    /// Позиция воспроизведения: обновляет playhead-состояния UI без перестройки проекта.
+    func syncPlayhead(_ frame: UInt64) {
+        let crossing = tempoMap.tempoPoint(atFrame: frame).frame != tempoMap.tempoPoint(atFrame: playheadFrame).frame
+        playheadFrame = frame
+        timelineRuler.playhead = frame
+        if crossing { updateTimelineTools() }
+        else { positionLabel.stringValue = tempoMap.barBeatTick(atFrame: frame, bars: tempoBars) }
+    }
+    /// Одна revision-aware команда: точка темпа пишется ровно на позицию воспроизведения.
+    /// Отказ откатывает UI к карте; сообщение об ошибке остаётся в существующем статусе.
+    func commitTempo(_ bpm: Double) {
+        guard !isRecording else { setProjectMessage("Во время записи темп не меняется."); updateTimelineTools(); return }
+        let frame = currentTransportFrame() ?? playheadFrame
+        if bpm <= 20 || bpm > 999 || !bpm.isFinite {
+            setProjectMessage("Темпо-карта допускает темп свыше 20 и не выше 999 BPM; изменение не выполнено.")
+            updateTimelineTools()
+            return
+        }
+        if check(daw_set_tempo(session, frame, bpm, revision)) {
+            playheadFrame = frame
+            reloadTempoMap(); syncRevision(); updateTimelineTools()
+            setProjectMessage("Темп \(formattedBpm(tempoMap.bpm(atFrame: frame))) BPM записан в темпо-карту на \(String(format: "%.2f", Double(frame)/48000)) с")
+        } else {
+            updateTimelineTools()
+            setProjectMessage("Изменение темпа отклонено; значение восстановлено из темпо-карты.")
+        }
     }
     func currentTransportFrame() -> UInt64? {
         var value=daw_transport();value.struct_size=UInt32(MemoryLayout<daw_transport>.size)
@@ -1192,7 +1446,23 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard let start=rangeStart,let end=rangeEnd,end>start else{storageMessage("Сначала задай начало и конец диапазона.");return}
         if check(daw_set_loop(session,1,start,end)){loopEnabled=true;updateTimelineTools();pollTransport()}
     }
-    @objc func changeTempo(_ sender:NSStepper) { tempo=sender.integerValue;updateTimelineTools() }
+    /// Тактовые метки линейки: пересчитываются из карты при каждом изменении темпа,
+    /// размера, позиции или длины проекта.
+    func refreshBarMarks() {
+        let limit = min(max(timelineRuler.projectFrames, playheadFrame + 48000 * 30), BeatFrameMap.timelineLimitFrame)
+        tempoBars = tempoMap.barStarts(upToFrame: limit)
+        timelineRuler.barMarks = tempoBars
+    }
+    @objc func changeTempo(_ sender:NSStepper) { commitTempo(Double(sender.integerValue)) }
+    @objc func commitTempoField(_ sender:NSTextField) {
+        let raw = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(raw), value.isFinite else {
+            setProjectMessage("Темп должен быть числом BPM, например 120 или 96.5.")
+            updateTimelineTools()
+            return
+        }
+        commitTempo(value)
+    }
     @objc func changeGrid(_ sender:NSPopUpButton) { updateTimelineTools() }
     func beginRecording() {
         guard !isRecording else { return }
@@ -1251,6 +1521,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         isPlaying = t.playing != 0
         for wave in waveforms { wave.playhead = t.frame }
+        syncPlayhead(t.frame)
         playButton.isEnabled = (hasAudio || hasMidiContent) && t.playing == 0; stopButton.isEnabled = t.playing != 0
         if t.duration > 0 {
             let state = t.playing != 0 ? "Играет" : "Остановлено"

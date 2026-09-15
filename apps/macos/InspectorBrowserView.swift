@@ -79,7 +79,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let importButton = NSButton(title: "Import", target: nil, action: nil)
     private let addButton = NSButton(title: "Add", target: nil, action: nil)
     private let previewStatus = NSTextField(labelWithString: "Выберите аудиофайл для предпрослушивания.")
-    private let pluginHint = NSTextField(labelWithString: "Инструменты: experimental. AU-инструменты помечены; bridge не сообщает тип инструмента для VST3.")
+    private let pluginHint = NSTextField(labelWithString: "Инструменты: bridge сообщает тип для VST3 (· инструмент, 🎹); AU-инструменты по-прежнему experimental — их хостинг не готов.")
     private let volume = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
     private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
     private let channelName = NSTextField(string: "")
@@ -149,7 +149,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         stopPreview.target = self; stopPreview.action = #selector(stopAudioPreview); stopPreview.bezelStyle = .texturedRounded; stopPreview.font = DAWDesignTokens.Typography.caption
         previewStatus.font = DAWDesignTokens.Typography.caption; previewStatus.textColor = DAWDesignTokens.Color.secondaryText; previewStatus.lineBreakMode = .byTruncatingTail
         pluginHint.font = DAWDesignTokens.Typography.caption; pluginHint.textColor = DAWDesignTokens.Color.warning; pluginHint.lineBreakMode = .byTruncatingTail
-        pluginHint.setAccessibilityLabel("Предупреждение об экспериментальных инструментах")
+        pluginHint.setAccessibilityLabel("Типы инструментов: bridge сообщает тип для VST3, AU-инструменты помечены experimental")
         reloadInspector()
     }
 

@@ -304,7 +304,10 @@ extension DraftApp {
         panel.nameFieldStringValue = "\(title).dawproject"
         panel.message = "Переносит дорожки, монтаж, routing, automation, аудио и состояния Audio Unit. Отчёт о преобразованиях сохраняется внутри файла."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let job = daw_begin_dawproject_export(session,url.path,Double(tempo),4,4,title) else { _ = check(1); return }
+        // Темп и размер берутся из темпо-карты проекта (якорь на frame 0), а не из локального стейта UI.
+        let anchorTempo = tempoMap.tempoPoint(atFrame: 0).bpm
+        let anchorSignature = tempoMap.signature(atFrame: 0)
+        guard let job = daw_begin_dawproject_export(session,url.path,anchorTempo,UInt32(anchorSignature.numerator),UInt32(anchorSignature.denominator),title) else { _ = check(1); return }
         dawprojectJob=job;exportURL=url;exportStarted=Date();exportMessage=nil;exportMessageUntil = .distantPast
         exportButton.isEnabled=false;dawprojectButton.isEnabled=false;cancelExportButton.isEnabled=true;recordButton.isEnabled=false
         updateStorageStatus()
