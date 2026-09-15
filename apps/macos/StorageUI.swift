@@ -311,7 +311,11 @@ extension DraftApp {
         let tailDialog = WavExportTailDialog(storedMode: initialOptions.tail_mode, storedLimitSeconds: initialOptions.manual_tail_frames / 48_000, summary: tailSummary)
         let choice = NSAlert(); choice.messageText = "Экспорт стемов"
         choice.informativeText = "Весь проект, по WAV-файлу на слышимую дорожку: мастер-гейн и мастер-цепочка не применяются (сумма стемов даёт микс до мастера). Замьюченные и пустые дорожки пропускаются."
-        choice.accessoryView = tailDialog.view
+        let selectedOnly = NSButton(checkboxWithTitle: "Только выбранная в микшере дорожка", target: nil, action: nil)
+        selectedOnly.isEnabled = selectedMixerID != nil
+        selectedOnly.setAccessibilityLabel("Ограничить стемы выбранной дорожкой")
+        let stemsAccessory = NSStackView(views: [tailDialog.view, selectedOnly]); stemsAccessory.orientation = .vertical; stemsAccessory.alignment = .leading
+        choice.accessoryView = stemsAccessory
         choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
         let response = choice.runModal()
         guard response != .alertThirdButtonReturn else { return }
@@ -321,7 +325,12 @@ extension DraftApp {
         if let currentURL { panel.directoryURL = currentURL.deletingLastPathComponent() }
         panel.message = "Папка для стемов — файлы получат имена «01 − дорожка.wav», «02 − …»"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let job = daw_begin_stem_export(session, url.path, format, &options)
+        let job: OpaquePointer?
+        if selectedOnly.state == .on, let mixerSelection = selectedMixerID {
+            job = [mixerSelection].withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, 1) }
+        } else {
+            job = daw_begin_stem_export(session, url.path, format, &options)
+        }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
         exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false

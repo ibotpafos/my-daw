@@ -64,6 +64,9 @@ daw_export_job* daw_begin_export_range_with_options(daw_session*,const char* pat
  * directory ("NN - name.wav"). Silent (user-muted or empty) tracks produce no
  * file; progress aggregates across stems and cancel lands between files. */
 daw_export_job* daw_begin_stem_export(daw_session*,const char* directory,int32_t format,const daw_export_options*);
+/* Stems for only the listed tracks (ids resolved against the current
+ * revision). track_count 0 or NULL ids exports every audible track. */
+daw_export_job* daw_begin_stem_export_tracks(daw_session*,const char* directory,int32_t format,const daw_export_options*,const uint64_t* track_ids,uint32_t track_count);
 /* BS.1770-4 loudness/true-peak measurement of a finished WAV on disk:
  * K-weighted integrated loudness with the standard gates, and dBTP from 4x
  * oversampled interpolation. gated_silence marks files that never rise

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace daw {
 struct GraphTailSummary;
@@ -68,11 +69,15 @@ std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
 // back into a session reproduces the mix up to master processing. Silent
 // tracks (user-muted or empty) honestly produce no file. The full project
 // range renders from frame zero; every stem keeps its own tail policy.
+// onlyTrackIds, when non-empty, restricts the run to those track identities
+// (unknown ids are rejected by callers; the writer simply skips the rest).
 void writeStems(const State &snapshot, const std::string &directory,
                 WavFormat format, ExportOptions = {},
-                ExportResult *progress = nullptr);
+                ExportResult *progress = nullptr,
+                const std::vector<uint64_t> *onlyTrackIds = nullptr);
 std::shared_ptr<ExportResult> startStemExport(State snapshot,
                                                std::string directory,
                                                WavFormat format,
-                                               ExportOptions = {});
+                                               ExportOptions = {},
+                                               std::vector<uint64_t> onlyTrackIds = {});
 } // namespace daw

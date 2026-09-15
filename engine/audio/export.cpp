@@ -417,7 +417,7 @@ bool stemDuration(const State &snapshot, std::size_t track,
 
 void writeStems(const State &snapshot, const std::string &directory,
                 WavFormat format, ExportOptions options,
-                ExportResult *progress) {
+                ExportResult *progress, const std::vector<uint64_t> *onlyTrackIds) {
   if (directory.empty())
     throw Error("Choose a stems directory");
   std::error_code fs;
@@ -426,6 +426,9 @@ void writeStems(const State &snapshot, const std::string &directory,
   uint64_t written = 0;
   std::size_t count = 0;
   for (std::size_t i = 0; i < snapshot.tracks.size(); ++i) {
+    if (onlyTrackIds && std::find(onlyTrackIds->begin(), onlyTrackIds->end(),
+                                    snapshot.tracks[i].id) == onlyTrackIds->end())
+      continue;
     uint64_t duration = 0;
     if (!stemDuration(snapshot, i, duration))
       continue;
@@ -449,11 +452,16 @@ void writeStems(const State &snapshot, const std::string &directory,
 std::shared_ptr<ExportResult> startStemExport(State snapshot,
                                                std::string directory,
                                                WavFormat format,
-                                               ExportOptions options) {
+                                               ExportOptions options,
+                                               std::vector<uint64_t> onlyTrackIds) {
   if (directory.empty())
     throw Error("Choose a stems directory");
   uint64_t total = 0;
+  const auto *filter = onlyTrackIds.empty() ? nullptr : &onlyTrackIds;
   for (std::size_t i = 0; i < snapshot.tracks.size(); ++i) {
+    if (filter && std::find(filter->begin(), filter->end(),
+                            snapshot.tracks[i].id) == filter->end())
+      continue;
     uint64_t duration = 0;
     if (stemDuration(snapshot, i, duration))
       total += duration;
@@ -465,10 +473,12 @@ std::shared_ptr<ExportResult> startStemExport(State snapshot,
     throw Error("Background job capacity reached");
   auto result = std::make_shared<ExportResult>(snapshot.revision, total);
   std::thread([snapshot = std::move(snapshot), directory = std::move(directory),
-               format, options, result, permit = std::move(permit)] {
+               format, options, result, permit = std::move(permit),
+               onlyTracks = std::move(onlyTrackIds)] {
     (void)permit;
     try {
-      writeStems(snapshot, directory, format, options, result.get());
+      writeStems(snapshot, directory, format, options, result.get(),
+                 onlyTracks.empty() ? nullptr : &onlyTracks);
       result->status.store(1, std::memory_order_release);
     } catch (const ExportCanceled &) {
       result->status.store(3, std::memory_order_release);

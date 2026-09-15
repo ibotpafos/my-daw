@@ -284,6 +284,16 @@ int main(void) {
     if (daw_package_project(session, "/nonexistent/mydaw.draft", "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
     if (daw_package_project(session, NULL, "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
     if (daw_extract_package(session, "/tmp/mydaw-pkg-gate.zip", NULL) == 0) result |= 1;
+    /* Track-filtered stems reject before touching the filesystem: unknown id,
+     * NULL ids with a count, and duplicate ids all return no job. */
+    uint64_t ghost_track = 4242;
+    uint64_t dupe_tracks[2] = { 1, 1 };
+    daw_export_options stem_options = { 0 };
+    stem_options.struct_size = sizeof(stem_options);
+    stem_options.version = DAW_EXPORT_OPTIONS_VERSION;
+    if (daw_begin_stem_export_tracks(session, "/tmp/mydaw-stems-missing", 2, &stem_options, &ghost_track, 1) != NULL) result |= 1;
+    if (daw_begin_stem_export_tracks(session, "/tmp/mydaw-stems-missing", 2, &stem_options, NULL, 1) != NULL) result |= 1;
+    if (daw_begin_stem_export_tracks(session, "/tmp/mydaw-stems-missing", 2, &stem_options, dupe_tracks, 2) != NULL) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

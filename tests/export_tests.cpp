@@ -15,6 +15,7 @@
 #include <unistd.h>
 #define CHECK(x) do{if(!(x))throw std::runtime_error("Failed: " #x);}while(false)
 template<class Fn>void rejects(Fn fn){bool bad=false;try{fn();}catch(...){bad=true;}CHECK(bad);}
+template<class Fn>void rejectsMessage(const char* text,Fn&& fn){bool matched=false;try{fn();}catch(const std::exception&e){matched=std::string(e.what()).find(text)!=std::string::npos;}CHECK(matched);}
 
 int main(){try{
     struct TailProbe final : daw::PreparedEffect {
@@ -94,6 +95,29 @@ int main(){try{
         for(size_t i=700;i<1000;++i){const auto sum=(stemA->samples()[i]+stemB->samples()[i])*float(master);CHECK(std::abs(mix->samples()[i]-sum)<0.01f);}  // fader smoothers converge: tail agrees with the sum of stems
         daw::Session quiet;quiet.import("Q",pad,0);quiet.mute(1,true,1);
         rejects([&]{daw::writeStems(quiet.state(),stemRoot.string(),daw::WavFormat::Float32);});
+        // Filtered stems: only the listed track ships; unknown ids reject.
+        {   auto partRoot=root/"stems-part";std::filesystem::create_directories(partRoot);
+            const uint64_t padId=stems.state().tracks[1].id;
+            const std::vector<uint64_t> onlyPad{padId},onlyGhost{99};
+            daw::writeStems(stems.state(),partRoot.string(),daw::WavFormat::Float32,daw::ExportOptions{},nullptr,&onlyPad);
+            CHECK(std::filesystem::exists(partRoot/"02 - Pad.wav"));
+            CHECK(!std::filesystem::exists(partRoot/"01 - Lead_Vox.wav"));
+            CHECK(!std::filesystem::exists(partRoot/"03 - Skipped.wav"));
+            int entries=0;for(const auto& entry:std::filesystem::directory_iterator(partRoot)){(void)entry;++entries;}
+            CHECK(entries==1);
+            rejectsMessage("No audible track to export",[&]{daw::writeStems(stems.state(),partRoot.string(),daw::WavFormat::Float32,daw::ExportOptions{},nullptr,&onlyGhost);});
+        }
+        // The filtered bridge job ships exactly one stem for the fixture track.
+        {   auto dir=root/"stems-bridge";std::filesystem::create_directories(dir);
+            daw_export_options opts{};opts.struct_size=sizeof(opts);opts.version=DAW_EXPORT_OPTIONS_VERSION;opts.tail_mode=DAW_EXPORT_TAIL_MANUAL_LIMIT;opts.manual_tail_frames=48000;
+            const uint64_t first=1;
+            std::unique_ptr<daw_export_job,decltype(&daw_release_export)> stemJob(daw_begin_stem_export_tracks(bridge.get(),dir.string().c_str(),2,&opts,&first,1),daw_release_export);CHECK(stemJob);
+            daw_export_status stemStatus{};stemStatus.struct_size=sizeof(stemStatus);
+            for(int i=0;i<200;++i){CHECK(daw_poll_export(stemJob.get(),&stemStatus)==0);if(stemStatus.status)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+            CHECK(stemStatus.status==1);
+            int stemFiles=0;for(const auto& entry:std::filesystem::directory_iterator(dir)){(void)entry;++stemFiles;}
+            CHECK(stemFiles==1);
+        }
     }
     // Loudness meter: ITU-R BS.1770 reference behaviour and true-peak physics.
     {   std::vector<float> sine; for(size_t i=0;i<48000;++i){const float v=std::sin(2.0f*3.14159265f*1000.0f*float(i)/48000.0f);sine.push_back(v);sine.push_back(v);}

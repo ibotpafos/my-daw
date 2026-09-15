@@ -1010,6 +1010,22 @@ daw_export_job* daw_begin_stem_export(daw_session* s,const char* directory,int32
         auto handle=std::make_unique<daw_export_job>();handle->result=daw::startStemExport(s->model.state(),required(directory),exportFormat(format),exportOptions(options));job=handle.release();
     });return job;
 }
+daw_export_job* daw_begin_stem_export_tracks(daw_session* s,const char* directory,int32_t format,const daw_export_options* options,const uint64_t* trackIds,uint32_t trackCount) {
+    daw_export_job* job=nullptr;guard(s,[&]{
+        const auto& state=s->model.state();std::vector<uint64_t> only;
+        if(trackCount&&!trackIds)throw daw::Error("Stem track ids missing");
+        if(trackIds&&trackCount){
+            for(uint32_t i=0;i<trackCount;++i){
+                const uint64_t id=trackIds[i];
+                const bool known=std::any_of(state.tracks.begin(),state.tracks.end(),[id](const auto& t){return t.id==id;});
+                if(!known)throw daw::Error("Stem track id not found");
+                if(std::find(only.begin(),only.end(),id)!=only.end())throw daw::Error("Duplicate stem track id");
+                only.push_back(id);
+            }
+        }
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startStemExport(state,required(directory),exportFormat(format),exportOptions(options),std::move(only));job=handle.release();
+    });return job;
+}
 int daw_measure_wav(daw_session* s,const char* path,daw_loudness_report* out){return guard(s,[&]{
     if(!out||out->struct_size!=sizeof(daw_loudness_report))throw daw::Error("Loudness report ABI mismatch");
     const auto clip=daw::readWav(required(path));
