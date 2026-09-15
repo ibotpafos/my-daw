@@ -570,6 +570,19 @@ void Session::setMidiNotes(uint64_t trackID,uint32_t index,std::vector<MidiNote>
     auto& clip=scope.track->midiClips[index]; if(clip.notes==notes)return;
     clip.notes=std::move(notes); commit(std::move(next));
 }
+void Session::appendMidiNotes(uint64_t trackID,uint32_t index,const std::vector<MidiNote>& batch,uint64_t expected) {
+    check(expected); if(batch.empty())return;
+    // Refuse an oversized batch before the whole State is copied. validate()
+    // still owns the project-wide note budget for every accepted append.
+    if(batch.size()>kMaxMidiNotesPerProject)throw Error("A single MIDI append supports at most 65536 notes");
+    State next=current; auto scope=findMidiTrack(next,trackID,index);
+    // The clip window never grows and capture order is preserved verbatim: a
+    // note that does not fit whole inside the clip fails validate(), and an
+    // append that pushes the project over its note budget fails there too,
+    // before the authoritative state or its revision changes.
+    auto& notes=scope.track->midiClips[index].notes;
+    notes.insert(notes.end(),batch.begin(),batch.end()); commit(std::move(next));
+}
 void Session::moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected) {
     check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
     auto& clip=scope.track->midiClips[index]; if(clip.start==newStart)return;

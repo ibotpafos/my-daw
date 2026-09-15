@@ -108,4 +108,84 @@ std::vector<std::shared_ptr<const Clip>> splitLoopPasses(const Clip& recording,u
     for(uint64_t begin=0;begin<frames;begin+=loopFrames){const auto count=std::min(loopFrames,frames-begin);std::vector<float> samples(count*2);std::copy_n(recording.samples().begin()+static_cast<std::ptrdiff_t>(begin*2),static_cast<std::ptrdiff_t>(count*2),samples.begin());passes.push_back(std::make_shared<const Clip>(std::move(samples)));}
     if(passes.empty())throw Error("Recording contains no audio frames");return passes;
 }
+
+namespace {
+// A recorded length is always at least one frame and never longer than the
+// domain single-note limit, so a take can only ever yield notes that pass the
+// length rule of validate() on their own.
+uint64_t recordedLength(uint64_t start,uint64_t end) noexcept {
+    if(end<=start)return 1;
+    return std::min(end-start,kMaxMidiNoteLength);
+}
+}
+
+void MidiRecorder::arm(uint64_t trackID,uint32_t clipIndex) noexcept {
+    // A take is a buffer, never an accumulator: arming over an armed recorder
+    // discards the previous take and its counters.
+    open_.clear(); committed_.clear();
+    lastFrame_=0; dropped_=0; unmatched_=0;
+    trackID_=trackID; clipIndex_=clipIndex; armed_=true;
+}
+
+void MidiRecorder::disarm() noexcept {
+    open_.clear(); committed_.clear(); lastFrame_=0; armed_=false;
+}
+
+void MidiRecorder::closeNote(const OpenNote& held,uint64_t end) noexcept {
+    committed_.push_back({held.start,recordedLength(held.start,end),held.pitch,held.channel,held.velocity});
+}
+
+void MidiRecorder::feed(const RecordedMidiEvent* events,uint64_t count) {
+    if(!armed_||!events)return;
+    for(uint64_t index=0;index<count;++index){
+        const auto& event=events[index];
+        // Quantization v0 is the identity on frames: the caller already rounded
+        // host time to the nearest project frame and snapped nothing. A late
+        // packet is clamped forward instead of moving an earlier note back.
+        const auto frame=std::max(event.frame,lastFrame_);
+        if(event.noteOff){
+            // Newest match first, so a pitch held twice closes last-in/first-out
+            // the way a performance keyboard expects.
+            size_t match=open_.size();
+            for(size_t candidate=open_.size();candidate-- > 0;)
+                if(open_[candidate].pitch==event.pitch&&open_[candidate].channel==event.channel){match=candidate;break;}
+            if(match==open_.size()){++unmatched_;continue;} // a dropped on is not a note
+            const auto held=open_[match];
+            open_.erase(open_.begin()+static_cast<std::ptrdiff_t>(match));
+            lastFrame_=frame;
+            closeNote(held,frame);
+            continue;
+        }
+        // A note on with no velocity is the 0x90/0x00 case capture normalises to
+        // an off, so reaching here means a malformed event; refusing it protects
+        // the whole batch from one bad note. A refused event never moves the
+        // capture clock, so garbage cannot push later notes out of the clip.
+        if(event.velocity<1||event.velocity>127||event.pitch>127||event.channel>15||frame>=kMaxMidiFrame
+            ||open_.size()+committed_.size()>=kMaxTakeNotes){++dropped_;continue;}
+        lastFrame_=frame;
+        open_.push_back({frame,event.pitch,event.channel,event.velocity});
+    }
+}
+
+std::vector<MidiNote> MidiRecorder::stop(uint64_t stopFrame){
+    // The transport and the capture clock differ by up to a buffer, so the
+    // closing frame can never precede material already captured. Keys still
+    // held down end here rather than becoming invalid zero-length notes.
+    const auto end=std::min(std::max(stopFrame,lastFrame_),kMaxMidiFrame-1);
+    for(const auto& held:open_)closeNote(held,end);
+    open_.clear();
+    armed_=false;
+    std::vector<MidiNote> batch;
+    batch.swap(committed_);
+    return batch;
+}
+
+bool midiRecordBatchFits(const MidiClip& clip,const std::vector<MidiNote>& batch){
+    for(const auto& note:batch){
+        if(note.pitch>127||note.channel>15||note.velocity<1||note.velocity>127)return false;
+        if(!note.length||note.length>kMaxMidiNoteLength)return false;
+        if(note.start>clip.length||note.length>clip.length-note.start)return false;
+    }
+    return true;
+}
 }

@@ -191,6 +191,15 @@ public:
     void addMidiClip(uint64_t trackID,MidiClip clip,uint64_t expected);
     void removeMidiClip(uint64_t trackID,uint32_t index,uint64_t expected);
     void setMidiNotes(uint64_t trackID,uint32_t index,std::vector<MidiNote> notes,uint64_t expected);
+    // Live-record append: adds every note of `batch` to the end of the clip's
+    // existing note vector under exactly the same validate() rules as the other
+    // MIDI commands. Capture order is preserved verbatim — the model never
+    // requires a sorted lane, only that clips stay disjoint and each note fits
+    // whole inside its own clip. The clip window is never grown, so a note past
+    // its end is rejected just as it would be by setMidiNotes. One batch is
+    // bounded by the project note budget, an empty batch is a silent no-op, and
+    // a committed append is one undo entry.
+    void appendMidiNotes(uint64_t trackID,uint32_t index,const std::vector<MidiNote>& batch,uint64_t expected);
     void moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected);
     void trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t expected);
     void splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected);
