@@ -89,6 +89,7 @@ struct daw_session {
     // change, and nothing of it is persisted into the project.
     bool metronomeEnabled=false;
     uint64_t recordPrerollFrames=0;
+    bool recordMonitor=false;
     char error[512] = {};
 };
 struct daw_save_job { std::shared_ptr<daw::SaveResult> result; };
@@ -282,7 +283,7 @@ void startRecording(daw_session* s,uint64_t startFrame,const char* recoveryPath,
     if(audioAssets>=32)throw daw::Error("Prototype supports at most 32 takes");constexpr size_t byteLimit=64*1024*1024;if(audioBytes>=byteLimit)throw daw::Error("No project capacity remains for recording");auto memoryFrames=(byteLimit-audioBytes)/(2*sizeof(float));auto timelineFrames=48000*600-startFrame;auto capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),timelineFrames});
     const bool loopRecording=target&&s->loopEnabled;if(loopRecording){if(startFrame!=s->loopStart)throw daw::Error("Loop recording must start at the loop boundary");const auto loopFrames=s->loopEnd-s->loopStart;const auto takeSlots=std::min<size_t>(15-targetTrack->takes.size(),32-audioAssets);capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),loopFrames*takeSlots});}
     if(!capacity)throw daw::Error("No project capacity remains for recording");if(s->output){s->output->stop();s->output.reset();}auto path=std::string(required(recoveryPath));if(path.empty())throw daw::Error("Missing recording recovery path");
-    if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd,s->recordPrerollFrames);duplex->renderer.setMetronome(s->metronomeEnabled);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
+    if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd,s->recordPrerollFrames,s->recordMonitor);duplex->renderer.setMetronome(s->metronomeEnabled);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
     s->recordStart=startFrame;s->recordTarget=target;s->selectedFrame=startFrame;s->recordLastCallbacks=0;s->lastCallbacks=0;s->recordProgress=std::chrono::steady_clock::now();s->lastProgress=s->recordProgress;
 }
 void validateInsertOwner(int32_t owner,uint64_t ownerID){
@@ -906,6 +907,8 @@ int daw_set_record_preroll(daw_session* s,uint64_t frames){return guard(s,[&]{
     s->recordPrerollFrames=frames;
 });}
 int daw_get_record_preroll(daw_session* s,uint64_t* out){return guard(s,[&]{if(!out)throw daw::Error("Pre-roll output required");*out=s->recordPrerollFrames;});}
+int daw_set_record_monitor(daw_session* s,int32_t on){return guard(s,[&]{if(on!=0&&on!=1)throw daw::Error("Record monitor must be 0 or 1");s->recordMonitor=on!=0;});}
+int daw_get_record_monitor(daw_session* s,int32_t* out){return guard(s,[&]{if(!out)throw daw::Error("Monitor output required");*out=s->recordMonitor?1:0;});}
 int daw_set_metronome(daw_session* s,int32_t on){return guard(s,[&]{
     if(on!=0&&on!=1)throw daw::Error("Metronome must be 0 or 1");
     s->metronomeEnabled=on!=0;

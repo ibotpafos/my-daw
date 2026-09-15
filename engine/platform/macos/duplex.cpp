@@ -19,6 +19,7 @@ class MacDuplex final:public Duplex {
     static constexpr UInt32 maxSlice=4096;
     State snapshot;
     uint64_t capacityFrames=0,startFrame=0,loopStart=0,loopEnd=0,prerollFrames=0;
+    bool monitorOn=false;
     std::string recoveryPath;
     AudioUnit unit=nullptr;AudioDeviceID device=0;
     std::unique_ptr<RecordingWriter> capture;
@@ -34,11 +35,12 @@ class MacDuplex final:public Duplex {
         auto status=AudioUnitRender(self.unit,flags,time,1,frames,&input);if(status!=noErr){silence(output);self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return status;}
         self.capture->writeMono(self.inputScratch.data(),frames);
         self.renderer.render(static_cast<float*>(output->mBuffers[0].mData),static_cast<float*>(output->mBuffers[1].mData),frames);
+        if(self.monitorOn){auto* outLeft=static_cast<float*>(output->mBuffers[0].mData);auto* outRight=static_cast<float*>(output->mBuffers[1].mData);const float* in=self.inputScratch.data();for(uint32_t f=0;f<frames;++f){outLeft[f]+=in[f];outRight[f]+=in[f];}}
         self.callbackCount.fetch_add(1,std::memory_order_relaxed);return noErr;
     }
     void shutdown(OutputState reason) noexcept {active=false;renderer.playing.store(false);if(unit){AudioOutputUnitStop(unit);AudioUnitUninitialize(unit);AudioComponentInstanceDispose(unit);unit=nullptr;}device=0;outputState.store(static_cast<uint32_t>(reason));}
 public:
-    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish,uint64_t preroll):snapshot(state),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),prerollFrames(preroll),recoveryPath(std::move(path)){}
+    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish,uint64_t preroll,bool monitor):snapshot(state),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),prerollFrames(preroll),monitorOn(monitor),recoveryPath(std::move(path)){}
     ~MacDuplex() override {cancel();}
     void start() override {
         if(active)throw Error("Recording is already active");
@@ -70,5 +72,5 @@ public:
     OutputTelemetry telemetry() const noexcept override{return {static_cast<OutputState>(outputState.load()),device,generation.load(),renderer.callbacks.load(),callbackErrors.load()};}
 };
 }
-std::unique_ptr<Duplex> makeDuplex(const State& state,uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,uint64_t loopStart,uint64_t loopEnd,uint64_t prerollFrames){return std::make_unique<MacDuplex>(state,capacityFrames,recoveryPath,startFrame,loopStart,loopEnd,prerollFrames);}
+std::unique_ptr<Duplex> makeDuplex(const State& state,uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,uint64_t loopStart,uint64_t loopEnd,uint64_t prerollFrames,bool monitorInput){return std::make_unique<MacDuplex>(state,capacityFrames,recoveryPath,startFrame,loopStart,loopEnd,prerollFrames,monitorInput);}
 }

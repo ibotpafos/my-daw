@@ -396,6 +396,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     // любой команды, способной пересоздать граф.
     var metronomeOn = false
     let metronomeButton = NSButton(title: "", target: nil, action: nil)
+    // Мониторинг входа: прямой моно-сигнал микрофона в оба канала во время
+    // луп-записи; флаг живёт в мосте как метроном, в проект не пишется.
+    var recordMonitorOn = false
+    let recordMonitorButton = NSButton(title: "MON", target: nil, action: nil)
     // MIDI-захват: открыт ли вход и идёт ли тейк — вопросы моста, здесь кэш
     // показаний daw_midi_input_active/daw_midi_record_status для инспектора.
     var midiInputID: UInt32 = 0
@@ -581,6 +585,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         resolveImportButton.toolTip = "Продолжить готовый импорт WAV"; resolveImportButton.setAccessibilityLabel("Продолжить готовый импорт WAV"); resolveImportButton.setAccessibilityHelp("Повторно запускает готовый импорт для текущей ревизии проекта")
         updateRecordButton(false); styleIconButton(playButton, icon: .play); styleIconButton(stopButton, icon: .stop); styleIconButton(loopButton, icon: .loop); styleIconButton(undoButton, icon: .undo); styleIconButton(redoButton, icon: .redo)
         styleIconButton(metronomeButton, icon: .metronome)
+        recordMonitorButton.setButtonType(.toggle)
+        recordMonitorButton.font = .systemFont(ofSize: 10, weight: .semibold)
+        recordMonitorButton.target = self; recordMonitorButton.action = #selector(toggleRecordMonitor(_:))
+        recordMonitorButton.toolTip = "Мониторинг входа: прямой сигнал микрофона в наушники во время записи"
+        recordMonitorButton.setAccessibilityLabel("Кнопка мониторинга входа")
+        recordMonitorButton.setAccessibilityHelp("Включает слышимость входа только во время луп-записи: моно-сигнал подаётся в оба канала с unity-уровнем до эффектов и без затухания. Одиночный входной захват его игнорирует.")
         metronomeButton.target = self; metronomeButton.action = #selector(toggleMetronome(_:)); metronomeButton.setButtonType(.toggle)
         metronomeButton.toolTip = "Метроном: клик только в мониторинге, в экспорт не попадает"; metronomeButton.setAccessibilityHelp("Переключает клик метронома в живом звуке. Флаг принадлежит сессии, поэтому следующий play подхватит его без повтора. В проект не сохраняется.")
         styleIconButton(importButton, icon: .importAudio);styleIconButton(addTrackButton, icon: .addTrack);styleIconButton(addBusButton, icon: .addBus);styleIconButton(workflowButton, icon: .workflow)
@@ -646,7 +656,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let arrangementSplit=NSSplitView();self.arrangementInspectorSplit=arrangementSplit;arrangementSplit.delegate=self;arrangementSplit.isVertical=true;arrangementSplit.dividerStyle = .thin;arrangementSplit.addArrangedSubview(trackTimelineSplit);arrangementSplit.addArrangedSubview(inspectorBrowser)
         let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
-        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton]);transportControls.spacing=4;transportControls.alignment = .centerY
+        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton,recordMonitorButton]);transportControls.spacing=4;transportControls.alignment = .centerY
         let statusBar=NSStackView(views:[summary,status,gridLabel,flexibleSpace(),transportControls,transportLabel,positionLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         gridLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
@@ -951,6 +961,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         refreshMidiCapture()
     }
+    @objc func toggleRecordMonitor(_ sender: NSButton) {
+        let wanted: Int32 = recordMonitorOn ? 0 : 1
+        guard check(daw_set_record_monitor(session, wanted)) else { syncRecordMonitorButton(); return }
+        recordMonitorOn = wanted != 0
+        syncRecordMonitorButton()
+        status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время луп-записи" : "Мониторинг входа выключен"
+    }
+    func syncRecordMonitorButton() { recordMonitorButton.state = recordMonitorOn ? .on : .off }
     @objc func toggleMetronome(_ sender: NSButton) {
         let wanted: Int32 = metronomeOn ? 0 : 1
         guard check(daw_set_metronome(session, wanted)) else { syncMetronomeButton(); return }

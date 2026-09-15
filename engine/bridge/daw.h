@@ -536,6 +536,12 @@ int daw_midi_record_status(daw_session*, daw_midi_record_status_t* out);
  * so the setting is ignored there. 0 disables pre-roll; up to 30 seconds. */
 int daw_set_record_preroll(daw_session*, uint64_t preroll_frames);
 int daw_get_record_preroll(daw_session*, uint64_t* preroll_frames);
+/* Direct input monitor during loop (duplex) recording: the captured mono
+ * feed is summed into both output channels at unity right after the render.
+ * Plain input-only capture has no output path, so the flag is ignored there.
+ * Session-scoped like pre-roll; 0 is the default. */
+int daw_set_record_monitor(daw_session*, int32_t on);
+int daw_get_record_monitor(daw_session*, int32_t* on);
 int daw_set_metronome(daw_session*, int32_t on);
 int daw_get_metronome(daw_session*, int32_t* on);
 /* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0

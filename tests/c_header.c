@@ -284,6 +284,13 @@ int main(void) {
     if (daw_package_project(session, "/nonexistent/mydaw.draft", "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
     if (daw_package_project(session, NULL, "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
     if (daw_extract_package(session, "/tmp/mydaw-pkg-gate.zip", NULL) == 0) result |= 1;
+    /* Record monitor: only 0/1 legal, the getter mirrors, NULL rejects. */
+    if (daw_set_record_monitor(session, 2) == 0) result |= 1;
+    if (daw_set_record_monitor(session, 1) != 0) result |= 1;
+    int32_t monitor = 0;
+    if (daw_get_record_monitor(session, &monitor) != 0 || monitor != 1) result |= 1;
+    if (daw_get_record_monitor(session, NULL) == 0) result |= 1;
+    if (daw_set_record_monitor(session, 0) != 0) result |= 1;
     /* Track-filtered stems reject before touching the filesystem: unknown id,
      * NULL ids with a count, and duplicate ids all return no job. */
     uint64_t ghost_track = 4242;
