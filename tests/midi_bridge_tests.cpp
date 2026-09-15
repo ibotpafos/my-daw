@@ -10,7 +10,7 @@
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("Failed: " #x); } while (false)
 
 static_assert(sizeof(daw_midi_note)==32,"note ABI");
-static_assert(sizeof(daw_midi_clip)==32,"clip ABI");
+static_assert(sizeof(daw_midi_clip)==40,"clip ABI");
 
 int main() { try {
     std::unique_ptr<daw_session,decltype(&daw_destroy)> session(daw_create(),daw_destroy);
@@ -91,7 +91,7 @@ int main() { try {
     clip=meta(0,48000,0,0);
     auto badSize=clip; badSize.struct_size=sizeof(clip)-4;
     CHECK(daw_add_midi_clip(s,1,&badSize,nullptr,0,revision())!=0);
-    auto badVersion=clip; badVersion.version=2;
+    auto badVersion=clip; badVersion.version=DAW_MIDI_CLIP_VERSION+1;
     CHECK(daw_add_midi_clip(s,1,&badVersion,nullptr,0,revision())!=0);
     CHECK(daw_add_midi_clip(s,1,&clip,notes,2,revision())!=0); // note_count != supplied count
     CHECK(daw_add_midi_clip(s,1,&clip,nullptr,3,revision())!=0); // missing array

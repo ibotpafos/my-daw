@@ -127,6 +127,9 @@ class Renderer {
     size_t gainIndex = 0;
     std::shared_ptr<const Clip> clip;
     uint64_t start = 0, offset = 0, length = 0, fadeIn = 0, fadeOut = 0;
+    // Per-region clip gain, pre-converted to linear. An untouched region
+    // carries 0 dB and therefore multiplies by exactly 1.0.
+    float gain = 1.0f;
   };
   struct SendRoute {
     size_t track = 0, bus = 0;

@@ -135,6 +135,21 @@ int main(){try{
     crossfade.setCrossfade(1,0,0,3);CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500},{500,500,500}}));
     crossfade.undo(4);CHECK(crossfade.state().tracks[0].regions[1].start==400);crossfade.redo(5);CHECK(crossfade.state().tracks[0].regions[1].start==500);
     crossfade.undo(6);CHECK(crossfade.state().tracks[0].regions[1].start==400);rejects([&]{crossfade.setCrossfade(1,0,600,7);});
+    // Per-region clip gain folds into the voice mix: -6.0206 dB halves the level.
+    {   daw::Session clipGain;clipGain.import("G",constantClip,0);
+        clipGain.setClipGain(1,0,-6.020599913,1);CHECK(clipGain.state().tracks[0].regions[0].gain==-6.020599913);
+        daw::Renderer gainRenderer;gainRenderer.prepare(clipGain.state());gainRenderer.playing=true;
+        std::vector<float> gainLeft(300),gainRight(300);gainRenderer.render(gainLeft.data(),gainRight.data(),300);
+        for(size_t i=0;i<300;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(gainLeft[i]-0.25f*smoothed)<0.00002f&&gainLeft[i]==gainRight[i]);}
+        clipGain.setClipGain(1,0,-6.020599913,2);CHECK(clipGain.state().revision==2);  // identical: silent no-op
+        rejects([&]{clipGain.setClipGain(1,0,20.0,2);});
+    }
+    // An explicit fade-in ramp rides the same mix-in: env = local / (fadeIn - 1).
+    {   daw::Session fades;fades.import("F",constantClip,0);fades.setClipFades(1,0,100,0,1);
+        daw::Renderer fadeRenderer;fadeRenderer.prepare(fades.state());fadeRenderer.playing=true;
+        std::vector<float> fadeLeft(200),fadeRight(200);fadeRenderer.render(fadeLeft.data(),fadeRight.data(),200);
+        for(size_t i=0;i<200;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));const auto env=i<99?float(i)/99.0f:1.0f;CHECK(std::abs(fadeLeft[i]-0.5f*smoothed*env)<0.00002f);}
+    }
     std::vector<float> mixA(6000),mixB(6000);for(size_t i=0;i<3000;++i){mixA[i*2]=0.4f;mixA[i*2+1]=0.2f;mixB[i*2]=0.1f;mixB[i*2+1]=0.3f;}
     daw::Session mixer;mixer.import("A",std::make_shared<const daw::Clip>(std::move(mixA)),0);mixer.import("B",std::make_shared<const daw::Clip>(std::move(mixB)),1);mixer.pan(1,-1,2);mixer.pan(2,1,3);mixer.masterGain(-6.020599913,4);
     auto mixedLast=[&]{daw::Renderer r;r.prepare(mixer.state());r.playing=true;std::vector<float> l(2048),rr(2048);r.render(l.data(),rr.data(),2048);return std::pair{l.back(),rr.back()};};

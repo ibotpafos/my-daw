@@ -24,12 +24,12 @@ _Static_assert(DAW_IMPORT_RUNNING == 0 && DAW_IMPORT_READY == 1 && DAW_IMPORT_FA
 _Static_assert(DAW_IMPORT_PHASE_NONE == 0 && DAW_IMPORT_PHASE_READING == 1 && DAW_IMPORT_PHASE_DECODING == 2 && DAW_IMPORT_PHASE_CONVERTING == 3 && DAW_IMPORT_PHASE_READY == 4, "import phase ABI values");
 _Static_assert(offsetof(daw_import_status, struct_size) == 0, "import status prefix");
 _Static_assert(sizeof(daw_import_status) == 568, "import status ABI size");
-_Static_assert(DAW_MIDI_NOTE_VERSION == 1 && DAW_MIDI_CLIP_VERSION == 1, "MIDI ABI versions");
+_Static_assert(DAW_MIDI_NOTE_VERSION == 1 && DAW_MIDI_CLIP_VERSION == 2, "MIDI ABI versions");
 _Static_assert(DAW_MIDI_NOTES_PER_CALL == 8192, "MIDI per-call limit");
 _Static_assert(offsetof(daw_midi_note, struct_size) == 0, "MIDI note prefix");
 _Static_assert(sizeof(daw_midi_note) == 32, "MIDI note ABI size");
 _Static_assert(offsetof(daw_midi_clip, struct_size) == 0, "MIDI clip prefix");
-_Static_assert(sizeof(daw_midi_clip) == 32, "MIDI clip ABI size");
+_Static_assert(sizeof(daw_midi_clip) == 40, "MIDI clip ABI size");
 _Static_assert(DAW_MIDI_DEVICE_VERSION == 1 && DAW_MIDI_RECORD_STATUS_VERSION == 1, "MIDI capture ABI versions");
 _Static_assert(offsetof(daw_midi_device, struct_size) == 0 && offsetof(daw_midi_device, uniqueID) == 8 && offsetof(daw_midi_device, name) == 16, "MIDI device prefix and name placement");
 _Static_assert(sizeof(daw_midi_device) == 148, "MIDI device ABI size");
@@ -88,6 +88,36 @@ int main(void) {
     daw_midi_note bad_note = notes[0]; bad_note.pitch = 128;
     if (daw_add_midi_clip(session, 2, &clip, &bad_note, 1, 10) == 0) result |= 1;
     if (daw_get_midi_clip(session, 2, 0, &bad, 0, read_notes, DAW_MIDI_NOTES_PER_CALL + 1, &written) == 0) result |= 1;
+    /* ---- Clip/track editing ABI smoke (project schema v19): current revision 10 ---- */
+    result |= daw_add_track(session, "Clip bridge", 10);                      /* rev 11, track id 3 */
+    result |= daw_set_track_color(session, 3, 0xABCDEFu, 11);                 /* rev 12 */
+    daw_track colored = {0}; colored.struct_size = sizeof(colored);
+    result |= daw_get_track(session, 1, &colored);                            /* [Midi bridge, Clip bridge] */
+    if (colored.id != 3 || colored.color != 0xABCDEFu) result |= 1;
+    uint64_t duplicate_id = 0;
+    result |= daw_duplicate_track(session, 3, &duplicate_id, 12);             /* rev 13 */
+    if (duplicate_id == 3 || duplicate_id == 0) result |= 1;
+    daw_snapshot after_dup = {0}; after_dup.struct_size = sizeof(after_dup);
+    result |= daw_get_snapshot(session, &after_dup);
+    if (after_dup.track_count != 3) result |= 1;
+    if (daw_set_clip_color(session, 3, 0, 0x1u, 13) == 0) result |= 1;        /* no regions: rejected */
+    if (daw_set_clip_gain(session, 3, 0, -3.0, 13) == 0) result |= 1;         /* ditto, no revision spent */
+    if (daw_duplicate_track(session, 3, NULL, 13) == 0) result |= 1;          /* missing out param is refused */
+    result |= daw_set_midi_clip_color(session, 2, 0, 0x10203u, 13);           /* rev 14 */
+    result |= daw_get_midi_clip(session, 2, 0, &clip, 0, NULL, 0, NULL);      /* metadata-only read */
+    if (clip.color != 0x10203u) result |= 1;
+    result |= daw_append_midi_notes(session, 2, 0, notes, 1, 14);             /* rev 15: the undo-restored clip is empty */
+    result |= daw_transpose_midi_clip(session, 2, 0, 2, 15);                  /* rev 16: 60 -> 62 */
+    result |= daw_get_midi_clip(session, 2, 0, &clip, 0, read_notes, 2, &written);
+    if (clip.note_count != 1 || written != 1 || read_notes[0].pitch != 62 || read_notes[0].start != 100) result |= 1;
+    result |= daw_quantize_midi_clip(session, 2, 0, 1.0, 16);                 /* rev 17: note start 100 -> 0 */
+    result |= daw_get_midi_clip(session, 2, 0, &clip, 0, read_notes, 2, &written);
+    if (read_notes[0].start != 0) result |= 1;
+    if (daw_transpose_midi_clip(session, 2, 0, 128, 17) == 0) result |= 1;    /* out-of-int8 range refused */
+    if (daw_quantize_midi_clip(session, 2, 0, 0.0, 17) == 0) result |= 1;     /* zero grid refused */
+    daw_snapshot held = {0}; held.struct_size = sizeof(held);
+    result |= daw_get_snapshot(session, &held);
+    if (held.revision != 17) result |= 1;                                     /* the two rejects spent nothing */
     /* Undo(9) left a MIDI-only session; since the instrument-voice rule (MIDI clips or
        inserts make a track renderable) such a project previews as silent, not error. */
     if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 0) result |= 1;

@@ -72,8 +72,8 @@ int daw_poll_dawproject_export(daw_dawproject_job*,daw_dawproject_status*);
 void daw_cancel_dawproject_export(daw_dawproject_job*);
 void daw_release_dawproject_export(daw_dawproject_job*);
 typedef struct { uint32_t struct_size; uint64_t revision; uint32_t track_count; int32_t can_undo; int32_t can_redo; double master_gain_db; uint32_t bus_count; uint32_t master_insert_count; } daw_snapshot;
-typedef struct { uint32_t struct_size; uint64_t id; double gain_db; char name[481]; uint64_t audio_frames; uint32_t clip_count; double pan; int32_t muted; int32_t solo; uint32_t take_count; uint64_t output_bus_id; uint32_t send_count; } daw_track;
-typedef struct { uint32_t struct_size; uint64_t start; uint64_t source_offset; uint64_t length; uint64_t fade_in; uint64_t fade_out; uint32_t take_index; } daw_clip;
+typedef struct { uint32_t struct_size; uint64_t id; double gain_db; char name[481]; uint64_t audio_frames; uint32_t clip_count; double pan; int32_t muted; int32_t solo; uint32_t take_count; uint64_t output_bus_id; uint32_t send_count; uint32_t color; } daw_track;
+typedef struct { uint32_t struct_size; uint64_t start; uint64_t source_offset; uint64_t length; uint64_t fade_in; uint64_t fade_out; uint32_t take_index; uint32_t color; double gain_db; } daw_clip;
 typedef struct { uint32_t struct_size; uint32_t index; uint64_t start; uint64_t frames; char name[481]; } daw_take;
 typedef struct { uint32_t struct_size; uint64_t id; double gain_db; double pan; int32_t muted; uint64_t output_bus_id; char name[481]; } daw_bus;
 typedef struct { uint32_t struct_size; uint64_t bus_id; double gain_db; int32_t pre_fader; } daw_send;
@@ -216,6 +216,17 @@ int daw_duplicate_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uin
 int daw_delete_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t expected_revision);
 int daw_set_clip_fades(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t fade_in, uint64_t fade_out, uint64_t expected_revision);
 int daw_set_crossfade(daw_session*,uint64_t track_id,uint32_t left_clip_index,uint64_t duration,uint64_t expected_revision);
+/* Clip/track editing surface (project schema v19). Colors are 24-bit RGB
+ * packed as 0xRRGGBB; 0 means "no user color". Clip gain is dB at the mix-in
+ * with the same -60..12 dB clamp the domain applies to track gain. All of
+ * these follow the usual rules: expected_revision, silent no-op on an
+ * identical value, one revision and one Undo entry per committed command. */
+int daw_set_track_color(daw_session*,uint64_t track_id,uint32_t color,uint64_t expected_revision);
+/* Duplicates the whole track (clips, takes, routing, automation, inserts and
+ * MIDI clips) in one revision; the fresh track ID is reported via out_new_id. */
+int daw_duplicate_track(daw_session*,uint64_t track_id,uint64_t* out_new_id,uint64_t expected_revision);
+int daw_set_clip_color(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t color,uint64_t expected_revision);
+int daw_set_clip_gain(daw_session*,uint64_t track_id,uint32_t clip_index,double gain_db,uint64_t expected_revision);
 int daw_seek_frame(daw_session*, uint64_t frame);
 /* Loop is ephemeral transport state over a half-open [start,end) frame range.
  * Changing it stops playback. Pass enabled=0 to clear; start/end are ignored. */
@@ -369,10 +380,11 @@ void daw_cancel_insert_parameter_automation_gesture(daw_session*);
  * notes before touching the domain; the domain owns full timeline validation. */
 enum { DAW_MIDI_NOTE_VERSION = 1 };
 typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; uint8_t pitch; uint8_t channel; uint8_t velocity; } daw_midi_note;
-enum { DAW_MIDI_CLIP_VERSION = 1 };
+enum { DAW_MIDI_CLIP_VERSION = 2 };
 /* lane is the editor row of the clip, not a track reference. note_count is
- * only filled by the caller when supplying the notes array to add. */
-typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; int32_t lane; uint32_t note_count; } daw_midi_clip;
+ * only filled by the caller when supplying the notes array to add. Version 2
+ * carries the clip color (RGB packed in the low 24 bits; 0 means unset). */
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; int32_t lane; uint32_t note_count; uint32_t color; } daw_midi_clip;
 /* A read of at most 8192 notes per call; note_offset pages larger clips. */
 enum { DAW_MIDI_NOTES_PER_CALL = 8192 };
 /* Adds one clip (with its whole note array) to the track in one revision. */
@@ -380,6 +392,16 @@ int daw_add_midi_clip(daw_session*, uint64_t track_id, const daw_midi_clip* clip
 int daw_remove_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t expected_revision);
 /* Replaces the full note array of one clip; empty notes clears the clip. */
 int daw_set_midi_notes(daw_session*, uint64_t track_id, uint32_t clip_index, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
+/* Appends the batch after the clip's existing notes in one revision — the
+ * manual-edit counterpart of the live-capture stop path. The clip window
+ * never grows; a note that no longer fits whole rejects the whole batch. */
+int daw_append_midi_notes(daw_session*, uint64_t track_id, uint32_t clip_index, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
+/* Clip color, semitone transposition (each pitch clamps to 0..127) and grid
+ * quantization: note starts snap to the nearest multiple of grid_beats on the
+ * tempo map; grid_beats must be > 0 (0.25 = 1/16 in 4/4 terms). */
+int daw_set_midi_clip_color(daw_session*, uint64_t track_id, uint32_t clip_index, uint32_t color, uint64_t expected_revision);
+int daw_transpose_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, int32_t semitones, uint64_t expected_revision);
+int daw_quantize_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, double grid_beats, uint64_t expected_revision);
 int daw_move_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t new_start, uint64_t expected_revision);
 /* Growing shifts clip-relative notes with the window; shrinking drops notes
  * that no longer fit whole. Both parts after a split stay within bounds. */

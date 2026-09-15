@@ -436,7 +436,8 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
         const auto source =
             region.take == 0 ? track.audio : track.takes[region.take - 1].audio;
         nextVoices.push_back({i, source, region.start, region.sourceOffset,
-                              region.length, region.fadeIn, region.fadeOut});
+                              region.length, region.fadeIn, region.fadeOut,
+                              gain(region.gain)});
         end = std::max(end, region.start + region.length);
       }
     } else if (!track.midiClips.empty() || !track.inserts.empty()) {
@@ -1042,6 +1043,9 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
                                              : float(voice.length - 1 - local) /
                                                    float(voice.fadeOut - 1));
           const auto &pcm = voice.clip->samples();
+          // Envelope and per-clip gain fold into one scalar; both are
+          // prepared off-thread so the callback only multiplies.
+          envelope *= voice.gain;
           trackBlockLeft[voice.gainIndex * kRenderBlockFrames + f] +=
               pcm[source * 2] * envelope;
           trackBlockRight[voice.gainIndex * kRenderBlockFrames + f] +=

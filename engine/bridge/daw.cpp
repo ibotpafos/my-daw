@@ -448,7 +448,7 @@ int daw_get_snapshot(daw_session* s, daw_snapshot* out) { return guard(s, [&]{
 int daw_get_track(daw_session* s, uint32_t index, daw_track* out) { return guard(s, [&]{
     if (!out || out->struct_size != sizeof(daw_track)) throw daw::Error("Track ABI mismatch");
     if (index >= s->model.state().tracks.size()) throw daw::Error("Track index out of range");
-    const auto& t=s->model.state().tracks[index]; out->id=t.id; out->gain_db=t.gain; out->audio_frames=t.audio?t.audio->frames():0; out->clip_count=static_cast<uint32_t>(t.regions.size());out->pan=t.pan;out->muted=t.muted;out->solo=t.solo;out->take_count=t.audio?static_cast<uint32_t>(t.takes.size()+1):0;out->output_bus_id=t.outputBus;out->send_count=static_cast<uint32_t>(t.sends.size());
+    const auto& t=s->model.state().tracks[index]; out->id=t.id; out->gain_db=t.gain; out->audio_frames=t.audio?t.audio->frames():0; out->clip_count=static_cast<uint32_t>(t.regions.size());out->pan=t.pan;out->muted=t.muted;out->solo=t.solo;out->take_count=t.audio?static_cast<uint32_t>(t.takes.size()+1):0;out->output_bus_id=t.outputBus;out->send_count=static_cast<uint32_t>(t.sends.size());out->color=t.color;
     std::memset(out->name,0,sizeof(out->name)); std::memcpy(out->name,t.name.data(),t.name.size());
 }); }
 int daw_add_track(daw_session* s,const char* name,uint64_t rev) { return guard(s,[&]{s->model.add(required(name),rev);cancelStalePlaybackPreparation(s);}); }
@@ -680,8 +680,15 @@ int daw_add_midi_clip(daw_session* s,uint64_t trackID,const daw_midi_clip* clip,
     if(clip->note_count!=noteCount)throw daw::Error("MIDI clip note_count must match the supplied note array");
     validateMidiNoteArray(notes,noteCount);
     std::vector<daw::MidiNote> converted;toDomainNotes(notes,noteCount,converted);
-    s->model.addMidiClip(trackID,{clip->start,clip->length,std::move(converted),clip->lane},rev);});}
+    s->model.addMidiClip(trackID,{clip->start,clip->length,std::move(converted),clip->lane,clip->color},rev);});}
 int daw_remove_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,uint64_t rev){return guard(s,[&]{s->model.removeMidiClip(trackID,index,rev);});}
+int daw_append_midi_notes(daw_session* s,uint64_t trackID,uint32_t index,const daw_midi_note* notes,uint32_t noteCount,uint64_t rev){return guard(s,[&]{
+    validateMidiNoteArray(notes,noteCount);
+    std::vector<daw::MidiNote> converted;toDomainNotes(notes,noteCount,converted);
+    s->model.appendMidiNotes(trackID,index,converted,rev);});}
+int daw_set_midi_clip_color(daw_session* s,uint64_t trackID,uint32_t index,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setMidiClipColor(trackID,index,color,rev);});}
+int daw_transpose_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,int32_t semitones,uint64_t rev){return guard(s,[&]{if(semitones<-127||semitones>127)throw daw::Error("Transpose must stay within +/-127 semitones");s->model.transposeMidiClip(trackID,index,static_cast<int8_t>(semitones),rev);});}
+int daw_quantize_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,double gridBeats,uint64_t rev){return guard(s,[&]{if(!std::isfinite(gridBeats)||gridBeats<=0||gridBeats>64)throw daw::Error("Quantize grid must be a finite beat value in (0, 64]");s->model.quantizeMidiClip(trackID,index,gridBeats,rev);});}
 int daw_set_midi_notes(daw_session* s,uint64_t trackID,uint32_t index,const daw_midi_note* notes,uint32_t noteCount,uint64_t rev){return guard(s,[&]{
     validateMidiNoteArray(notes,noteCount);
     std::vector<daw::MidiNote> converted;toDomainNotes(notes,noteCount,converted);
@@ -698,7 +705,7 @@ int daw_get_midi_clip(daw_session* s,uint64_t trackID,uint32_t clipIndex,daw_mid
         if(clipIndex>=track.midiClips.size())throw daw::Error("MIDI clip index out of range");
         const auto& clip=track.midiClips[clipIndex];
         if(noteOffset>clip.notes.size())throw daw::Error("MIDI note offset is past the clip");
-        *out={};out->struct_size=sizeof(daw_midi_clip);out->version=DAW_MIDI_CLIP_VERSION;out->start=clip.start;out->length=clip.length;out->lane=clip.track;out->note_count=static_cast<uint32_t>(clip.notes.size());
+        *out={};out->struct_size=sizeof(daw_midi_clip);out->version=DAW_MIDI_CLIP_VERSION;out->start=clip.start;out->length=clip.length;out->lane=clip.track;out->note_count=static_cast<uint32_t>(clip.notes.size());out->color=clip.color;
         const uint32_t available=static_cast<uint32_t>(clip.notes.size())-noteOffset;
         const uint32_t copied=std::min(available,capacity);
         for(uint32_t index=0;index<copied;++index){const auto& note=clip.notes[noteOffset+index];auto& destination=notes[index];destination={};destination.struct_size=sizeof(daw_midi_note);destination.version=DAW_MIDI_NOTE_VERSION;destination.start=note.start;destination.length=note.length;destination.pitch=note.pitch;destination.channel=note.channel;destination.velocity=note.velocity;}
@@ -1086,7 +1093,7 @@ int daw_get_take_waveform(daw_session* s,uint64_t id,uint32_t index,float* peaks
 int daw_comp_range(daw_session* s,uint64_t id,uint32_t take,uint64_t start,uint64_t end,uint64_t rev){return guard(s,[&]{if(end<=start)throw daw::Error("Comp end must follow start");s->model.compRange(id,take,start,end-start,rev);resetTransport(s);});}
 int daw_get_clip(daw_session* s,uint64_t id,uint32_t index,daw_clip* out) { return guard(s,[&]{
     if(!out || out->struct_size!=sizeof(daw_clip)) throw daw::Error("Clip ABI mismatch");
-    for(const auto& t:s->model.state().tracks) if(t.id==id) { if(index>=t.regions.size()) throw daw::Error("Clip index out of range"); const auto& r=t.regions[index]; *out={sizeof(daw_clip),r.start,r.sourceOffset,r.length,r.fadeIn,r.fadeOut,r.take}; return; }
+    for(const auto& t:s->model.state().tracks) if(t.id==id) { if(index>=t.regions.size()) throw daw::Error("Clip index out of range"); const auto& r=t.regions[index]; *out={sizeof(daw_clip),r.start,r.sourceOffset,r.length,r.fadeIn,r.fadeOut,r.take,r.color,r.gain}; return; }
     throw daw::Error("Track not found");
 }); }
 int daw_edit_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t start,uint64_t offset,uint64_t length,uint64_t rev) {
@@ -1102,6 +1109,10 @@ int daw_duplicate_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t rev) {
 int daw_delete_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t rev) { return guard(s,[&]{s->model.deleteClip(id,index,rev); resetTransport(s);}); }
 int daw_set_clip_fades(daw_session* s,uint64_t id,uint32_t index,uint64_t fadeIn,uint64_t fadeOut,uint64_t rev) { return guard(s,[&]{s->model.setClipFades(id,index,fadeIn,fadeOut,rev); resetTransport(s);}); }
 int daw_set_crossfade(daw_session* s,uint64_t id,uint32_t index,uint64_t duration,uint64_t rev){return guard(s,[&]{s->model.setCrossfade(id,index,duration,rev);resetTransport(s);});}
+int daw_set_track_color(daw_session* s,uint64_t id,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setTrackColor(id,color,rev);cancelStalePlaybackPreparation(s);});}
+int daw_duplicate_track(daw_session* s,uint64_t id,uint64_t* out_new_id,uint64_t rev){return guard(s,[&]{if(!out_new_id)throw daw::Error("Missing duplicate track id output");*out_new_id=s->model.duplicateTrack(id,rev);cancelStalePlaybackPreparation(s);});}
+int daw_set_clip_color(daw_session* s,uint64_t id,uint32_t index,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setClipColor(id,index,color,rev);cancelStalePlaybackPreparation(s);});}
+int daw_set_clip_gain(daw_session* s,uint64_t id,uint32_t index,double gain_db,uint64_t rev){return guard(s,[&]{if(!std::isfinite(gain_db))throw daw::Error("Clip gain must be finite");s->model.setClipGain(id,index,gain_db,rev);resetTransport(s);});}
 int daw_seek_frame(daw_session* s,uint64_t frame) { return guard(s,[&]{
     if(recordingActive(s))throw daw::Error("Stop recording before seeking");
     if(frame>duration(s)) throw daw::Error("Position exceeds project duration");
