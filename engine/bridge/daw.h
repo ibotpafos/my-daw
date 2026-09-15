@@ -519,6 +519,12 @@ int daw_midi_record_status(daw_session*, daw_midi_record_status_t* out);
  * a live playback or duplex renderer at once and applied to the next graph this
  * session prepares, so a play started later still clicks. It is never
  * persisted, and export render always suppresses the click. */
+/* Pre-roll for loop recording: the transport rolls this many frames before
+ * the punch-in point (with the metronome, when enabled) and those frames are
+ * discarded from the take. Plain single-pass capture has no playback running,
+ * so the setting is ignored there. 0 disables pre-roll; up to 30 seconds. */
+int daw_set_record_preroll(daw_session*, uint64_t preroll_frames);
+int daw_get_record_preroll(daw_session*, uint64_t* preroll_frames);
 int daw_set_metronome(daw_session*, int32_t on);
 int daw_get_metronome(daw_session*, int32_t* on);
 /* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0

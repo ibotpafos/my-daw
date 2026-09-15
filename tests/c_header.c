@@ -266,6 +266,14 @@ int main(void) {
     if (daw_get_master_loudness(session, &meter) != 0 || meter.live != 0 || meter.momentary_lufs > -100.0f) result |= 1;
     meter.struct_size = sizeof(meter) - 4;
     if (daw_get_master_loudness(session, &meter) == 0) result |= 1;
+    /* Pre-roll: 30 s ceiling, 0 allowed, getter mirrors, NULL out rejects. */
+    uint64_t preroll = 7;
+    if (daw_set_record_preroll(session, 48000ULL * 31) == 0) result |= 1;
+    if (daw_set_record_preroll(session, 96000) != 0) result |= 1;
+    if (daw_get_record_preroll(session, &preroll) != 0 || preroll != 96000) result |= 1;
+    if (daw_get_record_preroll(session, NULL) == 0) result |= 1;
+    if (daw_set_record_preroll(session, 0) != 0) result |= 1;
+    if (daw_get_record_preroll(session, &preroll) != 0 || preroll != 0) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

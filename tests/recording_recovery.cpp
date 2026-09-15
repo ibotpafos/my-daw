@@ -52,5 +52,23 @@ int main(int argc,char** argv){try{
     CHECK(std::abs(afterCrash.clip->samples().back()-0.125f)<0.0001f);
 
     auto corrupt=(root/"corrupt.mydawtake").string();{FILE* file=fopen(corrupt.c_str(),"wb");CHECK(file);fwrite("bad",1,3,file);fclose(file);}rejects([&]{daw::recoverTake(corrupt);});
+    // Pre-roll skip: the leading captured frames vanish and the take label
+    // still starts at the punch-in frame; a fully skipped pass keeps zero.
+    {   auto skipPath=(root/"preroll.mydawtake").string();
+        {
+            daw::RecordingWriter writer(skipPath,96000,48000,48000,1500);
+            std::vector<float> block(1000,0.0f);
+            for(size_t pass=0;pass<4;++pass){for(auto& value:block)value=0.1f*float(pass+1);writer.writeMono(block.data(),block.size());}
+            CHECK(writer.frames()==2500);
+            auto clip=writer.finish();
+            CHECK(clip&&clip->samples().size()==5000&&std::abs(clip->samples()[0]-0.2f)<1e-6f&&std::abs(clip->samples()[4999]-0.4f)<1e-6f);
+        }
+        auto skipped=daw::recoverTake(skipPath);CHECK(skipped.startFrame==96000&&skipped.clip->frames()==2500);
+        {
+            daw::RecordingWriter all(root/"all-skipped.mydawtake",0,48000,48000,5000);
+            std::vector<float> block(1000,0.5f);for(size_t pass=0;pass<4;++pass)all.writeMono(block.data(),block.size());
+            CHECK(all.frames()==0);all.discard();
+        }
+    }
     std::cout<<"PASS: SPSC prefix, checkpointed take, exact loop-pass split, model recovery, cleanup, corrupt rejection, process-crash recovery\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

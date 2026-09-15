@@ -355,6 +355,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var trackNames: [UInt64: String] = [:]
     /// Собственный буфер обмена клипами: (дорожка-источник, индекс клипа, MIDI ли).
     var clipClipboard: (trackID: UInt64, index: Int, isMidi: Bool)?
+    var recordPrerollFrames: UInt64 = 0
+    func applyStoredPreroll(_ session:OpaquePointer?){
+        let seconds=min(30,max(0,UserDefaults.standard.double(forKey:"transport.prerollSeconds.v1")))
+        recordPrerollFrames=UInt64((seconds*48000).rounded())
+        if let session { daw_set_record_preroll(session,recordPrerollFrames) }
+    }
     var laneViews: [UInt64: WaveformView] = [:]
     var clipSelection: [UInt64: [Int]] = [:]
     var orderedBuses: [(id: UInt64, name: String)] = []
@@ -510,6 +516,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let core = daw_create() else { NSApp.terminate(nil); return }
+        applyStoredPreroll(core)
         session = core
         NSApp.appearance = NSAppearance(named: .darkAqua)
         installMenu()
@@ -729,6 +736,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспортировать стемы…", #selector(exportStems), "", false), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
         menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
         if let projectMenu = main.items.last?.submenu {
+            let prerollRoot=NSMenuItem(title:"Преролл записи (луп-режим)",action:nil,keyEquivalent:""); let prerollMenu=NSMenu(title:"Преролл записи"); prerollMenu.autoenablesItems=false
+            for (label,seconds) in [("Выключен",0.0),("1 секунда",1.0),("2 секунды",2.0),("4 секунды",4.0),("8 секунд",8.0)] {
+                let item=NSMenuItem(title:label,action:#selector(pickRecordPreroll(_:)),keyEquivalent:""); item.target=self; item.representedObject=seconds
+                item.state = UInt64((seconds*48000).rounded())==recordPrerollFrames ? .on:.off
+                prerollMenu.addItem(item)
+            }
+            prerollRoot.submenu=prerollMenu; prerollRoot.toolTip="Транспорт прокручивается перед punch-in с кликом; преролл не попадает в дубль"; projectMenu.addItem(prerollRoot)
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
             let down = NSMenuItem(title: "Переместить выбранную дорожку ниже", action: #selector(moveSelectedTrackDown), keyEquivalent: "\u{F701}")
@@ -1895,6 +1909,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func menuPasteClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; pasteClipboardTo(id,playheadFrame) }
     @objc func menuCopyClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track,let index=selectedClips[id] else{return}; clipClipboard=(id,index,false); storageMessage("Клип в буфере обмена.") }
+    @objc func pickRecordPreroll(_ sender:NSMenuItem){
+        guard let seconds=sender.representedObject as? Double else{return}
+        let frames=UInt64((seconds*48000).rounded())
+        guard check(daw_set_record_preroll(session,frames)) else{return}
+        recordPrerollFrames=frames; UserDefaults.standard.set(seconds,forKey:"transport.prerollSeconds.v1")
+        sender.menu?.items.forEach{ $0.state = ($0.representedObject as? Double).map{ UInt64(($0*48000).rounded())==frames } == true ? .on:.off }
+        storageMessage(frames==0 ? "Преролл выключен." : "Преролл \(seconds) с — транспорт и клик начнутся раньше punch-in (запись в луп).")
+    }
     @objc func deleteClipGroupFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
     @objc func nudgeClipGroupLeft(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,-1) }
     @objc func nudgeClipGroupRight(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,1) }

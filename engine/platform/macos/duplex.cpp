@@ -1,6 +1,7 @@
 #include "audio/duplex.hpp"
 #include "audio/recording.hpp"
 #include "domain/session.hpp"
+#include <algorithm>
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
 #include <atomic>
@@ -17,7 +18,7 @@ double nominalRate(AudioDeviceID device){Float64 rate=0;UInt32 size=sizeof(rate)
 class MacDuplex final:public Duplex {
     static constexpr UInt32 maxSlice=4096;
     State snapshot;
-    uint64_t capacityFrames=0,startFrame=0,loopStart=0,loopEnd=0;
+    uint64_t capacityFrames=0,startFrame=0,loopStart=0,loopEnd=0,prerollFrames=0;
     std::string recoveryPath;
     AudioUnit unit=nullptr;AudioDeviceID device=0;
     std::unique_ptr<RecordingWriter> capture;
@@ -37,7 +38,7 @@ class MacDuplex final:public Duplex {
     }
     void shutdown(OutputState reason) noexcept {active=false;renderer.playing.store(false);if(unit){AudioOutputUnitStop(unit);AudioUnitUninitialize(unit);AudioComponentInstanceDispose(unit);unit=nullptr;}device=0;outputState.store(static_cast<uint32_t>(reason));}
 public:
-    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish):snapshot(state),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),recoveryPath(std::move(path)){}
+    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish,uint64_t preroll):snapshot(state),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),prerollFrames(preroll),recoveryPath(std::move(path)){}
     ~MacDuplex() override {cancel();}
     void start() override {
         if(active)throw Error("Recording is already active");
@@ -45,7 +46,8 @@ public:
             const auto inputDevice=defaultDevice(kAudioHardwarePropertyDefaultInputDevice),outputDevice=defaultDevice(kAudioHardwarePropertyDefaultOutputDevice);
             if(inputDevice!=outputDevice)throw Error("Sample-exact loop recording requires one input/output device or a Core Audio aggregate device");
             device=inputDevice;if(std::abs(nominalRate(device)-48000.0)>0.5)throw Error("Set the duplex device to 48 kHz in Audio MIDI Setup before recording");
-            capture=std::make_unique<RecordingWriter>(recoveryPath,startFrame,capacityFrames);renderer.prepare(snapshot,startFrame,loopStart,loopEnd);
+            const uint64_t lead=std::min<uint64_t>(prerollFrames,startFrame); // pre-roll never precedes frame 0
+            capture=std::make_unique<RecordingWriter>(recoveryPath,startFrame,capacityFrames,48000*2,lead);renderer.prepare(snapshot,startFrame-lead,loopStart,loopEnd);
             AudioComponentDescription description{kAudioUnitType_Output,kAudioUnitSubType_HALOutput,kAudioUnitManufacturer_Apple,0,0};auto component=AudioComponentFindNext(nullptr,&description);if(!component)throw Error("Core Audio HAL duplex unavailable");
             checkedDuplex(AudioComponentInstanceNew(component,&unit),"Create HAL duplex");UInt32 enabled=1;
             checkedDuplex(AudioUnitSetProperty(unit,kAudioOutputUnitProperty_EnableIO,kAudioUnitScope_Input,1,&enabled,sizeof(enabled)),"Enable audio input");
@@ -68,5 +70,5 @@ public:
     OutputTelemetry telemetry() const noexcept override{return {static_cast<OutputState>(outputState.load()),device,generation.load(),renderer.callbacks.load(),callbackErrors.load()};}
 };
 }
-std::unique_ptr<Duplex> makeDuplex(const State& state,uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,uint64_t loopStart,uint64_t loopEnd){return std::make_unique<MacDuplex>(state,capacityFrames,recoveryPath,startFrame,loopStart,loopEnd);}
+std::unique_ptr<Duplex> makeDuplex(const State& state,uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,uint64_t loopStart,uint64_t loopEnd,uint64_t prerollFrames){return std::make_unique<MacDuplex>(state,capacityFrames,recoveryPath,startFrame,loopStart,loopEnd,prerollFrames);}
 }

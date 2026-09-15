@@ -20,6 +20,10 @@ Format v8 уже хранит несколько take rows и их PCM, поэт
 
 Debug-тесты покрывают разбиение десяти кадров в проходы `4 + 4 + 2`, сохранение исходных sample offsets, ошибочную нулевую длину, batch Undo/Redo и format v8 roundtrip. macOS target компилирует единый AUHAL adapter и отдельный `daw_duplex_hardware_smoke`; он намеренно не входит в CTest, потому что открывает микрофон и реальный output.
 
+## Преролл (1.58.0)
+
+`daw_set_record_preroll(session, frames)` — до 30 секунд (сверх — «Pre-roll must be 0-30 seconds»), геттер-зеркало `daw_get_record_preroll` с NULL-гейтом. Применяется только луп-записи: `makeDuplex(..., prerollFrames)` сдвигает старт транспорта на `min(preroll, startFrame)` назад от punch-in — ведущий кусок слушается с кликом (метроном дуплекса), а `RecordingWriter` с `skipFrames` выбрасывает ровно эти кадры из потока: лейбл тейка остаётся на `startFrame`, так что `splitLoopPasses` и границы проходов не меняются вовсе. Одиночный входной захват преролл игнорирует — там нет воспроизведения, и тихий ведущий кусок был бы обманом. UI: меню «Проект → Преролл записи (луп-режим)» (Выключен/1/2/4/8 с галочкой), значение живёт в UserDefaults (`transport.prerollSeconds.v1`) и применяется к мосту при старте. Тест writer-каскада в `recording_recovery`: из 4×1000 кадров со skip 1500 остаются ровно 2500, первый сэмпл — середина второго блока, recover-заголовок хранит punch-фрейм; C-гейты — в `pure_c_bridge`. Живые уши на «старт раньше, запись вовремя» — physical-гейт, открыт.
+
 Ручной запуск после явного выбора одного duplex/aggregate device:
 
 ```sh

@@ -44,6 +44,8 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.58.0](33-full-duplex-loop-recording.md) — преролл луп-записи: транспорт с кликом ведёт N секунд до punch-in, ведущие кадры выбрасываются из тейка (`skipFrames`), лейбл дубля остаётся на границе лупа.
+
 [1.57.0](25-offline-export.md) — realtime-метр мастера: momentary/short-term LUFS по BS.1770-4 в аудио-пути без аллокаций, строка громкости на мастер-стрипе микшера.
 
 [1.56.0](25-offline-export.md) — BS.1770-4 метр: integrated LUFS и true-peak готового WAV (`daw_measure_wav`), экспортное сообщение показывает цифры.

@@ -44,8 +44,8 @@ void confirm(int fd,uint64_t start,uint64_t frames) {
 }
 }
 
-RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames)
-    :path_(std::move(path)),startFrame_(startFrame),capacityFrames_(capacityFrames) {
+RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames,uint64_t skipFrames)
+    :path_(std::move(path)),startFrame_(startFrame),capacityFrames_(capacityFrames),skipFrames_(skipFrames) {
     if(path_.empty()||!capacityFrames_||capacityFrames_>48000*60||!ringFrames) throw Error("Invalid recording writer configuration");
     ringFrames=std::min(ringFrames,capacityFrames_); ring_.resize(static_cast<size_t>(ringFrames));
     fd_=open(path_.c_str(),O_CREAT|O_EXCL|O_RDWR,0600); if(fd_<0) throw Error("Cannot create recoverable recording");
@@ -57,6 +57,7 @@ RecordingWriter::~RecordingWriter(){stopPreserving();if(!committedFrames())remov
 
 void RecordingWriter::writeMono(const float* input,uint32_t count) noexcept {
     if(!input||!count||stopping_.load(std::memory_order_relaxed)||failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
+    if(skipFrames_>0){const uint64_t drop=std::min<uint64_t>(skipFrames_,count);skipFrames_-=drop;input+=drop;count-=static_cast<uint32_t>(drop);if(!count)return;}
     auto write=written_.load(std::memory_order_relaxed),read=read_.load(std::memory_order_acquire);
     auto remaining=capacityFrames_-std::min(accepted_.load(std::memory_order_relaxed),capacityFrames_);
     auto free=ring_.size()-std::min<uint64_t>(write-read,ring_.size());

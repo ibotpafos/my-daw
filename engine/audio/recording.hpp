@@ -19,6 +19,7 @@ struct RecoveredTake {
 class RecordingWriter {
     std::string path_;
     uint64_t startFrame_=0, capacityFrames_=0;
+    uint64_t skipFrames_=0; // pre-roll: drop this many leading captured frames
     std::vector<float> ring_;
     std::atomic<uint64_t> read_{0}, written_{0}, accepted_{0}, committed_{0};
     std::atomic<bool> stopping_{false}, overflow_{false}, failed_{false};
@@ -27,7 +28,7 @@ class RecordingWriter {
     void run() noexcept;
     void closeFile() noexcept;
 public:
-    RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames=48000*2);
+    RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames=48000*2,uint64_t skipFrames=0);
     ~RecordingWriter();
     RecordingWriter(const RecordingWriter&)=delete;
     RecordingWriter& operator=(const RecordingWriter&)=delete;
