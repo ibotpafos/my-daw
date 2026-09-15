@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "name": "Tracktion Engine",
+      "scope": "spike-only",
+      "version": "3.5.0-develop",
+      "repository": "https://github.com/Tracktion/tracktion_engine.git",
+      "revision": "ff794da4f58e732528b06d7799dad087635de0cb",
+      "sourceArchiveSha256": "879f12fd2f88c0d30b68af6a39f2ccb9593e05dff4b48f98c0625b2cb698821d",
+      "license": "GPL-3.0-or-later OR commercial",
+      "bundledInApp": false
+    },
+    {
+      "name": "JUCE",
+      "scope": "Tracktion pinned submodule for spike-only",
+      "version": "8.0.13 pinned revision",
+      "repository": "https://github.com/juce-framework/JUCE.git",
+      "revision": "37c894f83d379179b2070d437ccd0f1cd9af9576",
+      "sourceArchiveSha256": "0cf5ba4abaa2d2579b4cc1effa33a3f20c18e17d0a6ec6c6dae9d1e303753ab1",
+      "license": "AGPL-3.0 OR commercial",
+      "bundledInApp": false
+    },
+    {
+      "name": "DAWproject specification",
+      "scope": "exchange-schema-reference",
+      "version": "1.0",
+      "repository": "https://github.com/bitwig/dawproject.git",
+      "revision": "ee4dcdde75940f30e14e55401a26955a58b8322b",
+      "license": "MIT",
+      "bundledInApp": false
+    },
+    {
+      "name": "VST3 SDK",
+      "scope": "isolated VST3 scanner helper",
+      "version": "3.8.1_build_84",
+      "repository": "https://github.com/steinbergmedia/vst3sdk.git",
+      "revision": "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96",
+      "submodules": {
+        "base": "fcf9da0bd27a16f7f03773a3a39822f28f5c8477",
+        "cmake": "054c9143cbb8d47fc4694e473f2ee3b4d951a8f5",
+        "pluginterfaces": "4f547e8e102b47de4a8b8aaf343c73b700786372",
+        "public.sdk": "586dc5e6c8012c3e4b01c79389375cbe96bdb1da"
+      },
+      "license": "MIT",
+      "bundledInApp": true
+    }
+  ]
+}

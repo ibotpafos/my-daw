@@ -1,0 +1,8 @@
+# Documentation tools only; not dependencies shipped in the DAW.
+# Versions observed in the local Python 3.14 environment on 2026-09-14.
+attrs==26.1.0
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
+Markdown==3.8.2
+referencing==0.37.0
+rpds-py==2026.6.3

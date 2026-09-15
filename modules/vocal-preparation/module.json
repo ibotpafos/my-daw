@@ -1,0 +1,16 @@
+{
+  "id": "org.mydaw.vocal-preparation",
+  "version": "0.2.0",
+  "apiVersion": 0,
+  "displayName": "Подготовка вокальных дорожек",
+  "capabilities": ["project.read", "project.edit", "audio.read.selection", "audio.render.preview"],
+  "actions": [
+    {
+      "id": "prepare-vocals",
+      "label": "Подготовить вокал",
+      "uiSlot": "command.palette",
+      "operation": "vocal.prepare",
+      "inputSchema": "vocal-preparation.v1"
+    }
+  ]
+}

@@ -1,0 +1,428 @@
+#include "platform/macos/vst3_effect.hpp"
+
+#include "plugins/plugin_descriptor.hpp"
+
+#include "pluginterfaces/vst/ivstaudioprocessor.h"
+#include "pluginterfaces/vst/ivstcomponent.h"
+#include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstmessage.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "public.sdk/source/common/memorystream.h"
+#include "public.sdk/source/vst/hosting/hostclasses.h"
+#include "public.sdk/source/vst/hosting/module.h"
+#include "public.sdk/source/vst/hosting/parameterchanges.h"
+#include "public.sdk/source/vst/utility/stringconvert.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace daw {
+namespace {
+using namespace Steinberg;
+using namespace Steinberg::Vst;
+
+constexpr uint32_t kMaximumFrames = 4096;
+constexpr size_t kMaximumStateBytes = 8U * 1024U * 1024U;
+constexpr int32 kExpectedBuses = 1;
+
+void require(tresult result, const char *operation) {
+  if (result != kResultOk && result != kResultTrue)
+    throw Error(std::string("VST3 ") + operation + " failed");
+}
+
+std::vector<uint8_t> streamBytes(MemoryStream &stream) {
+  const auto size = stream.getSize();
+  if (size < 0 || static_cast<uint64_t>(size) > kMaximumStateBytes)
+    throw Error("VST3 state exceeds 8 MiB");
+  const auto *data = stream.getData();
+  if (size != 0 && data == nullptr)
+    throw Error("VST3 state capture failed");
+  return {reinterpret_cast<const uint8_t *>(data),
+          reinterpret_cast<const uint8_t *>(data) + static_cast<size_t>(size)};
+}
+
+VST3::UID stateClassId(const Vst3StateEnvelope &envelope) {
+  const auto parsed = VST3::UID::fromString(
+      textualVst3Fuid(envelope.descriptor.vst3ClassFuid), false);
+  if (!parsed)
+    throw Error("VST3 class FUID is invalid");
+  return *parsed;
+}
+
+bool supportedMainStereo(IComponent &component) {
+  if (component.getBusCount(kAudio, kInput) < kExpectedBuses ||
+      component.getBusCount(kAudio, kOutput) < kExpectedBuses)
+    return false;
+  BusInfo input{}, output{};
+  if (component.getBusInfo(kAudio, kInput, 0, input) != kResultTrue ||
+      component.getBusInfo(kAudio, kOutput, 0, output) != kResultTrue)
+    return false;
+  // kDefaultActive is only a plug-in preference. An insert host owns bus
+  // activation and must also accept otherwise inactive main busses.
+  return input.mediaType == kAudio && output.mediaType == kAudio &&
+         input.direction == kInput && output.direction == kOutput &&
+         input.busType == kMain && output.busType == kMain;
+}
+
+std::string string128(const TChar *value) {
+  return StringConvert::convert(value);
+}
+
+Vst3Parameter parameter(IEditController &controller, int32 index) {
+  ParameterInfo info{};
+  require(controller.getParameterInfo(index, info), "read parameter metadata");
+  const auto current = controller.getParamNormalized(info.id);
+  if (!std::isfinite(current))
+    throw Error("VST3 parameter value is invalid");
+  return {static_cast<uint32_t>(info.id),
+          string128(info.title),
+          string128(info.shortTitle),
+          string128(info.units),
+          static_cast<float>(std::clamp(current, 0.0, 1.0)),
+          static_cast<float>(std::clamp(info.defaultNormalizedValue, 0.0, 1.0)),
+          info.stepCount,
+          static_cast<uint32_t>(info.flags)};
+}
+
+class Vst3Effect final : public PreparedEffect {
+public:
+  Vst3Effect(const PluginInsert &plugin, uint32_t sampleRate,
+             uint32_t maxFrames)
+      : changes(static_cast<int32>(plugin.parameterAutomation.size())) {
+    if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames)
+      throw Error(
+          "VST3 master effects require 48 kHz and 1..4096 frame blocks");
+    std::string error;
+    const auto decoded = decodeVst3StateEnvelope(plugin.state, &error);
+    if (!decoded)
+      throw Error("VST3 insert state: " + error);
+    envelope = *decoded;
+    module =
+        VST3::Hosting::Module::create(envelope.descriptor.modulePath, error);
+    if (!module)
+      throw Error("Load VST3 module failed: " + error);
+    module->getFactory().setHostContext(&host);
+    const auto classId = stateClassId(envelope);
+    component = module->getFactory().createInstance<IComponent>(classId);
+    if (!component)
+      throw Error("Create VST3 component failed");
+    require(component->initialize(&host), "initialize component");
+    initializedComponent = true;
+    processorInterface = FUnknownPtr<IAudioProcessor>(component);
+    if (!processorInterface)
+      throw Error("VST3 component has no audio processor interface");
+    if (!supportedMainStereo(*component))
+      throw Error("VST3 effect does not expose an active stereo main bus");
+    TUID controllerId{};
+    require(component->getControllerClassId(controllerId),
+            "read controller class");
+    controller = module->getFactory().createInstance<IEditController>(
+        VST3::UID(controllerId));
+    if (!controller)
+      throw Error("Create VST3 controller failed");
+    require(controller->initialize(&host), "initialize controller");
+    initializedController = true;
+    connect();
+    restore(envelope);
+    SpeakerArrangement stereo = SpeakerArr::kStereo;
+    require(processor()->setBusArrangements(&stereo, 1, &stereo, 1),
+            "negotiate stereo buses");
+    ProcessSetup setup{};
+    setup.processMode = kRealtime;
+    setup.symbolicSampleSize = kSample32;
+    setup.maxSamplesPerBlock = static_cast<int32>(maxFrames);
+    setup.sampleRate = static_cast<SampleRate>(sampleRate);
+    require(processor()->setupProcessing(setup), "setup processing");
+    require(component->activateBus(kAudio, kInput, 0, true),
+            "activate input bus");
+    inputActive = true;
+    require(component->activateBus(kAudio, kOutput, 0, true),
+            "activate output bus");
+    outputActive = true;
+    require(component->setActive(true), "activate component");
+    active = true;
+    require(processor()->setProcessing(true), "start processing");
+    processing = true;
+    latency = processor()->getLatencySamples();
+    tail = processor()->getTailSamples();
+    maximum = maxFrames;
+    inputLeft.resize(maxFrames);
+    inputRight.resize(maxFrames);
+    // ParameterChanges uses vectors internally. Grow every queue while
+    // this effect is prepared, then clear it; process() only reuses that
+    // capacity on the audio thread.
+    for (const auto &lane : plugin.parameterAutomation) {
+      if (lane.points.empty())
+        continue;
+      int32 queueIndex = -1;
+      auto *queue = changes.addParameterData(
+          static_cast<ParamID>(lane.parameterID), queueIndex);
+      if (!queue || queueIndex < 0)
+        throw Error("VST3 prepare parameter queue failed");
+      for (size_t point = 0; point < lane.points.size() + 2; ++point) {
+        int32 pointIndex = -1;
+        require(queue->addPoint(static_cast<int32>(point), 0.0, pointIndex),
+                "reserve parameter point");
+      }
+    }
+    changes.clearQueue();
+  }
+
+  ~Vst3Effect() override {
+    try {
+      if (processing)
+        (void)processor()->setProcessing(false);
+      if (active)
+        (void)component->setActive(false);
+      if (outputActive)
+        (void)component->activateBus(kAudio, kOutput, 0, false);
+      if (inputActive)
+        (void)component->activateBus(kAudio, kInput, 0, false);
+      disconnect();
+      if (initializedController)
+        (void)controller->terminate();
+      if (initializedComponent)
+        (void)component->terminate();
+    } catch (...) {
+    }
+  }
+
+  bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
+               std::span<const PreparedParameterEvent> parameterEvents) noexcept
+      override {
+    if (left == nullptr || right == nullptr || frames > maximum)
+      return false;
+    std::copy_n(left, frames, inputLeft.data());
+    std::copy_n(right, frames, inputRight.data());
+    float *inputChannels[]{inputLeft.data(), inputRight.data()};
+    float *outputChannels[]{left, right};
+    AudioBusBuffers inputs{};
+    inputs.numChannels = 2;
+    inputs.silenceFlags = 0;
+    inputs.channelBuffers32 = inputChannels;
+    AudioBusBuffers outputs{};
+    outputs.numChannels = 2;
+    outputs.silenceFlags = 0;
+    outputs.channelBuffers32 = outputChannels;
+    ProcessContext context{};
+    context.state = ProcessContext::kContTimeValid;
+    context.continousTimeSamples = static_cast<int64>(std::min<uint64_t>(
+        sampleTime, static_cast<uint64_t>(std::numeric_limits<int64>::max())));
+    ProcessData data{};
+    data.processMode = kRealtime;
+    data.symbolicSampleSize = kSample32;
+    data.numSamples = static_cast<int32>(frames);
+    data.numInputs = 1;
+    data.numOutputs = 1;
+    data.inputs = &inputs;
+    data.outputs = &outputs;
+    data.processContext = &context;
+    changes.clearQueue();
+    for (const auto &event : parameterEvents) {
+      if (event.sampleOffset >= frames ||
+          !std::isfinite(event.normalizedValue) ||
+          event.normalizedValue < 0.0f || event.normalizedValue > 1.0f) {
+        std::copy_n(inputLeft.data(), frames, left);
+        std::copy_n(inputRight.data(), frames, right);
+        return false;
+      }
+      int32 queueIndex = -1;
+      auto *queue = changes.addParameterData(
+          static_cast<ParamID>(event.parameterID), queueIndex);
+      int32 pointIndex = -1;
+      if (!queue || queueIndex < 0 ||
+          queue->addPoint(static_cast<int32>(event.sampleOffset),
+                          event.normalizedValue, pointIndex) != kResultTrue) {
+        std::copy_n(inputLeft.data(), frames, left);
+        std::copy_n(inputRight.data(), frames, right);
+        return false;
+      }
+    }
+    data.inputParameterChanges = parameterEvents.empty() ? nullptr : &changes;
+    data.outputParameterChanges = nullptr;
+    data.inputEvents = nullptr;
+    data.outputEvents = nullptr;
+    const auto result = processor()->process(data);
+    if (result == kResultOk || result == kResultTrue)
+      return true;
+    std::copy_n(inputLeft.data(), frames, left);
+    std::copy_n(inputRight.data(), frames, right);
+    return false;
+  }
+
+  uint32_t latencyFrames() const noexcept override { return latency; }
+  uint32_t tailFrames() const noexcept override { return tail; }
+
+  std::vector<Vst3Parameter> parameters() {
+    const auto count = controller->getParameterCount();
+    if (count < 0 || count > 4096)
+      throw Error("VST3 parameter count is invalid");
+    std::vector<Vst3Parameter> values;
+    values.reserve(static_cast<size_t>(count));
+    for (int32 index = 0; index < count; ++index)
+      values.push_back(parameter(*controller, index));
+    return values;
+  }
+
+  void setParameter(uint32_t id, float normalized) {
+    if (!std::isfinite(normalized) || normalized < 0 || normalized > 1)
+      throw Error("VST3 normalized parameter must be in 0...1");
+    require(
+        controller->setParamNormalized(static_cast<ParamID>(id), normalized),
+        "set parameter");
+    // A controller value is UI state. Feed the matching automation point
+    // to the processor as well, so a subsequent component snapshot holds
+    // the actual DSP value even for plug-ins with split component/control.
+    ParameterChanges changes(1);
+    int32 queueIndex = -1;
+    auto *queue =
+        changes.addParameterData(static_cast<ParamID>(id), queueIndex);
+    if (queue == nullptr || queueIndex < 0)
+      throw Error("VST3 create parameter queue failed");
+    int32 pointIndex = -1;
+    require(queue->addPoint(0, normalized, pointIndex),
+            "queue parameter change");
+    float inputLeftSample = 0;
+    float inputRightSample = 0;
+    float outputLeftSample = 0;
+    float outputRightSample = 0;
+    float *inputChannels[]{&inputLeftSample, &inputRightSample};
+    float *outputChannels[]{&outputLeftSample, &outputRightSample};
+    AudioBusBuffers input{};
+    input.numChannels = 2;
+    input.channelBuffers32 = inputChannels;
+    AudioBusBuffers output{};
+    output.numChannels = 2;
+    output.channelBuffers32 = outputChannels;
+    ProcessData data{};
+    data.processMode = kRealtime;
+    data.symbolicSampleSize = kSample32;
+    data.numSamples = 1;
+    data.numInputs = 1;
+    data.numOutputs = 1;
+    data.inputs = &input;
+    data.outputs = &output;
+    data.inputParameterChanges = &changes;
+    require(processor()->process(data), "apply parameter change");
+  }
+
+  Vst3EffectSnapshot snapshot() {
+    Vst3StateEnvelope state = envelope;
+    MemoryStream componentState;
+    require(component->getState(&componentState), "capture component state");
+    state.componentState = streamBytes(componentState);
+    MemoryStream controllerState;
+    require(controller->getState(&controllerState), "capture controller state");
+    state.controllerState = streamBytes(controllerState);
+    Vst3EffectSnapshot result;
+    result.latencyFrames = processor()->getLatencySamples();
+    result.tailFrames = processor()->getTailSamples();
+    result.state = encodeVst3StateEnvelope(state);
+    result.parameters = parameters();
+    return result;
+  }
+
+private:
+  IAudioProcessor *processor() const { return processorInterface.get(); }
+  void connect() {
+    componentConnection = FUnknownPtr<IConnectionPoint>(component);
+    controllerConnection = FUnknownPtr<IConnectionPoint>(controller);
+    if (componentConnection && controllerConnection) {
+      require(componentConnection->connect(controllerConnection),
+              "connect component");
+      componentConnected = true;
+      require(controllerConnection->connect(componentConnection),
+              "connect controller");
+      controllerConnected = true;
+    }
+  }
+  void disconnect() noexcept {
+    if (controllerConnected && controllerConnection && componentConnection)
+      (void)controllerConnection->disconnect(componentConnection);
+    if (componentConnected && componentConnection && controllerConnection)
+      (void)componentConnection->disconnect(controllerConnection);
+  }
+  void restore(const Vst3StateEnvelope &state) {
+    if (!state.componentState.empty()) {
+      // MemoryStream is non-owning here. The backing envelope remains
+      // alive for the synchronous VST3 restoration calls.
+      MemoryStream stream(const_cast<uint8_t *>(state.componentState.data()),
+                          static_cast<TSize>(state.componentState.size()));
+      require(component->setState(&stream), "restore component state");
+      MemoryStream controllerCopy(
+          const_cast<uint8_t *>(state.componentState.data()),
+          static_cast<TSize>(state.componentState.size()));
+      require(controller->setComponentState(&controllerCopy),
+              "restore controller component state");
+    }
+    if (!state.controllerState.empty()) {
+      MemoryStream stream(const_cast<uint8_t *>(state.controllerState.data()),
+                          static_cast<TSize>(state.controllerState.size()));
+      require(controller->setState(&stream), "restore controller state");
+    }
+  }
+
+  Vst3StateEnvelope envelope;
+  VST3::Hosting::Module::Ptr module;
+  HostApplication host;
+  IPtr<IComponent> component;
+  IPtr<IAudioProcessor> processorInterface;
+  IPtr<IEditController> controller;
+  FUnknownPtr<IConnectionPoint> componentConnection;
+  FUnknownPtr<IConnectionPoint> controllerConnection;
+  ParameterChanges changes;
+  std::vector<float> inputLeft;
+  std::vector<float> inputRight;
+  uint32_t maximum = 0;
+  uint32_t latency = 0;
+  uint32_t tail = 0;
+  bool initializedComponent = false;
+  bool initializedController = false;
+  bool componentConnected = false;
+  bool controllerConnected = false;
+  bool inputActive = false;
+  bool outputActive = false;
+  bool active = false;
+  bool processing = false;
+};
+} // namespace
+
+bool isVst3Insert(const PluginInsert &plugin) noexcept {
+  return isVst3PluginInsert(plugin);
+}
+
+std::unique_ptr<PreparedEffect> prepareVst3Effect(const PluginInsert &plugin,
+                                                  uint32_t sampleRate,
+                                                  uint32_t maxFrames) {
+  return std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
+}
+
+std::vector<Vst3Parameter> vst3Parameters(const PluginInsert &plugin,
+                                          uint32_t sampleRate,
+                                          uint32_t maxFrames) {
+  auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
+  return effect->parameters();
+}
+
+Vst3EffectSnapshot snapshotVst3Effect(const PluginInsert &plugin,
+                                      uint32_t sampleRate, uint32_t maxFrames) {
+  auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
+  return effect->snapshot();
+}
+
+Vst3EffectSnapshot setVst3Parameter(const PluginInsert &plugin,
+                                    uint32_t parameterID, float normalizedValue,
+                                    uint32_t sampleRate, uint32_t maxFrames) {
+  auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
+  effect->setParameter(parameterID, normalizedValue);
+  return effect->snapshot();
+}
+} // namespace daw

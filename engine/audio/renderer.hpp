@@ -1,0 +1,165 @@
+#pragma once
+#include "audio/effect.hpp"
+#include "domain/session.hpp"
+#include <array>
+#include <atomic>
+namespace daw {
+// Runtime-only latency supplied by graph nodes outside the renderer. It is
+// deliberately separate from State; Renderer adds the measured latency of
+// persisted Track/Bus insert chains itself. Empty vectors mean no additional
+// node latency.
+struct GraphLatencyPlan {
+  std::vector<uint32_t> trackNodeFrames;
+  std::vector<uint32_t> busNodeFrames;
+};
+// One RT reader. prepare/reset only after output unit is stopped and
+// uninitialized. Gain/telemetry atomics are the only concurrently accessed
+// mutable state.
+class Renderer {
+  struct Voice {
+    size_t gainIndex = 0;
+    std::shared_ptr<const Clip> clip;
+    uint64_t start = 0, offset = 0, length = 0, fadeIn = 0, fadeOut = 0;
+  };
+  struct SendRoute {
+    size_t track = 0, bus = 0;
+    float gain = 0;
+    bool preFader = false;
+  };
+  // One prepared edge delay. Storage is allocated/reset only by prepare();
+  // process() performs bounded array reads/writes and never allocates.
+  struct PdcDelay {
+    std::vector<float> left, right;
+    size_t cursor = 0;
+    void configure(uint32_t frames);
+    void process(float inputLeft, float inputRight, float &outputLeft,
+                 float &outputRight) noexcept;
+  };
+  struct VolumeAutomationRoute {
+    std::vector<AutomationPoint> points;
+    size_t nextPoint = 0;
+    uint64_t lastFrame = 0;
+    bool hasLastFrame = false;
+  };
+  struct ParameterAutomationRoute {
+    uint32_t parameterID = 0;
+    std::vector<PluginParameterAutomationPoint> points;
+    size_t nextPoint = 0;
+    uint64_t lastFrame = 0;
+    bool hasLastFrame = false;
+  };
+  using EffectAutomationPlan = std::vector<ParameterAutomationRoute>;
+  using ChainAutomationPlan = std::vector<EffectAutomationPlan>;
+  std::vector<Voice> voices;
+  std::vector<size_t> activeGains;
+  std::vector<VolumeAutomationRoute> volumeAutomation;
+  std::vector<VolumeAutomationRoute> panAutomation, busGainAutomation;
+  VolumeAutomationRoute masterGainAutomation;
+  std::vector<int16_t> trackOutputs, busOutputs;
+  std::vector<size_t> busOrder;
+  std::vector<SendRoute> sends;
+  // sendRanges[track]..sendRanges[track+1] indexes that track's sends.
+  std::vector<size_t> sendRanges;
+  std::vector<PdcDelay> trackMainPdc, sendPdc, busOutputPdc;
+  // Owned, initialized only on the control thread. The callback traverses
+  // these fixed chains but never constructs, destroys, or reconfigures them.
+  std::vector<std::vector<std::unique_ptr<PreparedEffect>>> trackEffects,
+      busEffects;
+  std::vector<ChainAutomationPlan> trackEffectAutomation, busEffectAutomation;
+  std::vector<std::vector<uint64_t>> trackEffectIDs, busEffectIDs;
+  // Planar workspaces, allocated for the fixed maximum before playback.
+  // Indexed as node * kRenderBlockFrames + frame.
+  std::vector<float> trackBlockLeft, trackBlockRight, busBlockLeft,
+      busBlockRight;
+  std::vector<std::unique_ptr<PreparedEffect>> masterEffects;
+  ChainAutomationPlan masterEffectAutomation;
+  std::vector<uint64_t> masterEffectIDs;
+  // Allocated in prepare() to the persisted project-wide automation limit.
+  // Callback code writes a prefix then passes it synchronously to one effect.
+  std::vector<PreparedParameterEvent> parameterEvents;
+  std::array<std::atomic<float>, 256> leftGains{}, rightGains{},
+      preFaderGates{}, leftPans{}, rightPans{}, trackFaderGains{};
+  std::array<float, 256> smoothLeft{}, smoothRight{}, smoothPreFaderGate{},
+      smoothLeftPan{}, smoothRightPan{}, smoothTrackFader{};
+  std::array<std::atomic<float>, 16> busLeftGains{}, busRightGains{},
+      busFaderGains{}, busPans{}, busGates{};
+  std::array<float, 16> smoothBusLeft{}, smoothBusRight{}, smoothBusFader{},
+      smoothBusPan{}, smoothBusGate{};
+  // The audio callback is the sole writer. UI/control readers consume the
+  // latest whole-block peaks through lock-free atomics.
+  std::array<std::atomic<float>, 256> trackMeterLeft{}, trackMeterRight{};
+  std::array<std::atomic<float>, 16> busMeterLeft{}, busMeterRight{};
+  std::atomic<float> masterMeterLeft{0}, masterMeterRight{0};
+  uint32_t preparedTrackCount = 0, preparedBusCount = 0;
+  std::atomic<float> masterGain{1};
+  float smoothMaster = 1;
+  std::atomic<uint32_t> masterLatency{0}, declaredTail{0};
+  // cursor is the input/timeline cursor. Audible position trails it by the
+  // published graph latency and is tracked independently for transport UI.
+  uint64_t cursor = 0, length = 0, loopBegin = 0, loopEnd = 0, processTime = 0,
+           transportStart = 0, renderedInputFrames = 0;
+  bool looping = false;
+  std::atomic<uint64_t> touchPluginID{0};
+  std::atomic<uint32_t> touchParameterID{0};
+  std::atomic<float> touchNormalized{0};
+  std::atomic<bool> touchActive{false};
+  float volumeAutomationGain(size_t track, uint64_t timeline) noexcept;
+  double automationValue(VolumeAutomationRoute &, uint64_t timeline) noexcept;
+  float parameterAutomationValue(ParameterAutomationRoute &,
+                                 uint64_t timeline) noexcept;
+  bool processChain(std::vector<std::unique_ptr<PreparedEffect>> &,
+                    ChainAutomationPlan &, const std::vector<uint64_t> &, float *,
+                    float *, uint32_t, uint64_t, uint64_t) noexcept;
+  void updateAudiblePosition() noexcept;
+  void clearMeters() noexcept;
+
+public:
+  std::atomic<bool> playing{false};
+  std::atomic<uint64_t> position{0}, callbacks{0}, clipped{0}, pluginErrors{0};
+  std::atomic<uint64_t> audiblePosition{0};
+  std::atomic<float> peak{0};
+  void prepare(const State &, uint64_t startFrame = 0, uint64_t loopStart = 0,
+               uint64_t loopEndFrame = 0);
+  // Effect-host slices pass initialized track/bus latency here. This method
+  // validates/allocates the PDC plan before the audio callback resumes.
+  void prepare(const State &, const GraphLatencyPlan &, uint64_t startFrame = 0,
+               uint64_t loopStart = 0, uint64_t loopEndFrame = 0);
+  void updateMix(const State &) noexcept;
+  void updateGains(const State &state) noexcept { updateMix(state); }
+  uint64_t duration() const { return length; } // control thread only
+  // Total algorithmic delay of currently active master inserts. It is an
+  // atomic live-transport value: prepare updates it on the control thread;
+  // audio and transport readers may query it without touching AU objects.
+  uint32_t masterLatencyFrames() const noexcept {
+    return masterLatency.load(std::memory_order_acquire);
+  }
+    // Bounded finite decay after compensated graph latency. It follows the
+    // longest routed serial tail path; infinite declarations are capped.
+  uint32_t declaredTailFrames() const noexcept {
+    return declaredTail.load(std::memory_order_acquire);
+  }
+  uint64_t audiblePositionFrames() const noexcept {
+    return audiblePosition.load(std::memory_order_acquire);
+  }
+  // Current callback's post-insert/post-fader peaks. Indices are prepared
+  // State track/bus indices; false means no prepared strip at that index.
+  bool trackMeter(size_t preparedIndex, float &left, float &right) const noexcept;
+  bool busMeter(size_t preparedIndex, float &left, float &right) const noexcept;
+  void masterMeter(float &left, float &right) const noexcept;
+  // Call from the output stop path to clear visible telemetry immediately.
+  void resetMeters() noexcept { clearMeters(); }
+  // Exactly one live touch may be active. The override is runtime-only and
+  // does not mutate persisted automation lanes or plug-in state.
+  bool beginPluginParameterTouch(uint64_t pluginID, uint32_t parameterID,
+                                 float normalizedValue) noexcept;
+  bool updatePluginParameterTouch(uint64_t pluginID, uint32_t parameterID,
+                                  float normalizedValue) noexcept;
+  bool endPluginParameterTouch(uint64_t pluginID,
+                               uint32_t parameterID) noexcept;
+  void cancelPluginParameterTouch() noexcept;
+  void render(float *left, float *right, uint32_t frames) noexcept;
+  // Offline-only tail drain. It advances the prepared track/bus/master
+  // graph and its PDC edges with silence; it never advances transport.
+  void renderTail(float *left, float *right, uint32_t frames) noexcept;
+};
+} // namespace daw

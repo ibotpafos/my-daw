@@ -1,0 +1,25 @@
+{
+  "schema": "mydaw.routing-fixture.v1",
+  "name": "B-011 post-fader aux return to master",
+  "sampleRate": 48000,
+  "source": { "wave": "sine", "frequencyHz": 440, "peak": 0.25 },
+  "tracks": [
+    {
+      "name": "Source",
+      "gainDb": -3,
+      "output": "master",
+      "sends": [{ "target": "Aux 1", "gainDb": -6, "preFader": false }]
+    },
+    { "name": "Aux return", "input": "Aux 1", "output": "master" }
+  ],
+  "master": { "gainDb": 0 },
+  "expected": {
+    "formula": "0.25 * dbToGain(-3) * (1 + dbToGain(-6))",
+    "peak": 0.2659656,
+    "toleranceRelative": 0.015
+  },
+  "mapping": {
+    "tracktion": "AuxSendPlugin(bus 1) -> AuxReturnPlugin(bus 1) -> implicit Edit master",
+    "mydaw": "Track.send(preFader=false) -> Bus -> master"
+  }
+}

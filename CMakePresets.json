@@ -1,0 +1,11 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {"name":"debug","generator":"Unix Makefiles","binaryDir":"${sourceDir}/build/debug","cacheVariables":{"CMAKE_BUILD_TYPE":"Debug"}},
+    {"name":"release","inherits":"debug","binaryDir":"${sourceDir}/build/release","cacheVariables":{"CMAKE_BUILD_TYPE":"Release"}},
+    {"name":"sanitizers","inherits":"debug","binaryDir":"${sourceDir}/build/sanitizers","cacheVariables":{"DAW_SANITIZERS":"ON"}},
+    {"name":"thread-sanitizer","inherits":"debug","binaryDir":"${sourceDir}/build/thread-sanitizer","cacheVariables":{"DAW_THREAD_SANITIZER":"ON"}}
+  ],
+  "buildPresets":[{"name":"debug","configurePreset":"debug"},{"name":"release","configurePreset":"release"},{"name":"sanitizers","configurePreset":"sanitizers"},{"name":"thread-sanitizer","configurePreset":"thread-sanitizer"}],
+  "testPresets":[{"name":"debug","configurePreset":"debug","output":{"outputOnFailure":true}},{"name":"release","configurePreset":"release","output":{"outputOnFailure":true}},{"name":"sanitizers","configurePreset":"sanitizers","output":{"outputOnFailure":true}},{"name":"thread-sanitizer","configurePreset":"thread-sanitizer","output":{"outputOnFailure":true}}]
+}

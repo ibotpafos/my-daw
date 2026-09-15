@@ -1,0 +1,245 @@
+import AppKit
+
+struct PinnedTrackHeaderModel: Equatable, Identifiable {
+    let id: UInt64
+    var index: Int
+    var name: String
+    var accent: NSColor
+    var gainDb: Double
+    var pan: Double
+    var armed: Bool
+    var muted: Bool
+    var solo: Bool
+    var takeCount: Int
+    var hasAudio: Bool
+    var selected: Bool
+
+    init(
+        id: UInt64,
+        index: Int,
+        name: String,
+        accent: NSColor,
+        gainDb: Double = 0,
+        pan: Double = 0,
+        armed: Bool = false,
+        muted: Bool = false,
+        solo: Bool = false,
+        takeCount: Int = 0,
+        hasAudio: Bool = false,
+        selected: Bool = false
+    ) {
+        self.id = id
+        self.index = index
+        self.name = name
+        self.accent = accent
+        self.gainDb = gainDb
+        self.pan = pan
+        self.armed = armed
+        self.muted = muted
+        self.solo = solo
+        self.takeCount = takeCount
+        self.hasAudio = hasAudio
+        self.selected = selected
+    }
+}
+
+@MainActor
+final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
+    var model: PinnedTrackHeaderModel { didSet { renderModel() } }
+    var onSelect: ((UInt64) -> Void)?
+    var onRename: ((UInt64, String) -> Void)?
+    var onArm: ((UInt64, Bool) -> Void)?
+    var onMute: ((UInt64, Bool) -> Void)?
+    var onSolo: ((UInt64, Bool) -> Void)?
+    var onGain: ((UInt64, Double) -> Void)?
+    var onPan: ((UInt64, Double) -> Void)?
+    var onImportTake: ((UInt64) -> Void)?
+    var onComp: ((UInt64) -> Void)?
+    var onSplit: ((UInt64) -> Void)?
+    var onDuplicate: ((UInt64) -> Void)?
+    var onDelete: ((UInt64) -> Void)?
+    var onCrossfade: ((UInt64) -> Void)?
+
+    private let accentBar = NSView()
+    private let numberLabel = NSTextField(labelWithString: "")
+    private let nameField = NSTextField(string: "")
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let gain = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
+    private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
+    private let arm = NSButton(title: "R", target: nil, action: nil)
+    private let mute = NSButton(title: "M", target: nil, action: nil)
+    private let solo = NSButton(title: "S", target: nil, action: nil)
+    private let actionMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+
+    init(model: PinnedTrackHeaderModel) {
+        self.model = model
+        super.init(frame: .zero)
+        wantsLayer = true
+        setup()
+        renderModel()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func mouseDown(with event: NSEvent) {
+        onSelect?(model.id)
+        super.mouseDown(with: event)
+    }
+
+    private func setup() {
+        translatesAutoresizingMaskIntoConstraints = false
+        accentBar.wantsLayer = true
+        numberLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        numberLabel.textColor = .secondaryLabelColor
+        nameField.font = .systemFont(ofSize: 12, weight: .semibold)
+        nameField.textColor = .labelColor
+        nameField.drawsBackground = false
+        nameField.isBordered = false
+        nameField.focusRingType = .none
+        nameField.delegate = self
+        statusLabel.font = .systemFont(ofSize: 9, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+
+        gain.isContinuous = true
+        gain.target = self
+        gain.action = #selector(changeGain)
+        pan.isContinuous = true
+        pan.target = self
+        pan.action = #selector(changePan)
+        [arm, mute, solo].forEach { button in
+            button.setButtonType(.toggle)
+            button.bezelStyle = .inline
+            button.font = .systemFont(ofSize: 10, weight: .bold)
+            button.contentTintColor = .secondaryLabelColor
+            button.target = self
+            button.widthAnchor.constraint(equalToConstant: 23).isActive = true
+        }
+        arm.action = #selector(changeArm)
+        mute.action = #selector(changeMute)
+        solo.action = #selector(changeSolo)
+
+        actionMenu.addItems(withTitles: ["•••", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip"])
+        actionMenu.item(at: 0)?.isEnabled = false
+        actionMenu.menu?.addItem(.separator())
+        actionMenu.target = self
+        actionMenu.action = #selector(performMenuAction)
+        actionMenu.bezelStyle = .inline
+        actionMenu.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        actionMenu.toolTip = "Действия с клипом и дублями"
+
+        let titleRow = NSStackView(views: [numberLabel, nameField])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 6
+        let controls = NSStackView(views: [arm, mute, solo])
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 2
+        let sliders = NSStackView(views: [gain, pan])
+        sliders.orientation = .vertical
+        sliders.spacing = 0
+        let row = NSStackView(views: [titleRow, controls, actionMenu])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 5
+        row.setHuggingPriority(.required, for: .horizontal)
+        let content = NSStackView(views: [row, sliders, statusLabel])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 2
+        content.translatesAutoresizingMaskIntoConstraints = false
+
+        [accentBar, content].forEach(addSubview)
+        accentBar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            accentBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            accentBar.topAnchor.constraint(equalTo: topAnchor),
+            accentBar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            accentBar.widthAnchor.constraint(equalToConstant: 3),
+            content.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 7),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
+            nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            gain.widthAnchor.constraint(equalTo: content.widthAnchor),
+            pan.widthAnchor.constraint(equalTo: content.widthAnchor)
+        ])
+    }
+
+    private func renderModel() {
+        layer?.backgroundColor = (model.selected
+            ? NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.15, alpha: 1)
+            : NSColor(calibratedRed: 0.055, green: 0.06, blue: 0.075, alpha: 1)).cgColor
+        accentBar.layer?.backgroundColor = model.accent.cgColor
+        numberLabel.stringValue = String(format: "%02d", model.index + 1)
+        nameField.stringValue = model.name
+        gain.doubleValue = model.gainDb
+        pan.doubleValue = model.pan
+        arm.state = model.armed ? .on : .off
+        mute.state = model.muted ? .on : .off
+        solo.state = model.solo ? .on : .off
+        arm.contentTintColor = model.armed ? NSColor.systemRed : .secondaryLabelColor
+        mute.contentTintColor = model.muted ? model.accent : .secondaryLabelColor
+        solo.contentTintColor = model.solo ? NSColor.systemYellow : .secondaryLabelColor
+        let media = model.hasAudio ? "AUDIO" : "EMPTY"
+        let takes = model.takeCount > 0 ? " · \(model.takeCount) TAKE\(model.takeCount == 1 ? "" : "S")" : ""
+        statusLabel.stringValue = "\(media) · \(String(format: "%+.1f", model.gainDb)) dB · P \(String(format: "%+.2f", model.pan))\(takes)"
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != model.name else { nameField.stringValue = model.name; return }
+        onRename?(model.id, name)
+    }
+
+    @objc private func changeGain() { onGain?(model.id, gain.doubleValue) }
+    @objc private func changePan() { onPan?(model.id, pan.doubleValue) }
+    @objc private func changeArm() { onArm?(model.id, arm.state == .on) }
+    @objc private func changeMute() { onMute?(model.id, mute.state == .on) }
+    @objc private func changeSolo() { onSolo?(model.id, solo.state == .on) }
+    @objc private func performMenuAction() {
+        switch actionMenu.indexOfSelectedItem {
+        case 1: onImportTake?(model.id)
+        case 2: onComp?(model.id)
+        case 3: onSplit?(model.id)
+        case 4: onDuplicate?(model.id)
+        case 5: onCrossfade?(model.id)
+        case 6: onDelete?(model.id)
+        default: break
+        }
+    }
+}
+
+@MainActor
+final class EmptyTimelineLaneView: NSView {
+    var message: String { didSet { label.stringValue = message } }
+    var accent: NSColor { didSet { accentBar.layer?.backgroundColor = accent.cgColor } }
+
+    private let accentBar = NSView()
+    private let label = NSTextField(labelWithString: "")
+
+    init(message: String = "Drop audio here or create a recording", accent: NSColor = .systemBlue) {
+        self.message = message
+        self.accent = accent
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedRed: 0.045, green: 0.05, blue: 0.06, alpha: 1).cgColor
+        accentBar.wantsLayer = true
+        accentBar.layer?.backgroundColor = accent.cgColor
+        label.stringValue = message
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.textColor = .tertiaryLabelColor
+        [accentBar, label].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; addSubview($0) }
+        NSLayoutConstraint.activate([
+            accentBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            accentBar.topAnchor.constraint(equalTo: topAnchor),
+            accentBar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            accentBar.widthAnchor.constraint(equalToConstant: 2),
+            label.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 10),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+}

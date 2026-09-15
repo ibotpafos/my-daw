@@ -1,0 +1,11 @@
+# UI QA и политика размещения плагинов — 1.25.0
+
+Срез начался с проверки живого окна 1240×800, а не только исходного кода. QA воспроизвёл четыре заметных дефекта: сохранённые абсолютные координаты split views уводили Inspector за границу окна, arrangement сжимался до узкой полосы, toolbar расширял content за доступную ширину, а mixer показывал середину слишком высокого document view и скрывал названия каналов. После выбора полосы Inspector менял заголовок, но его динамически пересозданная форма не появлялась.
+
+Workspace теперь хранит безопасные относительные размеры и при восстановлении ограничивает track headers, Inspector и нижнюю console минимальными и максимальными размерами. Toolbar разделён на transport и компактный editing row. Mixer рассчитывает document по фактической высоте viewport и сохраняет видимыми название, R/M/S, meter, fader и pan. Меню действий track header занимает фиксированную кнопку `•••`. Inspector использует постоянную форму NAME/VOLUME/PAN/M/S; выбор mixer strip обновляет значения без переноса AppKit controls между временными stack views. Browser остаётся отдельной вкладкой с Audio/Plug-ins, поиском, импортом и scan commands.
+
+Параллельно формат проекта обновлён до v15. Каждый track/bus/master insert хранит `InProcess` или `OutOfProcess`; проекты v13/v14 открываются как `InProcess`. Отдельный versioned C status сообщает формат, выбранный режим и реально поддержанные режимы. UI не включает недоступный вариант и показывает format-specific explanation. На момент 1.25 runtime поддерживал только in-process execution; [1.26.0](53-async-auv3-hosting.md) затем подключил строгий OOP path для AUv3. Неподдержанный запрос по-прежнему остаётся dry/unavailable без скрытого downgrade.
+
+Apple указывает, что AUv3 может размещаться в отдельном extension service process, а `AudioComponentInstantiate` выполняется асинхронно и не должен ожидаться блокировкой main thread. Это не превращает legacy AUv2 или VST3 в изолированные плагины. Для VST3 по-прежнему нужен отдельный managed service/ring-buffer path до включения OOP режима в status API.
+
+Проведён visual/interaction QA чистого черновика и проекта с двумя tracks и bus: arrangement, pinned headers, Inspector, Browser, mixer selection и channel form проверены в реальном окне. Импорт пользовательских медиа, запись, playback/listening и hardware gates в этот прогон не входили.

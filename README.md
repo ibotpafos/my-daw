@@ -1,0 +1,125 @@
+# My DAW
+
+Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
+
+**Состояние: аудиопрототип 1.26.0.** Рабочее окно развивает плотную структуру Fender Studio Pro: закреплённые track headers, общий zoomable timeline, постоянный Inspector/Browser dock и компактный mixer. AUv3 теперь можно запускать с обязательной системной out-of-process политикой: render graph и плагины готовятся асинхронно, main thread показывает состояние подготовки, а stale/canceled результат не запускает Core Audio. Фактический OOP instance проверяется через публичное Audio Unit property; AUv2 и VST3 остаются явно in-process. QA также исправил стартовую gain ramp и точную позицию loop boundary. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
+
+Собрать и запустить на Apple Silicon Mac:
+
+```sh
+./scripts/build-macos.sh
+open 'build/My DAW.app'
+```
+
+[Открыть единый HTML-справочник](docs/index.html) — все разделы, навигация, таблицы и ссылки; работает без сети. Markdown-файлы ниже — редактируемые исходники.
+
+## С чего начать
+
+1. [Концепция и границы продукта](docs/01-product.md) — какой опыт создаём и для кого.
+2. [Выбранный стек](docs/03-stack.md) — на чём строим, альтернативы и причины выбора.
+3. [Архитектура](docs/04-architecture.md) — как связаны интерфейс, проект и звук.
+4. [Первая версия](docs/02-mvp.md) — требования с критериями готовности.
+5. [План реализации](docs/11-roadmap.md) и [первый цикл разработки](docs/12-development.md).
+
+## Целевое решение в одном экране
+
+| Область | Базовый выбор |
+|---|---|
+| Платформа | macOS 14+, arm64; физическая проверка M1 и M4 |
+| Интерфейс | Swift 6 language mode, AppKit; SwiftUI для настроек и небольших панелей |
+| Таймлайн | Собственный AppKit canvas; Metal/MetalKit после сравнительного прототипа |
+| Аудиоядро | Собственная domain/C ABI граница; Tracktion Engine/JUCE кандидат для graph, hosting и render services; Core Audio path остаётся reference до parity |
+| Граница языков | Небольшой C API, Objective-C++ только в платформенном адаптере |
+| Проект | Папка-пакет, SQLite, неизменяемые медиа, транзакции и восстановление |
+| Эффекты | Встроенные сначала; AU на первой пользовательской альфе; VST3 следующим этапом |
+| Расширения | Декларативные workflow-модули и типизированные команды; отдельный процесс для внешнего кода |
+| ИИ | Необязательные фоновые задачи; план изменений → прослушивание → применение |
+| Инструменты | Xcode для macOS app; CMake/CTest для ядра; Python только для утилит |
+| Open source | Рекомендация: MPL-2.0 для приложения, Apache-2.0 для самостоятельного SDK; ещё не применена |
+
+Это выбранное направление для прототипов, а не обещание универсальной DAW. Проверенный Tracktion proof изменил следующий шаг: routing и AU-hosting сначала сравниваются через backend adapter, при этом нативный интерфейс, формат проекта и command model остаются нашими. Условия миграции зафиксированы в [ADR-012](docs/adr/012-tracktion-adapter.md).
+
+## Карта документации
+
+| Документ | Содержание |
+|---|---|
+| [53 Async AUv3 hosting](docs/53-async-auv3-hosting.md) | Bounded render-graph prepare, strict system OOP verification, cancel/stale transport и UI state |
+| [52 UI QA and hosting policy](docs/52-ui-qa-hosting-policy.md) | Реальный layout QA, format v15 и явная per-insert hosting policy |
+| [49 Studio Pro workspace and live meters](docs/49-studio-pro-workspace-meters.md) | Общий zoom/ruler, правый inspector, сохранение dock layout и realtime channel meters |
+| [50 Inspector and browser](docs/50-inspector-browser.md) | Редактируемый channel/clip inspector и встроенный WAV/AU/VST3 browser |
+| [51 Pinned headers and keyboard routing](docs/51-pinned-headers-keyboard.md) | Фиксированные track headers, синхронный vertical scroll и безопасные глобальные команды |
+| [48 Professional workspace](docs/48-professional-workspace.md) | Arrangement/mixer split, channel strips, прямой clip move/trim/fade и компактный transport/status workflow |
+| [47 Plug-in Touch/Latch and audible playhead](docs/47-plugin-touch-audible-playhead.md) | Continuous plug-in controls, one-revision gestures, live override и transport после graph latency |
+| [46 Plug-in automation and tail export](docs/46-plugin-automation-tail-export.md) | Format v14, sample-offset AU/VST3 parameter curves, generic AUTO UI, DAWproject lanes и finite VST3 tail |
+| [45 Track/bus inserts and graph PDC](docs/45-track-bus-inserts-pdc.md) | Сохраняемые channel chains, block graph DSP, фактическая PDC, общий UI/C ABI и DAWproject devices |
+| [44 Automation write and PDC plan](docs/44-automation-write-pdc-plan.md) | Read/Touch/Latch, atomic gesture Undo и runtime graph delay planner |
+| [43 VST3 master effects](docs/43-vst3-master-effects.md) | Catalog UI, master processing, parameters/state, latency/tail, dry fallback и DAWproject preset |
+| [42 VST3 foundation](docs/42-vst3-foundation.md) | Pinned SDK, isolated scanner/quarantine/cache и format-neutral state envelope |
+| [41 DAWproject export](docs/41-dawproject-export.md) | DAWproject 1.0 XML/ZIP, embedded media/AU state, routing/automation и loss report |
+| [40 Vocal preparation workflow](docs/40-vocal-preparation-workflow.md) | Выбор Lead/Doubles, deterministic peak/RMS, gain proposal, preview и atomic apply |
+| [39 Multi-target automation and workflow](docs/39-multi-automation-workflow.md) | Format v12, track/bus/master lanes, cache invalidation и manifest → preview → atomic commit |
+| [38 Volume automation and PDC](docs/38-volume-automation-pdc.md) | Format v11, volume curves, post/pre-send semantics, master-chain latency reporting и compensated export |
+| [37 AU scanner and parameters](docs/37-au-scanner-parameters.md) | Изолированный installed-AU scan, quarantine, generic parameters, missing-plugin fallback и Tracktion routing parity |
+| [36 Apple AU master inserts](docs/36-apple-au-master-inserts.md) | Approved-каталог, state, latency, dry fallback, playback/export и format v10 |
+| [35 Routing, buses and sends](docs/35-routing-buses-sends.md) | Main outputs, pre/post sends, DAG, realtime plan, UI и format v9 |
+| [34 Tracktion Engine spike](docs/34-tracktion-engine-spike.md) | Exact dependency lock, edit/import/save/render proof и решение об adapter layer |
+| [33 Full-duplex loop recording](docs/33-full-duplex-loop-recording.md) | Единый AUHAL callback, несколько проходов и atomic take commit |
+| [32 Loop playback and DAW shell](docs/32-loop-playback-shell.md) | Sample-exact loop transport и более плотная DAW-компоновка |
+| [31 Take lanes and comp](docs/31-take-lanes-comp.md) | Отдельные дубли, comp-регионы, armed recording, Undo и format v8 |
+| [30 Mixer](docs/30-mixer.md) | Volume, stereo balance, mute, solo, master, smoothing и format v7 |
+| [29 Output lifecycle](docs/29-output-lifecycle.md) | Состояния Core Audio, поколения запуска, ошибки callback и silent hardware smoke |
+| [28 Crossfades](docs/28-crossfades.md) | Смежные клипы, source handles, linear envelopes, Undo и format v6 |
+| [27 Bounded background jobs](docs/27-bounded-background-jobs.md) | Общий worker budget, busy, lifetime и ThreadSanitizer proof |
+| [26 Ranges and musical grid](docs/26-ranges-grid-layout.md) | Рабочие зоны UI, диапазонный экспорт, BPM и деления сетки |
+| [25 Offline WAV export](docs/25-offline-export.md) | PCM24/float32, общий renderer, фон, прогресс, отмена и atomic publish |
+| [24 Crash-safe recording](docs/24-crash-safe-recording.md) | SPSC ring, PCM checkpoints, восстановление после process crash |
+| [23 Dry recording](docs/23-dry-recording.md) | Core Audio mono input, Record/Stop, RT-границы и ограничения проверки |
+| [22 Clip operations](docs/22-clip-operations-fades.md) | Copy/Delete, snap, fades, формат v5 и проверка |
+| [21 Split clips](docs/21-split-clips.md) | Split, несколько регионов, формат v4 и результаты проверки |
+| [20 Background storage](docs/20-background-storage.md) | Фоновая запись, резервные копии и crash-тесты |
+| [19 Clip editing](docs/19-clip-editing.md) | Move/trim/Undo, формат v3 и результаты проверки |
+| [18 Waveform slice](docs/18-waveform-slice.md) | Waveform preview, общий курсор, seek и клавиатура |
+| [17 Audio slice](docs/17-audio-slice.md) | Импорт WAV, Core Audio playback, embedded media и проверенные ограничения |
+| [16 Implementation](docs/16-implementation.md) | Рабочий прототип, сборка, проверенные сценарии и временный формат |
+| [01 Product](docs/01-product.md) | Видение, аудитория, дизайн, идеи и исследование пользовательских проблем |
+| [02 MVP](docs/02-mvp.md) | Сценарии, требования, исключения, состояния ошибок |
+| [03 Stack](docs/03-stack.md) | Матрица решений, версии, зависимости, ограничения |
+| [04 Architecture](docs/04-architecture.md) | Процессы, потоки, жизненный цикл команды, границы модулей |
+| [05 Audio engine](docs/05-audio-engine.md) | Время, буферы, граф, мониторинг, PDC, запись и экспорт |
+| [06 Project format](docs/06-project-format.md) | Сохранение, транзакции, восстановление, переносимость |
+| [07 Extensions](docs/07-extensions.md) | Workflow SDK, команды, совместимость, разрешения |
+| [08 Plug-in hosting](docs/08-plugin-hosting.md) | AU/VST3, сканер, состояние, падения, совместимость |
+| [09 AI and macOS](docs/09-ai-and-macos.md) | ИИ, локальность, модели, жесты, Shortcuts и Siri |
+| [10 Quality](docs/10-quality.md) | Производительность, DSP, реальные устройства, crash-тесты |
+| [11 Roadmap](docs/11-roadmap.md) | Этапы, backlog, зависимости, оценки, риски |
+| [12 Development](docs/12-development.md) | Подготовка окружения, будущая структура исходников, первый slice |
+| [13 Open source](docs/13-open-source.md) | Лицензии, управление, распространение, устойчивость проекта |
+| [14 Research](docs/14-research.md) | Конкуренты, источники, ограничения исследования |
+| [15 DAW Atlas](docs/15-daw-atlas.md) | 50 DAW и смежных музыкальных сред, сильные стороны и подтверждённые стеки |
+| [ADR](docs/adr/README.md) | Реестр архитектурных решений и условий пересмотра |
+| [Контракты](specs/README.md) | JSON Schema, SQL и согласованные примеры |
+| [Источники](docs/sources.md) | Первичные источники и применимость |
+
+## Проверка подготовленных материалов
+
+Из корня репозитория:
+
+```sh
+python3 scripts/check_docs.py
+python3 scripts/doctor.py
+```
+
+Первая команда проверяет локальные ссылки и примеры контрактов. Вторая читает состояние инструментов разработки и ничего не устанавливает. Приложение собирается через `./scripts/build-macos.sh`, ядро — через CMake presets. Swift Package не создавался, поэтому `swift build` здесь не используется.
+
+Полная проверка JSON Schema и пересборка HTML:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-docs.txt
+.venv/bin/python scripts/check_docs.py --require-schemas
+.venv/bin/python scripts/build_handbook.py
+```
+
+Python-пакеты используются только для документации. Готовый HTML не требует Python или этих зависимостей для чтения.
+
+Исследование актуализировано 14 сентября 2026 года. Версии библиотек нужно фиксировать при фактическом подключении; `latest`, `master` и `develop` не являются lock-файлом.

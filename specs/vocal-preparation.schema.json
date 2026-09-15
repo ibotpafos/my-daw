@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mydaw.dev/schemas/vocal-preparation.v1.json",
+  "title": "My DAW vocal preparation workflow v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["input"],
+  "properties": {
+    "input": {"$ref": "#/$defs/input"},
+    "output": {"$ref": "#/$defs/output"}
+  },
+  "$defs": {
+    "trackId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$",
+      "maxLength": 20
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]{1,80}$"
+    },
+    "db": {"type": "number", "multipleOf": 0.01},
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectedTrackIds", "baseName", "targetRmsDb", "peakCeilingDb", "doubleOffsetDb"],
+      "properties": {
+        "selectedTrackIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/trackId"}
+        },
+        "baseName": {"$ref": "#/$defs/name"},
+        "targetRmsDb": {"$ref": "#/$defs/targetRmsDb"},
+        "peakCeilingDb": {"$ref": "#/$defs/peakCeilingDb"},
+        "doubleOffsetDb": {"$ref": "#/$defs/doubleOffsetDb"}
+      }
+    },
+    "targetRmsDb": {"allOf": [{"$ref": "#/$defs/db"}, {"minimum": -60, "maximum": -6}]},
+    "peakCeilingDb": {"allOf": [{"$ref": "#/$defs/db"}, {"minimum": -18, "maximum": 0}]},
+    "doubleOffsetDb": {"allOf": [{"$ref": "#/$defs/db"}, {"minimum": -24, "maximum": 0}]},
+    "analysisMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trackId", "rmsDb", "peakDb", "proposedGainDb", "predictedRmsDb", "predictedPeakDb", "peakLimited"],
+      "properties": {
+        "trackId": {"$ref": "#/$defs/trackId"},
+        "rmsDb": {"$ref": "#/$defs/db"},
+        "peakDb": {"$ref": "#/$defs/db"},
+        "proposedGainDb": {"$ref": "#/$defs/db"},
+        "predictedRmsDb": {"$ref": "#/$defs/db"},
+        "predictedPeakDb": {"$ref": "#/$defs/db"},
+        "peakLimited": {"type": "boolean"}
+      }
+    },
+    "renameOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trackId", "name"],
+      "properties": {"type": {"const": "track.rename"}, "trackId": {"$ref": "#/$defs/trackId"}, "name": {"$ref": "#/$defs/name"}}
+    },
+    "gainOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trackId", "gainDb"],
+      "properties": {"type": {"const": "track.setGain"}, "trackId": {"$ref": "#/$defs/trackId"}, "gainDb": {"allOf": [{"$ref": "#/$defs/db"}, {"minimum": -60, "maximum": 24}]}}
+    },
+    "operation": {"oneOf": [{"$ref": "#/$defs/renameOperation"}, {"$ref": "#/$defs/gainOperation"}]},
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analysis", "operations"],
+      "properties": {
+        "analysis": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/analysisMetric"}},
+        "operations": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/operation"}}
+      }
+    }
+  }
+}

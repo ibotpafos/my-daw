@@ -1,0 +1,10 @@
+{
+  "apiVersion": 0,
+  "commandId": "cmd-0001",
+  "projectId": "project-demo",
+  "expectedRevision": 0,
+  "operations": [
+    {"type": "track.rename", "trackId": "track-vocal", "name": "Основной вокал"},
+    {"type": "track.setGain", "trackId": "track-vocal", "gainDb": -3}
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "My DAW declarative workflow module v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "apiVersion", "displayName", "capabilities", "actions"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9-]*)+$", "maxLength": 120},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "apiVersion": {"const": 0},
+    "displayName": {"type": "string", "minLength": 1, "maxLength": 120},
+    "capabilities": {
+      "type": "array", "uniqueItems": true,
+      "items": {"enum": ["project.read", "project.edit", "audio.read.selection", "audio.render.preview"]}
+    },
+    "actions": {
+      "type": "array", "minItems": 1, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "label", "uiSlot", "operation"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+          "label": {"type": "string", "minLength": 1, "maxLength": 120},
+          "uiSlot": {"enum": ["clip.context", "track.context", "command.palette"]},
+          "operation": {"enum": ["track.rename", "track.setGain", "track.prepare", "vocal.prepare"]},
+          "inputSchema": {"enum": ["vocal-preparation.v1"]}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "My DAW package manifest v0",
+  "type": "object", "additionalProperties": false,
+  "required": ["formatVersion", "projectId", "database", "requiredFeatures"],
+  "properties": {
+    "formatVersion": {"const": 0},
+    "projectId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,79}$"},
+    "database": {"const": "session.sqlite"},
+    "requiredFeatures": {
+      "type": "array", "uniqueItems": true,
+      "items": {"enum": ["audio-clips-v0"]},
+      "minItems": 1, "maxItems": 1
+    }
+  }
+}

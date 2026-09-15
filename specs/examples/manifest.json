@@ -1,0 +1,6 @@
+{
+  "formatVersion": 0,
+  "projectId": "project-demo",
+  "database": "session.sqlite",
+  "requiredFeatures": ["audio-clips-v0"]
+}

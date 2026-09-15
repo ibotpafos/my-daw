@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>My DAW</string>
+<key>CFBundleIdentifier</key><string>dev.mydaw.prototype</string>
+<key>CFBundleName</key><string>My DAW</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>36</string>
+<key>CFBundleShortVersionString</key><string>1.26.0</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>My DAW использует микрофон только после нажатия «Запись», чтобы записать аудиодубль в текущий проект.</string>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>dev.mydaw.draft</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+<key>UTTypeDescription</key><string>My DAW experimental draft</string>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>mydawdraft</string></array></dict>
+</dict></array>
+</dict></plist>

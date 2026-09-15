@@ -1,0 +1,194 @@
+#include "audio/renderer.hpp"
+#include "audio/input.hpp"
+#include "daw.h"
+#include <cmath>
+#include <algorithm>
+#include <sqlite3.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <random>
+#include <unistd.h>
+#define CHECK(x) do { if(!(x)) throw std::runtime_error("Failed: " #x); } while(false)
+template<class Fn> void rejects(Fn fn) { bool bad=false; try{fn();}catch(...){bad=true;} CHECK(bad); }
+std::vector<unsigned char> wav() {
+    std::vector<unsigned char> b(44+9600); std::memcpy(b.data(),"RIFF",4); std::memcpy(b.data()+8,"WAVEfmt ",8); std::memcpy(b.data()+36,"data",4);
+    auto put=[&](size_t p,uint32_t v,int n){for(int i=0;i<n;++i)b[p+i]=static_cast<unsigned char>(v>>(8*i));};
+    put(4,uint32_t(b.size()-8),4);put(16,16,4);put(20,1,2);put(22,1,2);put(24,48000,4);put(28,96000,4);put(32,2,2);put(34,16,2);put(40,9600,4);
+    for(size_t p=44;p<b.size();p+=2)put(p,8192,2);
+    return b;
+}
+int main(){try{
+    daw::CaptureBuffer capture(4); float captured[]={0.25f,-0.5f,NAN,20.0f,0.75f};
+    capture.writeMono(captured,5); CHECK(capture.frames()==4 && capture.overflowed());
+    auto capturedClip=capture.finish(); CHECK(capturedClip->samples()==std::vector<float>({0.25f,0.25f,-0.5f,-0.5f,0,0,16,16}));
+    rejects([]{daw::CaptureBuffer invalid(0);});
+    auto bytes=wav(); auto clip=daw::decodeWav(bytes); CHECK(clip->frames()==4800); CHECK(clip->samples()[0]==0.25f && clip->samples()[1]==0.25f);
+    // Validate every advertised encoding with signed boundary samples.
+    for(auto bits : {16,24,32}) {
+        auto integer=bytes; const unsigned width=unsigned(bits/8); integer.resize(44+width);
+        auto put=[&](size_t p,uint32_t value,int count){for(int i=0;i<count;++i)integer[p+i]=static_cast<unsigned char>(value>>(8*i));};
+        if(width&1) integer.push_back(0);
+        put(4,uint32_t(integer.size()-8),4);put(28,48000*width,4);put(32,width,2);put(34,unsigned(bits),2);put(40,width,4);put(44,uint32_t(1)<<(bits-1),int(width));
+        CHECK(daw::decodeWav(integer)->samples()[0]==-1.0f);
+        if(bits==32){put(20,3,2);put(44,0x3e800000,4);CHECK(daw::decodeWav(integer)->samples()[0]==0.25f);put(44,0x7fc00000,4);rejects([&]{daw::decodeWav(integer);});}
+    }
+    auto truncated=bytes; truncated.pop_back(); rejects([&]{daw::decodeWav(truncated);});
+    auto wrongRate=bytes; wrongRate[24]=0x44; wrongRate[25]=0xac; rejects([&]{daw::decodeWav(wrongRate);});
+    auto wrongAlign=bytes; wrongAlign[32]=7; rejects([&]{daw::decodeWav(wrongAlign);});
+    CHECK(clip->peaks().size()==512); for(auto peak:clip->peaks()) CHECK(peak==0.25f);
+    std::vector<float> impulse(2000,0); impulse[1500]=0.5f;
+    auto transient=std::make_shared<const daw::Clip>(std::move(impulse));
+    CHECK(*std::max_element(transient->peaks().begin(),transient->peaks().end())==0.5f);
+    daw::Session seekSession;seekSession.import("Transient",transient,0);
+    daw::Renderer seekRenderer;seekRenderer.prepare(seekSession.state(),700);seekRenderer.playing=true;
+    std::vector<float> seekLeft(512),seekRight(512);seekRenderer.render(seekLeft.data(),seekRight.data(),512);
+    CHECK(seekLeft[49]==0 && seekLeft[50]>0 && seekRight[50]==0 && seekLeft[300]==0);
+    CHECK(seekRenderer.position==1000 && !seekRenderer.playing);
+    rejects([&]{seekRenderer.prepare(seekSession.state(),1001);});CHECK(seekRenderer.position==1000);
+    seekRenderer.prepare(seekSession.state(),1000);seekRenderer.playing=true;seekRenderer.render(seekLeft.data(),seekRight.data(),512);
+    CHECK(seekLeft[50]==0 && !seekRenderer.playing);
+    std::vector<float> loopSamples(20);for(size_t i=0;i<10;++i)loopSamples[i*2]=loopSamples[i*2+1]=float(i+1)/20.0f;
+    daw::Session loopSession;loopSession.import("Loop",std::make_shared<const daw::Clip>(std::move(loopSamples)),0);
+    daw::Renderer loopRenderer;loopRenderer.prepare(loopSession.state(),5,3,7);loopRenderer.playing=true;
+    std::vector<float> loopLeft(6),loopRight(6);loopRenderer.render(loopLeft.data(),loopRight.data(),6);
+    const std::array<size_t,6> loopTimeline{5,6,3,4,5,6};float loopSmooth=0;
+    for(size_t i=0;i<loopTimeline.size();++i){loopSmooth+=(1-loopSmooth)*0.004166667f;CHECK(std::abs(loopLeft[i]-(float(loopTimeline[i]+1)/20.0f)*loopSmooth)<0.000001f&&loopLeft[i]==loopRight[i]);}
+    CHECK(loopRenderer.position==7&&loopRenderer.playing);loopLeft.resize(1);loopRight.resize(1);loopRenderer.render(loopLeft.data(),loopRight.data(),1);CHECK(loopRenderer.position==4&&loopRenderer.playing);
+    rejects([&]{loopRenderer.prepare(loopSession.state(),0,7,3);});rejects([&]{loopRenderer.prepare(loopSession.state(),0,3,11);});
+    seekSession.editClip(1,0,200,700,100,1);
+    seekRenderer.prepare(seekSession.state()); seekRenderer.playing=true; seekRenderer.render(seekLeft.data(),seekRight.data(),512);
+    CHECK(seekLeft[199]==0 && seekLeft[249]==0 && seekLeft[250]>0 && seekLeft[300]==0);
+    CHECK(seekRenderer.duration()==300 && seekRenderer.position==300);
+    auto editRevision=seekSession.state().revision;
+    seekSession.editClip(1,0,200,700,100,editRevision);CHECK(seekSession.state().revision==editRevision);
+    rejects([&]{seekSession.editClip(1,0,0,950,100,editRevision);});
+    rejects([&]{seekSession.editClip(1,0,0,0,0,editRevision);});
+    rejects([&]{seekSession.editClip(1,0,UINT64_MAX,0,100,editRevision);});
+    rejects([&]{seekSession.editClip(1,0,0,UINT64_MAX,100,editRevision);});
+    rejects([&]{seekSession.editClip(1,0,0,0,UINT64_MAX,editRevision);});
+    rejects([&]{seekSession.editClip(1,0,0,0,100,0);});
+    CHECK(seekSession.state().revision==editRevision);
+    seekSession.undo(editRevision);CHECK(seekSession.state().tracks[0].regions[0].start==0 && seekSession.state().tracks[0].regions[0].length==1000);
+    seekSession.redo(seekSession.state().revision);CHECK(seekSession.state().tracks[0].regions[0].sourceOffset==700);
+    seekSession.splitClip(1,0,250,seekSession.state().revision);
+    CHECK(seekSession.state().tracks[0].regions==std::vector<daw::Region>({{200,700,50},{250,750,50}}));
+    seekRenderer.prepare(seekSession.state()); seekRenderer.playing=true; seekRenderer.render(seekLeft.data(),seekRight.data(),512);
+    CHECK(seekLeft[249]==0 && seekLeft[250]>0 && seekLeft[299]==0); // split preserves the source/timeline mapping
+    rejects([&]{seekSession.splitClip(1,0,200,seekSession.state().revision);});
+    rejects([&]{seekSession.splitClip(1,1,300,seekSession.state().revision);});
+    auto splitRevision=seekSession.state().revision; seekSession.undo(splitRevision); CHECK(seekSession.state().tracks[0].regions.size()==1);
+    seekSession.redo(seekSession.state().revision); CHECK(seekSession.state().tracks[0].regions.size()==2);
+    daw::Session clipOps; clipOps.import("Ops",transient,0); clipOps.splitClip(1,0,500,1);
+    clipOps.setClipFades(1,0,10,20,2); CHECK(clipOps.state().tracks[0].regions[0].fadeIn==10);
+    clipOps.editClip(1,0,0,0,15,3); CHECK(clipOps.state().tracks[0].regions[0].fadeIn==10 && clipOps.state().tracks[0].regions[0].fadeOut==5);
+    clipOps.undo(4);
+    rejects([&]{clipOps.setClipFades(1,0,300,300,5);}); CHECK(clipOps.state().revision==5);
+    clipOps.duplicateClip(1,0,5); CHECK(clipOps.state().tracks[0].regions.size()==3 && clipOps.state().tracks[0].regions.back().start==1000);
+    clipOps.deleteClip(1,1,6); CHECK(clipOps.state().tracks[0].regions.size()==2);
+    clipOps.deleteClip(1,1,7); rejects([&]{clipOps.deleteClip(1,0,8);});
+    clipOps.undo(8); CHECK(clipOps.state().tracks[0].regions.size()==2);
+    auto constantClip=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.5f));
+    daw::Session crossfade;crossfade.import("X",constantClip,0);crossfade.splitClip(1,0,500,1);crossfade.setCrossfade(1,0,100,2);
+    CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500,0,100},{400,400,600,100,0}}));
+    crossfade.setCrossfade(1,0,100,3);CHECK(crossfade.state().revision==3);rejects([&]{crossfade.setCrossfade(1,0,1,3);});
+    daw::Renderer crossfadeRenderer;crossfadeRenderer.prepare(crossfade.state());crossfadeRenderer.playing=true;std::vector<float> crossLeft(1000),crossRight(1000);crossfadeRenderer.render(crossLeft.data(),crossRight.data(),1000);
+    for(size_t i=400;i<500;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(crossLeft[i]-0.5f*smoothed)<0.00002f);}
+    crossfade.setCrossfade(1,0,0,3);CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500},{500,500,500}}));
+    crossfade.undo(4);CHECK(crossfade.state().tracks[0].regions[1].start==400);crossfade.redo(5);CHECK(crossfade.state().tracks[0].regions[1].start==500);
+    crossfade.undo(6);CHECK(crossfade.state().tracks[0].regions[1].start==400);rejects([&]{crossfade.setCrossfade(1,0,600,7);});
+    std::vector<float> mixA(6000),mixB(6000);for(size_t i=0;i<3000;++i){mixA[i*2]=0.4f;mixA[i*2+1]=0.2f;mixB[i*2]=0.1f;mixB[i*2+1]=0.3f;}
+    daw::Session mixer;mixer.import("A",std::make_shared<const daw::Clip>(std::move(mixA)),0);mixer.import("B",std::make_shared<const daw::Clip>(std::move(mixB)),1);mixer.pan(1,-1,2);mixer.pan(2,1,3);mixer.masterGain(-6.020599913,4);
+    auto mixedLast=[&]{daw::Renderer r;r.prepare(mixer.state());r.playing=true;std::vector<float> l(2048),rr(2048);r.render(l.data(),rr.data(),2048);return std::pair{l.back(),rr.back()};};
+    auto stereo=mixedLast();CHECK(std::abs(stereo.first-0.2f)<0.0001f&&std::abs(stereo.second-0.15f)<0.0001f);
+    mixer.solo(2,true,5);auto soloed=mixedLast();CHECK(std::abs(soloed.first)<0.0001f&&std::abs(soloed.second-0.15f)<0.0001f);
+    mixer.mute(2,true,6);auto muted=mixedLast();CHECK(std::abs(muted.first)<0.0001f&&std::abs(muted.second)<0.0001f);mixer.undo(7);CHECK(!mixer.state().tracks[1].muted);
+    auto routedClip=std::make_shared<const daw::Clip>(std::vector<float>(6000,0.5f));daw::Session routed;routed.import("Lead",routedClip,0);routed.addBus("Vocal Bus",1);routed.routeTrack(1,2,2);routed.busGain(2,-6.020599913,3);
+    daw::Renderer routedRenderer;routedRenderer.prepare(routed.state());routedRenderer.playing=true;std::vector<float> routedLeft(2048),routedRight(2048);routedRenderer.render(routedLeft.data(),routedRight.data(),2048);CHECK(std::abs(routedLeft.back()-0.25f)<0.0002f&&std::abs(routedRight.back()-0.25f)<0.0002f);
+    daw::Session sendMix;sendMix.import("Dry",routedClip,0);sendMix.addBus("Parallel",1);sendMix.upsertSend(1,2,-6.020599913,false,2);daw::Renderer sendRenderer;sendRenderer.prepare(sendMix.state());sendRenderer.playing=true;std::vector<float> sendLeft(2048),sendRight(2048);sendRenderer.render(sendLeft.data(),sendRight.data(),2048);CHECK(std::abs(sendLeft.back()-0.75f)<0.0003f&&std::abs(sendRight.back()-0.75f)<0.0003f);
+    sendMix.gain(1,-6.020599913,3);sendMix.upsertSend(1,2,-6.020599913,true,4);sendRenderer.prepare(sendMix.state());sendRenderer.playing=true;sendRenderer.render(sendLeft.data(),sendRight.data(),2048);CHECK(std::abs(sendLeft.back()-0.5f)<0.0003f);sendMix.mute(1,true,5);sendRenderer.updateMix(sendMix.state());sendRenderer.render(sendLeft.data(),sendRight.data(),2048);CHECK(std::abs(sendLeft.back())<0.0003f);
+#ifdef __APPLE__
+    auto auCatalog=daw::supportedAudioUnits();CHECK(auCatalog.size()==3);auto auSnapshot=daw::snapshotAudioUnit(auCatalog.front());daw::Session auMix;auMix.import("AU source",routedClip,0);auMix.addMasterInsert({0,auCatalog.front().type,auCatalog.front().subtype,auCatalog.front().manufacturer,auSnapshot.name,false,auSnapshot.latencyFrames,auSnapshot.state},1);daw::Renderer auRenderer;auRenderer.prepare(auMix.state());auRenderer.playing=true;std::vector<float> auLeft(2048),auRight(2048);auRenderer.render(auLeft.data(),auRight.data(),2048);CHECK(auRenderer.pluginErrors==0&&std::isfinite(auLeft.back())&&std::abs(auLeft.back())>0.01f);
+#endif
+    auto baseTake=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.1f));auto alternateTake=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.8f));daw::Session comp;comp.import("Lead",baseTake,0);comp.addTake(1,"Take 2",alternateTake,0,1);comp.compRange(1,1,200,300,2);
+    CHECK(comp.state().tracks[0].takes.size()==1&&comp.state().tracks[0].regions==std::vector<daw::Region>({{0,0,200},{200,200,300,0,0,1},{500,500,500}}));
+    daw::Renderer compRenderer;compRenderer.prepare(comp.state());compRenderer.playing=true;std::vector<float> compLeft(1000),compRight(1000);compRenderer.render(compLeft.data(),compRight.data(),1000);CHECK(compLeft[100]<0.05f&&compLeft[350]>0.6f&&compLeft[700]<0.2f);
+    comp.setClipFades(1,1,10,10,3);CHECK(comp.state().tracks[0].regions[1].take==1);comp.splitClip(1,1,350,4);CHECK(comp.state().tracks[0].regions[1].take==1&&comp.state().tracks[0].regions[2].take==1);comp.undo(5);comp.undo(6);comp.undo(7);CHECK(comp.state().tracks[0].regions.size()==1);comp.redo(8);CHECK(comp.state().tracks[0].regions[1].take==1);
+    rejects([&]{comp.compRange(1,2,0,10,9);});rejects([&]{comp.compRange(1,1,900,200,9);});
+    daw::Session passBatch;passBatch.import("Loop",baseTake,0);std::vector<daw::Take> passTakes{{"Pass 1",100,alternateTake},{"Pass 2",100,alternateTake}};passBatch.addTakes(1,std::move(passTakes),1);CHECK(passBatch.state().revision==2&&passBatch.state().tracks[0].takes.size()==2);passBatch.undo(2);CHECK(passBatch.state().tracks[0].takes.empty());passBatch.redo(3);CHECK(passBatch.state().tracks[0].takes.size()==2);
+    daw::Session manyClips;manyClips.import("Many",transient,0);for(int i=1;i<256;++i)manyClips.duplicateClip(1,0,manyClips.state().revision);
+    CHECK(manyClips.state().tracks[0].regions.size()==256);rejects([&]{manyClips.duplicateClip(1,0,manyClips.state().revision);});
+    std::vector<float> shortSamples(200,0.25f); auto shortClip=std::make_shared<const daw::Clip>(std::move(shortSamples));
+    daw::Session faded;faded.import("Fade",shortClip,0);faded.setClipFades(1,0,10,10,1);daw::Renderer fadeRenderer;fadeRenderer.prepare(faded.state());fadeRenderer.playing=true;
+    std::vector<float> fadeLeft(128),fadeRight(128);fadeRenderer.render(fadeLeft.data(),fadeRight.data(),128);CHECK(fadeLeft[0]==0 && fadeLeft[10]>fadeLeft[5] && fadeLeft[99]==0);
+    auto pcm=daw::encodePCM(*clip); CHECK(daw::decodePCM(pcm)->samples()==clip->samples());
+    auto invalid=pcm; invalid[0]=0;invalid[1]=0;invalid[2]=0xc0;invalid[3]=0x7f;rejects([&]{daw::decodePCM(invalid);});
+    daw::Session placed; placed.importAt("Take",capturedClip,12000,0); CHECK(placed.state().tracks[0].regions[0].start==12000); placed.undo(1); CHECK(placed.state().tracks.empty());
+    daw::Session session; session.import("Audio",clip,0); session.gain(1,-6.020599913,1);
+    daw::Renderer renderer; renderer.prepare(session.state()); renderer.playing=true;
+    std::vector<float> left(512),right(512);
+    for(int i=0;i<8;++i) renderer.render(left.data(),right.data(),512);
+    CHECK(std::abs(left.back()-0.125f)<0.0001f); CHECK(left==right); CHECK(renderer.position==4096);
+    renderer.render(left.data(),right.data(),512); renderer.render(left.data(),right.data(),512);
+    CHECK(renderer.position==4800 && !renderer.playing); CHECK(left[191]>0 && left[192]==0);
+    renderer.render(left.data(),right.data(),512); CHECK(left[0]==0);
+    session.gain(1,24,2); renderer.prepare(session.state()); renderer.playing=true;
+    for(int i=0;i<8;++i)renderer.render(left.data(),right.data(),512);
+    CHECK(renderer.clipped>0 && left.back()==1);
+    session.gain(1,-120,3); renderer.updateGains(session.state());
+    renderer.render(left.data(),right.data(),512); CHECK(left.back()<0.6f);
+    renderer.playing=false; renderer.render(left.data(),right.data(),512);CHECK(left.back()==0);
+    session.undo(4); CHECK(session.state().tracks[0].gain==24); session.undo(5);session.undo(6);session.undo(7); CHECK(session.state().tracks.empty());
+    session.redo(8); CHECK(session.state().tracks[0].audio==clip);
+    auto path=(std::filesystem::temp_directory_path()/("mydaw-audio-"+std::to_string(getpid())+".mydawdraft")).string();
+    struct Cleanup{std::string p,q,r;~Cleanup(){std::filesystem::remove(p);if(!q.empty())std::filesystem::remove(q);if(!r.empty())std::filesystem::remove(r);}} cleanup{path,{},{}};
+    daw::writeDraft(passBatch.state(),path);auto loadedPassBatch=daw::readDraft(path);CHECK(loadedPassBatch.tracks[0].takes.size()==2&&loadedPassBatch.tracks[0].takes[0].start==100&&loadedPassBatch.tracks[0].takes[1].audio->samples()==alternateTake->samples());
+    daw::writeDraft(session.state(),path); auto loaded=daw::readDraft(path); CHECK(loaded.tracks[0].audio->samples()==clip->samples());
+    auto compPath=path+".comp";cleanup.q=compPath;daw::writeDraft(comp.state(),compPath);auto loadedComp=daw::readDraft(compPath);CHECK(loadedComp.tracks[0].takes.size()==1&&loadedComp.tracks[0].takes[0].audio->samples()==alternateTake->samples()&&loadedComp.tracks[0].regions[1].take==1);
+    sqlite3* compDb=nullptr;CHECK(sqlite3_open(compPath.c_str(),&compDb)==SQLITE_OK);CHECK(sqlite3_exec(compDb,"UPDATE regions SET take_index=99 WHERE position=1",nullptr,nullptr,nullptr)==SQLITE_OK);sqlite3_close(compDb);rejects([&]{daw::readDraft(compPath);});
+    auto takeWav=path+".wav";cleanup.r=takeWav;{std::ofstream file(takeWav,std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));}std::unique_ptr<daw_session,decltype(&daw_destroy)> takeBridge(daw_create(),daw_destroy);CHECK(takeBridge&&daw_open_draft(takeBridge.get(),path.c_str())==0);daw_snapshot takeSnapshot{};takeSnapshot.struct_size=sizeof(takeSnapshot);CHECK(daw_get_snapshot(takeBridge.get(),&takeSnapshot)==0);CHECK(daw_import_take_wav(takeBridge.get(),1,takeWav.c_str(),"Bridge take",0,takeSnapshot.revision)==0);daw_track takeTrack{};takeTrack.struct_size=sizeof(takeTrack);CHECK(daw_get_track(takeBridge.get(),0,&takeTrack)==0&&takeTrack.take_count==2);daw_take takeInfo{};takeInfo.struct_size=sizeof(takeInfo);CHECK(daw_get_take(takeBridge.get(),1,1,&takeInfo)==0&&takeInfo.frames==4800);CHECK(daw_comp_range(takeBridge.get(),1,1,100,200,takeSnapshot.revision+1)==0);daw_clip takeRegion{};takeRegion.struct_size=sizeof(takeRegion);CHECK(daw_get_clip(takeBridge.get(),1,1,&takeRegion)==0&&takeRegion.take_index==1&&takeRegion.source_offset==100);
+    daw::Renderer restored;restored.prepare(loaded);restored.playing=true;restored.render(left.data(),right.data(),512);CHECK(left.back()>0.2f);
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> bridge(daw_create(),daw_destroy);CHECK(bridge);
+    daw_recording idle{};idle.struct_size=sizeof(idle);CHECK(daw_get_recording(bridge.get(),&idle)==0 && !idle.recording && !idle.frames);
+    CHECK(daw_open_draft(bridge.get(),path.c_str())==0);
+    std::array<float,512> waveform{};CHECK(daw_get_waveform(bridge.get(),1,waveform.data(),512)==0 && waveform[0]==0.25f);
+    CHECK(daw_get_waveform(bridge.get(),999,waveform.data(),512)==1);
+    CHECK(daw_get_waveform(bridge.get(),1,nullptr,512)==1);
+    CHECK(daw_get_waveform(bridge.get(),1,waveform.data(),511)==1);
+    daw_snapshot before{};before.struct_size=sizeof(before);CHECK(daw_get_snapshot(bridge.get(),&before)==0);
+    CHECK(daw_seek_frame(bridge.get(),4000)==0);
+    daw_transport t{};t.struct_size=sizeof(t);CHECK(daw_get_transport(bridge.get(),&t)==0 && t.frame==4000 && t.duration==4800 && !t.playing);
+    CHECK(daw_seek_frame(bridge.get(),4801)==1);
+    CHECK(daw_get_transport(bridge.get(),&t)==0 && t.frame==4000);
+    CHECK(daw_set_loop(bridge.get(),1,400,800)==0);CHECK(daw_get_transport(bridge.get(),&t)==0&&t.loop_enabled&&t.loop_start==400&&t.loop_end==800&&t.frame==400);
+    CHECK(daw_set_loop(bridge.get(),1,800,400)==1);CHECK(daw_get_transport(bridge.get(),&t)==0&&t.loop_enabled);
+    CHECK(daw_set_loop(bridge.get(),0,99,1)==0);CHECK(daw_get_transport(bridge.get(),&t)==0&&!t.loop_enabled&&!t.loop_start&&!t.loop_end);
+    daw_snapshot after{};after.struct_size=sizeof(after);CHECK(daw_get_snapshot(bridge.get(),&after)==0 && before.revision==after.revision);
+    CHECK(daw_open_draft(bridge.get(),path.c_str())==0);CHECK(daw_get_transport(bridge.get(),&t)==0 && t.frame==0);
+    CHECK(daw_edit_clip(bridge.get(),1,0,200,700,100,session.state().revision)==0);
+    CHECK(daw_get_transport(bridge.get(),&t)==0 && t.duration==300);
+    daw_clip bridgeClip{};bridgeClip.struct_size=sizeof(bridgeClip);CHECK(daw_get_clip(bridge.get(),1,0,&bridgeClip)==0 && bridgeClip.start==200);
+    daw_snapshot splitSnap{};splitSnap.struct_size=sizeof(splitSnap);CHECK(daw_get_snapshot(bridge.get(),&splitSnap)==0);
+    CHECK(daw_split_clip(bridge.get(),1,0,250,splitSnap.revision)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.source_offset==750);
+    CHECK(daw_set_clip_fades(bridge.get(),1,1,10,10,splitSnap.revision+1)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.fade_in==10);
+    CHECK(daw_set_crossfade(bridge.get(),1,0,10,splitSnap.revision+2)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.start==240 && bridgeClip.fade_in==10);
+    CHECK(daw_set_crossfade(bridge.get(),1,0,0,splitSnap.revision+3)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.start==250 && bridgeClip.fade_in==0);
+    CHECK(daw_duplicate_clip(bridge.get(),1,1,splitSnap.revision+4)==0);CHECK(daw_delete_clip(bridge.get(),1,2,splitSnap.revision+5)==0);
+    daw::writeDraft(seekSession.state(),path);auto edited=daw::readDraft(path);
+    CHECK(edited.tracks[0].regions.size()==2 && edited.tracks[0].regions[0].start==200 && edited.tracks[0].regions[1].sourceOffset==750);
+    daw::Renderer persisted;persisted.prepare(edited);persisted.playing=true;persisted.render(seekLeft.data(),seekRight.data(),512);CHECK(seekLeft[250]>0 && seekLeft[300]==0);
+    daw::writeDraft(clipOps.state(),path);auto persistedOps=daw::readDraft(path);CHECK(persistedOps.tracks[0].regions.size()==2 && persistedOps.tracks[0].regions[0].fadeIn==10 && persistedOps.tracks[0].regions[0].fadeOut==20);
+    daw::writeDraft(crossfade.state(),path);auto persistedCrossfade=daw::readDraft(path);CHECK(persistedCrossfade.tracks[0].regions[0].fadeOut==100 && persistedCrossfade.tracks[0].regions[1].start==400 && persistedCrossfade.tracks[0].regions[1].fadeIn==100);
+    daw::writeDraft(session.state(),path);
+    sqlite3* db=nullptr;CHECK(sqlite3_open(path.c_str(),&db)==SQLITE_OK);
+    CHECK(sqlite3_exec(db,"PRAGMA user_version=2;",nullptr,nullptr,nullptr)==SQLITE_OK);
+    auto version2=daw::readDraft(path);CHECK(version2.tracks[0].regions[0].start==0 && version2.tracks[0].regions[0].length==4800);
+    CHECK(sqlite3_exec(db,"PRAGMA user_version=1; ALTER TABLE tracks DROP COLUMN pcm;",nullptr,nullptr,nullptr)==SQLITE_OK);sqlite3_close(db);
+    auto legacy=daw::readDraft(path);CHECK(legacy.tracks.size()==1 && !legacy.tracks[0].audio);
+    daw::Session limits;for(int i=0;i<8;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
+    // Deterministic malformed-input smoke corpus; not a replacement for sustained fuzzing.
+    std::mt19937 rng(7);for(int i=0;i<400;++i){auto mutation=bytes;for(int n=0;n<5;++n)mutation[rng()%44]=static_cast<unsigned char>(rng());try{daw::decodeWav(mutation);}catch(const std::exception&){} }
+    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers\n";
+    return 0;
+}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
