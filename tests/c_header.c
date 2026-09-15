@@ -30,6 +30,11 @@ _Static_assert(offsetof(daw_midi_note, struct_size) == 0, "MIDI note prefix");
 _Static_assert(sizeof(daw_midi_note) == 32, "MIDI note ABI size");
 _Static_assert(offsetof(daw_midi_clip, struct_size) == 0, "MIDI clip prefix");
 _Static_assert(sizeof(daw_midi_clip) == 32, "MIDI clip ABI size");
+_Static_assert(DAW_MIDI_DEVICE_VERSION == 1 && DAW_MIDI_RECORD_STATUS_VERSION == 1, "MIDI capture ABI versions");
+_Static_assert(offsetof(daw_midi_device, struct_size) == 0 && offsetof(daw_midi_device, uniqueID) == 8 && offsetof(daw_midi_device, name) == 16, "MIDI device prefix and name placement");
+_Static_assert(sizeof(daw_midi_device) == 148, "MIDI device ABI size");
+_Static_assert(offsetof(daw_midi_record_status_t, struct_size) == 0 && offsetof(daw_midi_record_status_t, armed) == 8 && offsetof(daw_midi_record_status_t, open_notes) == 16, "MIDI capture status prefix");
+_Static_assert(sizeof(daw_midi_record_status_t) == 48, "MIDI capture status ABI size");
 _Static_assert(DAW_VST3_FLAG_INSTRUMENT == 1u, "VST3 component flag ABI value");
 _Static_assert(offsetof(daw_vst3_component, struct_size) == 0, "VST3 component prefix");
 _Static_assert(offsetof(daw_vst3_component, available) == 4 && offsetof(daw_vst3_component, flags) == 8 && offsetof(daw_vst3_component, class_id) == 12, "VST3 component flag placement");
@@ -98,6 +103,69 @@ int main(void) {
     if (vst3.flags != DAW_VST3_FLAG_INSTRUMENT) result |= 1; /* rejection must not touch caller storage */
     daw_vst3_component stale = vst3; stale.struct_size = sizeof(stale) - 4;
     if (daw_get_installed_vst3(session, 0, &stale) == 0) result |= 1; /* pre-flags buffers are rejected */
+    /* ---- Live MIDI capture + metronome ABI (v0) ----
+     * No controller is attached to this runner, so this is the headless
+     * ceiling of the feature: it proves the ABI shape and every path that has
+     * to be safe without hardware — rejection, idle no-op, no revision spent —
+     * but never that a real key press reaches a clip. */
+    uint32_t midi_inputs = 7;
+    if (daw_get_midi_input_device_count(session, &midi_inputs) != 0) result |= 1;
+    if (daw_get_midi_input_device_count(session, NULL) == 0) result |= 1;
+    daw_midi_device device = {0}; device.struct_size = sizeof(device); device.version = DAW_MIDI_DEVICE_VERSION; device.uniqueID = 12345; device.online = 77;
+    if (midi_inputs == 0) {
+        if (daw_get_midi_input_device(session, 0, &device) == 0) result |= 1; /* a headless run has no source at index 0 */
+        if (device.uniqueID != 12345 || device.online != 77) result |= 1;     /* rejection must not touch caller storage */
+    } else {
+        if (daw_get_midi_input_device(session, 0, &device) != 0) result |= 1;
+        if (device.struct_size != sizeof(device) || device.version != DAW_MIDI_DEVICE_VERSION) result |= 1;
+    }
+    if (daw_get_midi_input_device(session, midi_inputs, &device) == 0) result |= 1; /* one past the list is always nobody's */
+    daw_midi_device short_device = device; short_device.struct_size = sizeof(short_device) - 1;
+    if (daw_get_midi_input_device(session, 0, &short_device) == 0) result |= 1;     /* struct_size-1 is rejected */
+    daw_midi_device long_device = device; long_device.struct_size = sizeof(long_device) + 1;
+    if (daw_get_midi_input_device(session, 0, &long_device) == 0) result |= 1;      /* and so is struct_size+1 */
+    daw_midi_device stale_device = device; stale_device.version = DAW_MIDI_DEVICE_VERSION + 1;
+    if (daw_get_midi_input_device(session, 0, &stale_device) == 0) result |= 1;     /* an unknown version is refused too */
+    uint32_t active_input = 7;
+    if (daw_midi_input_active(session, &active_input) != 0) result |= 1;
+    if (active_input != 0) result |= 1;                                             /* nothing was ever opened */
+    if (daw_midi_input_active(session, NULL) == 0) result |= 1;
+    if (daw_set_midi_input(session, 0) != 0) result |= 1;                           /* closing with none open is a no-op */
+    if (daw_set_midi_input(session, 0xFFFFFFFFu) == 0) result |= 1;                /* an unknown source must be refused */
+    if (daw_midi_record_arm(session, 2, 0) == 0) result |= 1;                       /* no open input: arming must fail */
+    daw_midi_record_status_t capture = {0}; capture.struct_size = sizeof(capture); capture.version = DAW_MIDI_RECORD_STATUS_VERSION;
+    if (daw_midi_record_status(session, &capture) != 0) result |= 1;
+    if (capture.armed || capture.open_notes || capture.recorded || capture.dropped || capture.unmatched) result |= 1;
+    if (daw_midi_record_status(session, NULL) == 0) result |= 1;
+    daw_midi_record_status_t short_capture = capture; short_capture.struct_size = sizeof(short_capture) - 1;
+    if (daw_midi_record_status(session, &short_capture) == 0) result |= 1;          /* the size gate runs before any read */
+    daw_midi_record_status_t long_capture = capture; long_capture.struct_size = sizeof(long_capture) + 1;
+    if (daw_midi_record_status(session, &long_capture) == 0) result |= 1;
+    daw_midi_record_status_t stale_capture = capture; stale_capture.version = DAW_MIDI_RECORD_STATUS_VERSION + 1;
+    if (daw_midi_record_status(session, &stale_capture) == 0) result |= 1;
+    if (daw_midi_record_poll(session) != 0) result |= 1;                            /* draining an idle take is safe */
+    if (daw_midi_record_stop(session) != 0) result |= 1;                            /* stopping one is a silent no-op */
+    daw_snapshot idle = {0}; idle.struct_size = sizeof(idle);
+    result |= daw_get_snapshot(session, &idle);
+    if (idle.revision == 0) result |= 1;                                             /* the MIDI smoke above did move it */
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        if (daw_midi_record_stop(session) != 0) result |= 1;                        /* twice in a row is still a no-op */
+        daw_snapshot again = {0}; again.struct_size = sizeof(again);
+        result |= daw_get_snapshot(session, &again);
+        if (again.revision != idle.revision) result |= 1;                           /* and it never spends a revision */
+    }
+    for (int metronome = 0; metronome <= 1; ++metronome) {
+        int read_back = -1;
+        result |= daw_set_metronome(session, metronome);
+        result |= daw_get_metronome(session, &read_back);
+        if (read_back != metronome) result |= 1;                                    /* set/get symmetry on the stored flag */
+    }
+    if (daw_set_metronome(session, 2) == 0) result |= 1;                            /* only 0 and 1 are states */
+    if (daw_get_metronome(session, NULL) == 0) result |= 1;
+    if (daw_set_midi_input(session, 0) != 0) result |= 1;                           /* still idempotent after all of it */
+    daw_snapshot after = {0}; after.struct_size = sizeof(after);
+    result |= daw_get_snapshot(session, &after);
+    if (after.revision != idle.revision) result |= 1;                               /* capture and click are never commands */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

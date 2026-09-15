@@ -32,6 +32,23 @@ struct InspectorMidiModel: Equatable {
     var editable = false
 }
 
+/// One live CoreMIDI source the app can arm a keyboard take from. id 0 is the
+/// bridge's "no input" sentinel and never appears here; the view adds "Нет".
+struct InspectorMidiInputOption: Equatable {
+    var id: UInt32 = 0
+    var title = ""
+}
+
+/// MIDI capture row of the track inspector: which source feeds a keyboard take
+/// and whether a take is armed. The app owns every value; the view only draws
+/// them and reports the two user choices.
+struct InspectorMidiCaptureModel: Equatable {
+    var inputs: [InspectorMidiInputOption] = []
+    var selectedID: UInt32 = 0
+    var armed = false
+    var statusLine = ""
+}
+
 struct InspectorBrowserItem: Equatable, Identifiable {
     var id = UUID()
     var title = ""
@@ -44,6 +61,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var channel: InspectorChannelModel? { didSet { reloadInspector() } }
     var clip: InspectorClipModel? { didSet { reloadInspector() } }
     var midi: InspectorMidiModel? { didSet { applyMidi() } }
+    var midiCapture: InspectorMidiCaptureModel? { didSet { applyMidiCapture() } }
     var audioItems: [InspectorBrowserItem] = [] { didSet { reloadBrowser() } }
     var pluginItems: [InspectorBrowserItem] = [] { didSet { reloadBrowser() } }
     var onChannelChange: ((Double, Double) -> Void)?
@@ -52,6 +70,8 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onChannelSolo: ((Bool) -> Void)?
     var onClipChange: ((InspectorClipModel) -> Void)?
     var onMidiClipSelect: ((Int) -> Void)?
+    var onMidiInputSelect: ((UInt32) -> Void)?
+    var onMidiRecordToggle: (() -> Void)?
     var onMidiNotesChange: (([PianoRollNote]) -> Void)?
     var onMidiAddNote: (() -> Void)?
     var onMidiRemoveNote: ((Int) -> Void)?
@@ -91,6 +111,14 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let sendSummary = NSTextField(wrappingLabelWithString: "")
     private let clipForm = NSStackView()
     private let midiEditor = PianoRollEditorView()
+    // MIDI capture row: which live source feeds a keyboard take, the arm/stop
+    // switch itself and the counters the app formats. The app owns the state;
+    // this view only draws the model and reports the two user choices.
+    private let midiCaptureForm = NSStackView()
+    private let midiInputPopup = NSPopUpButton()
+    private let midiRecordButton = NSButton(title: "Запись с клавиатуры", target: nil, action: nil)
+    private let midiCaptureStatus = NSTextField(labelWithString: "MIDI-вход не выбран")
+    private var midiCaptureTitles: [String] = []
     private var fields: [NSTextField] = []
     private var isAudioPreviewPlaying = false
     private var previewedAudioID: UUID?
@@ -131,7 +159,23 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         let buttons=NSStackView(views:[mute,solo]);buttons.spacing=6;buttons.alignment = .centerY
         clipForm.orientation = .vertical;clipForm.alignment = .width;clipForm.spacing=6
         for(index,title) in ["Start · sec","Source offset · sec","Length · sec","Fade in · sec","Fade out · sec"].enumerated(){let field=NSTextField(string:"0.000");field.tag=index;field.target=self;field.action=#selector(changeClip);fields.append(field);clipForm.addArrangedSubview(row(title,field))}
-        for view in [nameRow,volumeRow,panRow,buttons,insertSummary,sendSummary,clipForm,midiEditor]{inspectorForm.addArrangedSubview(view);view.widthAnchor.constraint(equalTo:inspectorForm.widthAnchor).isActive=true}
+        // MIDI-вход: один открытый источник на сессию (лимит прототипа в мосту),
+        // «Нет» по умолчанию = вход закрыт; рядом кнопка arm/stop текущего тейка.
+        midiInputPopup.controlSize = .small; midiInputPopup.font = DAWDesignTokens.Typography.label
+        midiInputPopup.target = self; midiInputPopup.action = #selector(selectMidiInput)
+        midiInputPopup.setAccessibilityLabel("MIDI-вход для записи с клавиатуры")
+        midiInputPopup.setAccessibilityHelp("Список активных MIDI-источников; «Нет» закрывает вход.")
+        midiRecordButton.target = self; midiRecordButton.action = #selector(toggleMidiRecording)
+        midiRecordButton.bezelStyle = .texturedRounded; midiRecordButton.font = DAWDesignTokens.Typography.caption
+        midiCaptureStatus.font = DAWDesignTokens.Typography.caption; midiCaptureStatus.textColor = DAWDesignTokens.Color.secondaryText
+        midiCaptureStatus.lineBreakMode = .byTruncatingTail
+        midiCaptureStatus.setAccessibilityLabel("Статус записи MIDI с клавиатуры")
+        midiCaptureForm.orientation = .vertical; midiCaptureForm.alignment = .leading; midiCaptureForm.spacing = 4
+        midiCaptureForm.addArrangedSubview(row("MIDI-вход:", midiInputPopup))
+        midiCaptureForm.addArrangedSubview(midiRecordButton)
+        midiCaptureForm.addArrangedSubview(midiCaptureStatus)
+        for view in [nameRow,volumeRow,panRow,buttons,insertSummary,sendSummary,clipForm,midiCaptureForm,midiEditor]{inspectorForm.addArrangedSubview(view);view.widthAnchor.constraint(equalTo:inspectorForm.widthAnchor).isActive=true}
+        midiCaptureForm.isHidden = true
         midiEditor.isHidden = true
         midiEditor.onClipSelect = { [weak self] index in self?.onMidiClipSelect?(index) }
         midiEditor.onNotesChange = { [weak self] notes in self?.onMidiNotesChange?(notes) }
@@ -172,7 +216,48 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         midiEditor.clips = midi.clips
         midiEditor.selectedClip = midi.selectedClip
         midiEditor.notes = midi.notes
+        applyMidiCapture()   // ряд захвата живёт по тому же условию видимости
     }
+
+    /// Ряд захвата: виден только у MIDI-дорожки с клипами — именно в клип идёт
+    /// тейк. Все значения приходят из app-модели, здесь только отрисовка.
+    private func applyMidiCapture() {
+        guard let midiCapture, let midi, !midi.clips.isEmpty else {
+            midiCaptureForm.isHidden = true
+            return
+        }
+        midiCaptureForm.isHidden = false
+        let titles = ["Нет"] + midiCapture.inputs.map { $0.title }
+        // Список пересобираем только при реальном изменении: попап может быть
+        // открыт в тот момент, когда таймер транспорта обновляет счётчики.
+        if titles != midiCaptureTitles {
+            midiCaptureTitles = titles
+            midiInputPopup.removeAllItems()
+            midiInputPopup.addItems(withTitles: titles)
+            for (index, item) in midiInputPopup.itemArray.enumerated() {
+                item.representedObject = NSNumber(value: index == 0 ? UInt32(0) : midiCapture.inputs[index - 1].id)
+            }
+        }
+        if midiCapture.selectedID != 0, midiInputPopup.itemArray.first(where: { ($0.representedObject as? NSNumber)?.uint32Value == midiCapture.selectedID }) == nil {
+            // Источник исчез (устройство отключили): показываем «Нет», каким его
+            // видит мост, а не несуществующую запись.
+            midiInputPopup.selectItem(at: 0)
+        } else {
+            let target = midiInputPopup.itemArray.first { ($0.representedObject as? NSNumber)?.uint32Value == midiCapture.selectedID }
+            if let target { midiInputPopup.select(target) } else { midiInputPopup.selectItem(at: 0) }
+        }
+        midiRecordButton.title = midiCapture.armed ? "■ Закончить запись" : "● Запись с клавиатуры"
+        midiRecordButton.toolTip = midiCapture.armed ? "Стоп: закрыть тейк на текущей позиции и записать ноты в клип" : "Арм: принимать ноты с выбранного MIDI-входа в выбранный клип"
+        midiRecordButton.setAccessibilityLabel(midiCapture.armed ? "Закончить запись MIDI с клавиатуры" : "Начать запись MIDI с клавиатуры")
+        midiRecordButton.contentTintColor = midiCapture.armed ? DAWDesignTokens.Color.coral : .secondaryLabelColor
+        midiCaptureStatus.stringValue = midiCapture.statusLine
+        midiCaptureStatus.toolTip = midiCapture.statusLine
+    }
+
+    @objc private func selectMidiInput(_ sender: NSPopUpButton) {
+        onMidiInputSelect?((sender.selectedItem?.representedObject as? NSNumber)?.uint32Value ?? 0)
+    }
+    @objc private func toggleMidiRecording() { onMidiRecordToggle?() }
     private func reloadInspector() {
         guard tabs.selectedSegment == InspectorBrowserTab.inspector.rawValue else { return }
         clearBody();body.isHidden=true;inspectorForm.isHidden=false

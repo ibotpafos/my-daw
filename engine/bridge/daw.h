@@ -391,6 +391,86 @@ int daw_get_midi_clip_count(daw_session*, uint64_t track_id, uint32_t* count);
  * *written reports notes copied for this page. Pass notes=NULL/capacity=0 to
  * query metadata only. capacity above DAW_MIDI_NOTES_PER_CALL is an error. */
 int daw_get_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, daw_midi_clip* out, uint32_t note_offset, daw_midi_note* notes, uint32_t capacity, uint32_t* written);
+/* ---------------------------------------------------------------------------
+ * Live MIDI input capture and metronome monitoring (macOS capture v0).
+ *
+ * PROTOTYPE LIMIT: a session owns at most ONE open capture source. Its id is
+ * reported by daw_midi_input_active; daw_set_midi_input with another id closes
+ * the previous source first. Per-source armed tracks are later work.
+ *
+ * Recording is a poll loop, never a callback: the UI timer calls
+ * daw_midi_record_poll, which drains the CoreMIDI ring, converts each event to
+ * a project frame and feeds the take buffer — committing nothing. Only
+ * daw_midi_record_stop commits, as one Session::appendMidiNotes command under
+ * the revision current at stop, so the caller refreshes exactly as after any
+ * other command. Arming takes no revision, poll takes no revision, and an
+ * empty take stops as a silent rc=0 no-op.
+ *
+ * V0 TIMING ACCURACY: a note's frame is computed at DRAIN time, not at the
+ * moment the key was pressed. The base is the (transport frame, host clock)
+ * pair sampled at the previous poll or at arming, advanced by the event's
+ * CoreMIDI host-time delta; that base is up to one UI poll interval (100 ms)
+ * stale and it jumps whenever the transport starts, seeks, stops or wraps a
+ * loop between polls. The base frame is the audible playhead — the value
+ * daw_get_transport reports — so RT graph latency is not compensated either.
+ * Frames are clip-relative: the target clip start is subtracted, and a take
+ * begun before the clip opens clamps onto frame 0. No beat snapping happens at
+ * stop; that is a later UI pass over the finished batch.
+ *
+ * V0 KNOWN LOSS: a note that does not fit whole inside the target clip fails
+ * validate() and the whole batch is refused (rc=1, the take is discarded).
+ * Stopping before the clip edge, or lengthening the clip first, is the
+ * caller's job until a truncating pass exists.
+ * --------------------------------------------------------------------------- */
+enum { DAW_MIDI_DEVICE_VERSION = 1 };
+/* uniqueID is the value daw_set_midi_input expects; name is display text
+ * copied into caller storage; online is the owning device's online flag. */
+typedef struct { uint32_t struct_size; uint32_t version; uint32_t uniqueID; int32_t online; char name[129]; } daw_midi_device;
+enum { DAW_MIDI_RECORD_STATUS_VERSION = 1 };
+/* Counters of the current take, all zero when nothing is armed. open_notes is
+ * keys no note-off has closed yet, recorded the notes already closed, dropped
+ * everything the take refused to hold — malformed or over-budget events plus,
+ * since arming, the packets the 4096-deep capture ring overflowed on — and
+ * unmatched the note-offs no open key answers, which is what a key held across
+ * the arming looks like from the converter's side. */
+typedef struct {
+    uint32_t struct_size;
+    uint32_t version;
+    int32_t armed;
+    uint64_t open_notes;
+    uint64_t recorded;
+    uint64_t dropped;
+    uint64_t unmatched;
+} daw_midi_record_status_t;
+/* Enumerates live CoreMIDI sources. The count call refreshes the list, so the
+ * indexed reads report that same snapshot; a headless system reports 0. */
+int daw_get_midi_input_device_count(daw_session*, uint32_t* count);
+int daw_get_midi_input_device(daw_session*, uint32_t index, daw_midi_device* out);
+/* Opens uniqueID, closing any previously open source, or closes the current
+ * one for 0. Closing with nothing open is a successful no-op. Switching is
+ * refused while a take is armed. 1 means the id is unknown or CoreMIDI
+ * refused, which leaves the previously open input untouched. */
+int daw_set_midi_input(daw_session*, uint32_t uniqueID);
+int daw_midi_input_active(daw_session*, uint32_t* uniqueID);
+/* Arms a take into the MIDI clip at clipIndex of track_id. Requires an open
+ * input and an existing clip; otherwise it returns 1 and changes nothing.
+ * Re-arming abandons the previous take. Never consumes a revision. */
+int daw_midi_record_arm(daw_session*, uint64_t track_id, uint32_t clip_index);
+/* Drains the capture ring into the armed take. A no-op with no open input or
+ * no armed take. Commits nothing. */
+int daw_midi_record_poll(daw_session*);
+/* Stops the take at the current transport frame and appends its notes to the
+ * target clip under the current revision: success therefore means a new
+ * revision. With nothing armed, or with an empty take, it is a silent rc=0
+ * no-op and the revision does not move. */
+int daw_midi_record_stop(daw_session*);
+int daw_midi_record_status(daw_session*, daw_midi_record_status_t* out);
+/* Metronome monitoring. The session controller holds the flag: it is pushed to
+ * a live playback or duplex renderer at once and applied to the next graph this
+ * session prepares, so a play started later still clicks. It is never
+ * persisted, and export render always suppresses the click. */
+int daw_set_metronome(daw_session*, int32_t on);
+int daw_get_metronome(daw_session*, int32_t* on);
 /* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0
  * anchored (120 BPM, 4/4), at most 64 points each. Upsert replaces a point at
  * the same frame; an identical value is a successful no-op without a revision.

@@ -355,6 +355,17 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var selectedTakes:[UInt64:Int]=[:]
     var takePopups:[Int:NSPopUpButton]=[:]
     var armedTrackID:UInt64?
+    // Метроном: состояние держит мост (daw_set_metronome), кнопка в панели —
+    // только его отражение; syncMetronomeState() перечитывает мост после
+    // любой команды, способной пересоздать граф.
+    var metronomeOn = false
+    let metronomeButton = NSButton(title: "", target: nil, action: nil)
+    // MIDI-захват: открыт ли вход и идёт ли тейк — вопросы моста, здесь кэш
+    // показаний daw_midi_input_active/daw_midi_record_status для инспектора.
+    var midiInputID: UInt32 = 0
+    var midiTakeArmed = false
+    var midiTakeTrackID: UInt64?
+    var midiInputCache: [InspectorMidiInputOption] = []
     var dirty: Bool { revision != savedRevision }
     var exportBusy: Bool { exportJob != nil || dawprojectJob != nil }
     var importBusy: Bool { importJob != nil }
@@ -526,6 +537,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         cancelImportButton.title = "Отменить импорт"; cancelImportButton.toolTip = "Отменить фоновый импорт WAV"; cancelImportButton.setAccessibilityLabel("Отменить импорт WAV"); cancelImportButton.setAccessibilityHelp("Отменяет текущую фоновую загрузку WAV, не меняя проект")
         resolveImportButton.toolTip = "Продолжить готовый импорт WAV"; resolveImportButton.setAccessibilityLabel("Продолжить готовый импорт WAV"); resolveImportButton.setAccessibilityHelp("Повторно запускает готовый импорт для текущей ревизии проекта")
         updateRecordButton(false); styleIconButton(playButton, icon: .play); styleIconButton(stopButton, icon: .stop); styleIconButton(loopButton, icon: .loop); styleIconButton(undoButton, icon: .undo); styleIconButton(redoButton, icon: .redo)
+        styleIconButton(metronomeButton, icon: .metronome)
+        metronomeButton.target = self; metronomeButton.action = #selector(toggleMetronome(_:)); metronomeButton.setButtonType(.toggle)
+        metronomeButton.toolTip = "Метроном: клик только в мониторинге, в экспорт не попадает"; metronomeButton.setAccessibilityHelp("Переключает клик метронома в живом звуке. Флаг принадлежит сессии, поэтому следующий play подхватит его без повтора. В проект не сохраняется.")
         styleIconButton(importButton, icon: .importAudio);styleIconButton(addTrackButton, icon: .addTrack);styleIconButton(addBusButton, icon: .addBus);styleIconButton(workflowButton, icon: .workflow)
         styleIconButton(rangeStartButton, icon: .rangeStart);styleIconButton(rangeEndButton, icon: .rangeEnd);styleIconButton(clearRangeButton, icon: .clearRange)
         let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
@@ -589,7 +603,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let arrangementSplit=NSSplitView();self.arrangementInspectorSplit=arrangementSplit;arrangementSplit.delegate=self;arrangementSplit.isVertical=true;arrangementSplit.dividerStyle = .thin;arrangementSplit.addArrangedSubview(trackTimelineSplit);arrangementSplit.addArrangedSubview(inspectorBrowser)
         let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
-        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton]);transportControls.spacing=4;transportControls.alignment = .centerY
+        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton]);transportControls.spacing=4;transportControls.alignment = .centerY
         let statusBar=NSStackView(views:[summary,status,gridLabel,flexibleSpace(),transportControls,transportLabel,positionLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         gridLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
@@ -610,7 +624,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         loadInstalledVST3()
         refreshBrowserCatalog()
         transportTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollTransport(); self?.pollMeters(); self?.pollStorage() }
+            // Дрен MIDI-ring живёт в этом же цикле: транспорт, метры и тейк
+            // опрашиваются одной 10 Гц-проверкой, отдельного таймера нет.
+            MainActor.assumeIsolated { self?.pollTransport(); self?.pollMeters(); self?.pollMidiCapture(); self?.pollStorage() }
         }
         if let timer = transportTimer { RunLoop.main.add(timer, forMode: .common) }
         refresh(); window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -767,6 +783,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         midiClipIndex = selected
         midiNotesCache = notes
         inspectorBrowser.midi = InspectorMidiModel(clips: clips, selectedClip: selected, notes: notes, editable: !isRecording)
+        // Ряд захвата относится к той же MIDI-дорожке: пересобираем список
+        // источников именно здесь (выбор дорожки — естественная точка обновления).
+        refreshMidiCapture(rescan: true)
     }
     func commitMidiNotes(track trackID: UInt64, clip clipIndex: Int, notes: [PianoRollNote]) {
         guard !isRecording else { return }
@@ -780,6 +799,119 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let noteCount = UInt32(marshaled.count)
         let result = marshaled.withUnsafeMutableBufferPointer { buffer in daw_set_midi_notes(session, trackID, UInt32(clipIndex), buffer.baseAddress, noteCount, revision) }
         if check(result) { refresh(); updateMixerInspector(trackID) } else { loadMidiInspector(trackID) }
+    }
+    // MARK: - Живой MIDI-вход, запись с клавиатуры и метроном
+    //
+    // Всё состояние принадлежит мосту: приложение только перечисляет источники,
+    // выбирает один из них, вооружает/останавливает тейк и показывает счётчики,
+    // которые мост и считает. Единственный открытый вход — лимит прототипа.
+    func midiInputOptions() -> [InspectorMidiInputOption] {
+        var count: UInt32 = 0
+        guard daw_get_midi_input_device_count(session, &count) == 0 else { return [] }
+        var options: [InspectorMidiInputOption] = []
+        for index in 0..<count {
+            var device = daw_midi_device(); device.struct_size = UInt32(MemoryLayout<daw_midi_device>.size); device.version = UInt32(DAW_MIDI_DEVICE_VERSION)
+            guard daw_get_midi_input_device(session, index, &device) == 0 else { continue }
+            let name = withUnsafeBytes(of: device.name) { bytes in String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            options.append(InspectorMidiInputOption(id: device.uniqueID, title: name.isEmpty ? "Источник \(device.uniqueID)" : name))
+        }
+        return options
+    }
+    /// Перечитывает мост и отдаёт инспектору строку состояния. Вызывается при
+    /// выборе дорожки, при смене входа и каждый тик таймера, пока тейк вооружён;
+    /// список источников пересобирается только по просьбе (rescan), чтобы под
+    /// открытым попапом не менять пункты.
+    func refreshMidiCapture(rescan: Bool = false) {
+        if rescan { midiInputCache = midiInputOptions() }
+        var active: UInt32 = 0
+        midiInputID = daw_midi_input_active(session, &active) == 0 ? active : 0
+        var counters = daw_midi_record_status_t(); counters.struct_size = UInt32(MemoryLayout<daw_midi_record_status_t>.size); counters.version = UInt32(DAW_MIDI_RECORD_STATUS_VERSION)
+        guard daw_midi_record_status(session, &counters) == 0 else { inspectorBrowser.midiCapture = nil; midiTakeArmed = false; return }
+        midiTakeArmed = counters.armed != 0
+        let lost = counters.dropped + counters.unmatched
+        let model: InspectorMidiCaptureModel
+        if midiTakeArmed {
+            model = InspectorMidiCaptureModel(inputs: midiInputCache, selectedID: midiInputID, armed: true,
+                statusLine: "● запись · держат \(counters.open_notes) · записано \(counters.recorded), отброшено \(lost)")
+        } else {
+            model = InspectorMidiCaptureModel(inputs: midiInputCache, selectedID: midiInputID, armed: false,
+                statusLine: midiInputID == 0 ? "MIDI-вход не выбран · «Нет»" : "Готов · записано \(counters.recorded), отброшено \(lost)")
+        }
+        if inspectorBrowser.midiCapture != model { inspectorBrowser.midiCapture = model }
+    }
+    func selectMidiInput(_ uniqueID: UInt32) {
+        guard !midiTakeArmed else { storageMessage("Сначала заверши запись с клавиатуры."); refreshMidiCapture(); return }
+        guard check(daw_set_midi_input(session, uniqueID)) else { refreshMidiCapture(); return }
+        refreshMidiCapture(rescan: true)
+        status.stringValue = midiInputID == 0 ? "MIDI-вход закрыт · запись с клавиатуры недоступна" : "MIDI-вход: \(midiInputCache.first { $0.id == midiInputID }?.title ?? "источник \(midiInputID)")"
+    }
+    /// Арм тейка в выбранный клип. Кадр нот считается от позиции транспорта,
+    /// поэтому если он не играет — запускаем: без хода транспорта тейк лёг бы в
+    /// одну точку (см. v0-оценку кадра в daw.h).
+    @objc func toggleMidiRecording() {
+        if midiTakeArmed { stopMidiTake(); return }
+        guard !isRecording else { storageMessage("Сначала заверши аудиозапись."); return }
+        guard midiInputID != 0 else { storageMessage("Выбери MIDI-вход в инспекторе дорожки."); return }
+        guard let track = inspectorTrackID, let clip = midiClipIndex else { storageMessage("Выбери MIDI-дорожку с клипом — в него лягут ноты."); return }
+        guard check(daw_midi_record_arm(session, track, UInt32(clip))) else { return }
+        midiTakeTrackID = track
+        if !isPlaying { playAudio() }
+        refreshMidiCapture()
+        status.stringValue = "Идёт запись с клавиатуры · играй; «Закончить запись» закроет тейк и запишет ноты в клип"
+    }
+    /// Порядок остановки: один принудительный drain, затем stop+append одним
+    /// guard'ом моста. Второй drain «отложив на кадр» не делаем — он уехал бы и
+    /// stop-кадр вперёд; ноты, долетевшие уже после клика, теряются, а клавиши,
+    /// зажатые на остановке, закрываются самим MidiRecorder на stop-кадре. Это
+    /// документированный v0-допуск.
+    func stopMidiTake() {
+        guard midiTakeArmed else { return }
+        _ = daw_midi_record_poll(session)
+        let before = revision
+        var counters = daw_midi_record_status_t(); counters.struct_size = UInt32(MemoryLayout<daw_midi_record_status_t>.size); counters.version = UInt32(DAW_MIDI_RECORD_STATUS_VERSION)
+        _ = daw_midi_record_status(session, &counters)   // счётчики до стопа: после они обнулены
+        let recorded = counters.recorded + counters.open_notes, lost = counters.dropped + counters.unmatched
+        guard check(daw_midi_record_stop(session)) else { midiTakeTrackID = nil; refreshMidiCapture(); return }
+        syncRevision()
+        if revision != before {
+            refresh()
+            if let track = midiTakeTrackID { updateMixerInspector(track) }
+            status.stringValue = "Тейк записан в клип · нот \(recorded), отброшено \(lost)"
+        } else {
+            loadMidiInspector(midiTakeTrackID ?? inspectorTrackID ?? 0)
+            status.stringValue = "Пустой тейк · нот 0, отброшено \(lost) · проект не изменён"
+        }
+        status.stringValue = revision != before ? "Тейк записано в клип · нот \(counters.recorded), отброшено \(counters.dropped + counters.unmatched)" : "Пустой тейк · проект не изменён"
+        setProjectMessage("Запись с клавиатуры v0: кадр ноты считается в момент дрена ring (±интервал таймера 100 мс), без привязки к доле.")
+        midiTakeTrackID = nil
+        refreshMidiCapture(); pollTransport()
+    }
+    /// Дренирует ring в тейк из уже существующего UI-таймера транспорта.
+    func pollMidiCapture() {
+        guard midiTakeArmed else { return }
+        guard daw_midi_record_poll(session) == 0 else {
+            _ = daw_midi_record_stop(session)
+            midiTakeTrackID = nil; refreshMidiCapture()
+            setProjectMessage("Запись с клавиатуры остановлена мостом; тейк не записан.")
+            return
+        }
+        refreshMidiCapture()
+    }
+    @objc func toggleMetronome(_ sender: NSButton) {
+        let wanted: Int32 = metronomeOn ? 0 : 1
+        guard check(daw_set_metronome(session, wanted)) else { syncMetronomeButton(); return }
+        metronomeOn = wanted != 0
+        syncMetronomeButton()
+        status.stringValue = metronomeOn ? "Метроном включён · слышен в мониторинге, в экспорт не попадает" : "Метроном выключен"
+    }
+    /// Состояние хранит сессия-контроллер моста; кнопка лишь отражает его, а
+    /// после пересборки графа (stop→play, смена устройства) флаг тот же.
+    func syncMetronomeButton() {
+        var value: Int32 = 0
+        if daw_get_metronome(session, &value) == 0 { metronomeOn = value != 0 }
+        metronomeButton.state = metronomeOn ? .on : .off
+        metronomeButton.contentTintColor = metronomeOn ? DAWDesignTokens.Color.coral : DAWDesignTokens.Color.text
+        metronomeButton.setAccessibilityValue(metronomeOn ? "включён" : "выключен")
     }
     func wireInspectorBrowser() {
         audioPreview.onChange = { [weak self] state in
@@ -824,6 +956,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         inspectorBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
         inspectorBrowser.onMidiClipSelect = { [weak self] index in guard let self, let track = self.inspectorTrackID else { return }; self.midiClipIndex = index; self.loadMidiInspector(track) }
+        inspectorBrowser.onMidiInputSelect = { [weak self] id in self?.selectMidiInput(id) }
+        inspectorBrowser.onMidiRecordToggle = { [weak self] in self?.toggleMidiRecording() }
         inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }
         inspectorBrowser.onMidiAddNote = { [weak self] in
             guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex, !self.isRecording else { return }
@@ -922,6 +1056,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         masterSlider.doubleValue=snapshot.master_gain_db;masterLabel.stringValue=String(format:"%+.1f dB",snapshot.master_gain_db)
         var masterAutomationCount:UInt32=0;guard check(daw_get_master_gain_automation_count(session,&masterAutomationCount))else{return};masterAutomationButton.title=masterAutomationCount==0 ? "AUTO":"AUTO \(masterAutomationCount)";masterAutomationButton.contentTintColor=masterAutomationCount==0 ? .secondaryLabelColor:.systemCyan
         undoButton.isEnabled = snapshot.can_undo != 0; redoButton.isEnabled = snapshot.can_redo != 0
+        syncMetronomeButton()   // флаг держит мост: после открытия проекта сверяем кнопку
         window.title = (currentURL?.deletingPathExtension().lastPathComponent ?? "Новый черновик") + " — My DAW"
         window.isDocumentEdited = dirty
         summary.stringValue = "ДОРОЖКИ  \(snapshot.track_count) / 256      BUS  \(snapshot.bus_count) / 16      AU  \(snapshot.master_insert_count) / 4      РЕВИЗИЯ  \(revision)"
@@ -1297,7 +1432,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerSetSolo(_ id:UInt64,_ solo:Bool){guard let kind=mixerKinds[id]else{return};if case .track=kind{if check(daw_set_solo(session,id,solo ? 1:0,revision)){refresh()}}}
     func setProjectControlsEnabled(_ enabled: Bool) {
         func visit(_ view: NSView) {
-            if let button = view as? NSButton, button !== recordButton { button.isEnabled = enabled }
+            // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
+            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton { button.isEnabled = enabled }
             if let popup = view as? NSPopUpButton { popup.isEnabled = enabled }
             if let slider = view as? NSSlider { slider.isEnabled = enabled }
             if let field = view as? NSTextField, field.isEditable { field.isEnabled = enabled }
@@ -1311,6 +1447,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func toggleRecording() {
         if isRecording { finishRecording(); return }
+        guard !midiTakeArmed else { storageMessage("Сначала заверши запись MIDI с клавиатуры."); return }
         guard !exportBusy else { storageMessage("Дождись завершения экспорта или отмени его перед записью."); return }
         finishEditing()
         switch AVCaptureDevice.authorizationStatus(for: .audio) {

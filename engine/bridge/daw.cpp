@@ -13,6 +13,8 @@
 #include "export/dawproject_export.hpp"
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
+#include <mach/mach_time.h>
+#include "platform/macos/midi_input.hpp"
 #include "platform/macos/au_scanner.hpp"
 #include "platform/macos/au_scan_cache.hpp"
 #include "platform/macos/vst3_scanner.hpp"
@@ -64,6 +66,26 @@ struct daw_session {
     std::chrono::steady_clock::time_point lastProgress, recordProgress;
     std::shared_ptr<uint8_t> lifetime=std::make_shared<uint8_t>(0);
     uint64_t projectEpoch=1;
+#ifdef __APPLE__
+    // One live CoreMIDI capture source for the whole session (v0 limit) plus
+    // the enumeration the device queries report.
+    std::unique_ptr<daw::MidiInput> midiInput;
+    std::vector<daw::MidiInputDevice> midiDevices;
+    // Drains reuse both buffers so a 10 Hz UI poll does not allocate.
+    std::vector<daw::MidiCapturedEvent> midiCaptured;
+#endif
+    std::vector<daw::RecordedMidiEvent> midiConverted;
+    // Live MIDI take: the recorder itself is platform-free, so arming, polling
+    // and status keep their shape on every build; only opening a source needs
+    // CoreMIDI. midiAnchor* is the (transport frame, host clock) drain base
+    // documented in daw.h and midiClipStart the clip start it is rebased on.
+    std::optional<daw::MidiRecorder> midiRecorder;
+    uint32_t midiInputID=0;
+    uint64_t midiAnchorNs=0,midiAnchorFrame=0,midiClipStart=0,midiRingBase=0;
+    // Metronome intent lives here, not on a renderer: every graph this session
+    // prepares inherits it, so the switch survives stop -> play and a device
+    // change, and nothing of it is persisted into the project.
+    bool metronomeEnabled=false;
     char error[512] = {};
 };
 struct daw_save_job { std::shared_ptr<daw::SaveResult> result; };
@@ -190,6 +212,10 @@ void pollPlaybackPreparation(daw_session* s) {
     }
     if(s->playbackPreparation==preparation)s->playbackPreparation.reset();
     if(!output)throw daw::Error("Prepared playback graph is unavailable");
+    // A prepared graph starts with the session's monitoring intent, so the
+    // metronome switch survives stop -> play, a device change and every
+    // re-prepare. It is runtime-only: nothing of it reaches State or storage.
+    output->renderer.setMetronome(s->metronomeEnabled);
     try {
         output->startPrepared();
     } catch(...) {
@@ -253,7 +279,7 @@ void startRecording(daw_session* s,uint64_t startFrame,const char* recoveryPath,
     if(audioAssets>=32)throw daw::Error("Prototype supports at most 32 takes");constexpr size_t byteLimit=64*1024*1024;if(audioBytes>=byteLimit)throw daw::Error("No project capacity remains for recording");auto memoryFrames=(byteLimit-audioBytes)/(2*sizeof(float));auto timelineFrames=48000*600-startFrame;auto capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),timelineFrames});
     const bool loopRecording=target&&s->loopEnabled;if(loopRecording){if(startFrame!=s->loopStart)throw daw::Error("Loop recording must start at the loop boundary");const auto loopFrames=s->loopEnd-s->loopStart;const auto takeSlots=std::min<size_t>(15-targetTrack->takes.size(),32-audioAssets);capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),loopFrames*takeSlots});}
     if(!capacity)throw daw::Error("No project capacity remains for recording");if(s->output){s->output->stop();s->output.reset();}auto path=std::string(required(recoveryPath));if(path.empty())throw daw::Error("Missing recording recovery path");
-    if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
+    if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd);duplex->renderer.setMetronome(s->metronomeEnabled);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
     s->recordStart=startFrame;s->recordTarget=target;s->selectedFrame=startFrame;s->recordLastCallbacks=0;s->lastCallbacks=0;s->recordProgress=std::chrono::steady_clock::now();s->lastProgress=s->recordProgress;
 }
 void validateInsertOwner(int32_t owner,uint64_t ownerID){
@@ -679,6 +705,209 @@ int daw_get_midi_clip(daw_session* s,uint64_t trackID,uint32_t clipIndex,daw_mid
         if(written)*written=copied;
         return;}
     throw daw::Error("Track not found");});}
+/* Live MIDI capture and metronome monitoring. See the block comment in daw.h
+ * for the v0 contract: one open source, drain-on-poll, commit-on-stop, and a
+ * frame measured when the ring is drained rather than when the key moved. */
+namespace {
+#ifdef __APPLE__
+// mach absolute time in nanoseconds, i.e. the clock CoreMIDI stamps packets
+// with; midi_input.cpp converts packet time through the same timebase, so an
+// event hostTimeNs and this reading are directly comparable.
+uint64_t hostClockNs() noexcept {
+    static const mach_timebase_info_data_t base=[](){
+        mach_timebase_info_data_t info{1,1};
+        if(mach_timebase_info(&info)!=0||info.denom==0){info.numer=1;info.denom=1;}
+        return info;
+    }();
+    return mach_absolute_time()*base.numer/base.denom;
+}
+void refreshMidiDevices(daw_session* s){ s->midiDevices=daw::listMidiInputDevices(); }
+void closeMidiCapture(daw_session* s) noexcept { s->midiInput.reset(); s->midiInputID=0; }
+#endif
+// The live transport frame the capture is measured against: the audible
+// position of a running graph — the same value daw_get_transport publishes and
+// the UI playhead shows — otherwise the retained edit position. Reads atomics
+// only; it never touches the audio device or the model.
+uint64_t captureTransportFrame(daw_session* s) noexcept {
+    if(s->output&&s->output->renderer.playing.load(std::memory_order_acquire))return s->output->renderer.audiblePositionFrames();
+    if(s->duplex&&s->duplex->renderer.playing.load(std::memory_order_acquire))return s->duplex->renderer.audiblePositionFrames();
+    return s->selectedFrame;
+}
+const daw::MidiClip* midiClipAt(const daw::State& state,uint64_t trackID,uint32_t index){
+    for(const auto& track:state.tracks)if(track.id==trackID)
+        return index<track.midiClips.size()?&track.midiClips[index]:nullptr;
+    return nullptr;
+}
+#ifdef __APPLE__
+// MidiCapturedEvent -> RecordedMidiEvent, oldest first (the ring's order).
+// framesFromHostTime is the platform's own host-time->frame helper, so the
+// nanosecond arithmetic stays in one place: it clamps an event older than the
+// base — including one whose packet carried no timestamp (hostTimeNs 0) — onto
+// the base frame instead of underflowing. Subtracting the clip start makes the
+// result clip-relative, which is what the model stores, and a take begun
+// before the clip opens therefore saturates at frame 0. kind 2 already covers
+// a 0x90 with velocity 0 because the capture parser normalises it; the kind 1
+// test re-checks that convention rather than trusting it, and a note-off
+// carries no velocity because RecordedMidiEvent keeps it note-on-only.
+void convertCaptured(daw_session* s,const std::vector<daw::MidiCapturedEvent>& events){
+    s->midiConverted.clear();
+    s->midiConverted.reserve(events.size());
+    for(const auto& event:events){
+        const auto absolute=s->midiAnchorFrame+daw::framesFromHostTime(event.hostTimeNs,s->midiAnchorNs);
+        daw::RecordedMidiEvent converted;
+        converted.frame=absolute>s->midiClipStart?absolute-s->midiClipStart:0;
+        converted.pitch=event.pitch;
+        converted.channel=event.channel;
+        converted.noteOff=event.kind==2||(event.kind==1&&event.velocity==0);
+        converted.velocity=converted.noteOff?0:event.velocity;
+        s->midiConverted.push_back(converted);
+    }
+    if(!s->midiConverted.empty())s->midiRecorder->feed(s->midiConverted.data(),s->midiConverted.size());
+}
+#else
+void closeMidiCapture(daw_session*) noexcept {}
+#endif
+}
+int daw_get_midi_input_device_count(daw_session* s,uint32_t* count){return guard(s,[&]{
+    if(!count)throw daw::Error("Missing MIDI device count");
+#ifdef __APPLE__
+    refreshMidiDevices(s);
+    *count=static_cast<uint32_t>(s->midiDevices.size());
+#else
+    *count=0;
+#endif
+});}
+int daw_get_midi_input_device(daw_session* s,uint32_t index,daw_midi_device* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_midi_device)||out->version!=DAW_MIDI_DEVICE_VERSION)
+        throw daw::Error("MIDI device ABI mismatch");
+#ifdef __APPLE__
+    // The count call publishes the list; re-list here only so a caller that
+    // skipped it cannot read a stale or empty cache.
+    if(s->midiDevices.empty())refreshMidiDevices(s);
+    if(index>=s->midiDevices.size())throw daw::Error("MIDI device index out of range");
+    const auto& device=s->midiDevices[index];
+    *out={};out->struct_size=sizeof(daw_midi_device);out->version=DAW_MIDI_DEVICE_VERSION;
+    out->uniqueID=device.uniqueID;out->online=device.online?1:0;copyText(out->name,device.name);
+#else
+    throw daw::Error("MIDI input requires macOS");
+#endif
+});}
+int daw_set_midi_input(daw_session* s,uint32_t uniqueID){return guard(s,[&]{
+#ifdef __APPLE__
+    if(s->midiRecorder&&s->midiRecorder->armed())throw daw::Error("Stop the armed MIDI take before changing the capture input");
+    if(!uniqueID){closeMidiCapture(s);return;}               // idempotent close
+    if(s->midiInput&&s->midiInputID==uniqueID)return;        // already open
+    // open() resolves against the live source list and throws before any
+    // session state moves, so a rejected id leaves the current input running.
+    auto input=daw::MidiInput::open(uniqueID);
+    s->midiInput=std::move(input);s->midiInputID=uniqueID;
+    s->midiCaptured.clear();
+#else
+    if(uniqueID)throw daw::Error("MIDI input requires macOS");
+#endif
+});}
+int daw_midi_input_active(daw_session* s,uint32_t* uniqueID){return guard(s,[&]{
+    if(!uniqueID)throw daw::Error("Missing MIDI input id");
+    *uniqueID=s->midiInputID;
+});}
+int daw_midi_record_arm(daw_session* s,uint64_t trackID,uint32_t clipIndex){return guard(s,[&]{
+#ifdef __APPLE__
+    if(!s->midiInput)throw daw::Error("Open a MIDI input before arming a take");
+    const auto* clip=midiClipAt(s->model.state(),trackID,clipIndex);
+    if(!clip)throw daw::Error("MIDI clip not found");
+    if(!clip->length)throw daw::Error("MIDI clip has no length");
+    // Arming is pure controller state: no Session call, so no revision, and a
+    // re-arm simply drops the previous take along with its counters.
+    s->midiRecorder=daw::MidiRecorder();
+    s->midiRecorder->arm(trackID,clipIndex);
+    s->midiClipStart=clip->start;
+    s->midiAnchorFrame=captureTransportFrame(s);
+    s->midiAnchorNs=hostClockNs();
+    // The ring counts drops for the life of the source; the take reports only
+    // what it lost, so remember where it started.
+    s->midiRingBase=s->midiInput->dropped();
+    s->midiCaptured.clear();s->midiConverted.clear();
+#else
+    (void)trackID;(void)clipIndex;throw daw::Error("MIDI input requires macOS");
+#endif
+});}
+int daw_midi_record_poll(daw_session* s){return guard(s,[&]{
+    if(!s->midiRecorder||!s->midiRecorder->armed())return;                  // safe idle, armed or not
+#ifdef __APPLE__
+    if(!s->midiInput)return;
+    // One drain bounds the ring; the UI timer calls this at 10 Hz, so a full
+    // 4096 events means the app was starved and the oldest were dropped.
+    s->midiCaptured.clear();
+    const auto taken=s->midiInput->poll(s->midiCaptured,daw::MidiRing::capacity);
+    // Re-base on every drain, empty or not: the pair is always at most one
+    // poll interval old, which is what keeps the documented error bounded.
+    if(taken){
+        // The clip may have been moved or trimmed between drains; follow it so
+        // the take's frames stay relative to the window the UI still shows.
+        if(const auto* clip=midiClipAt(s->model.state(),s->midiRecorder->trackID(),s->midiRecorder->clipIndex()))s->midiClipStart=clip->start;
+        convertCaptured(s,s->midiCaptured);
+    }
+    s->midiAnchorFrame=captureTransportFrame(s);
+    s->midiAnchorNs=hostClockNs();
+#else
+    if(s->midiRecorder&&s->midiRecorder->armed())throw daw::Error("MIDI input requires macOS");
+#endif
+});}
+int daw_midi_record_stop(daw_session* s){return guard(s,[&]{
+    if(!s->midiRecorder||!s->midiRecorder->armed()){s->midiRecorder.reset();return;}   // quiet no-op
+#ifdef __APPLE__
+    const auto trackID=s->midiRecorder->trackID();
+    const auto clipIndex=s->midiRecorder->clipIndex();
+    const auto absolute=captureTransportFrame(s);
+    // Keys still held close at the transport's own clip-relative position, so
+    // a note cannot outlive the take and stop() never consumes a revision.
+    const auto stopFrame=absolute>s->midiClipStart?absolute-s->midiClipStart:0;
+    auto batch=s->midiRecorder->stop(stopFrame);
+    s->midiRecorder.reset();
+    s->midiClipStart=0;s->midiAnchorNs=0;s->midiAnchorFrame=0;s->midiRingBase=0;
+    if(batch.empty())return;                       // empty take: silent no-op, revision unmoved
+    // One guard covers stop and commit: the revision is read here, at the same
+    // serial point, so no other writer can have moved it underneath us.
+    s->model.appendMidiNotes(trackID,clipIndex,batch,s->model.state().revision);
+#else
+    s->midiRecorder.reset();
+    throw daw::Error("MIDI input requires macOS");
+#endif
+});}
+int daw_midi_record_status(daw_session* s,daw_midi_record_status_t* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_midi_record_status_t)||out->version!=DAW_MIDI_RECORD_STATUS_VERSION)
+        throw daw::Error("MIDI record status ABI mismatch");
+    *out={};out->struct_size=sizeof(daw_midi_record_status_t);out->version=DAW_MIDI_RECORD_STATUS_VERSION;
+    if(!s->midiRecorder||!s->midiRecorder->armed())return;
+    const auto& recorder=*s->midiRecorder;
+    out->armed=1;
+    out->open_notes=recorder.openNotes();
+    out->recorded=recorder.recordedNotes();
+    out->unmatched=recorder.unmatched();
+#ifdef __APPLE__
+    const auto ring=s->midiInput&&s->midiInput->dropped()>s->midiRingBase?s->midiInput->dropped()-s->midiRingBase:0;
+    out->dropped=recorder.dropped()+ring;
+#else
+    out->dropped=recorder.dropped();
+#endif
+});}
+int daw_set_metronome(daw_session* s,int32_t on){return guard(s,[&]{
+    if(on!=0&&on!=1)throw daw::Error("Metronome must be 0 or 1");
+    s->metronomeEnabled=on!=0;
+    // The live graphs take it immediately (Renderer::setMetronome is an atomic
+    // monitoring switch the RT callback reads per block); every graph prepared
+    // later inherits it from the session field in pollPlaybackPreparation.
+    if(s->output)s->output->renderer.setMetronome(s->metronomeEnabled);
+    if(s->duplex)s->duplex->renderer.setMetronome(s->metronomeEnabled);
+});}
+int daw_get_metronome(daw_session* s,int32_t* on){return guard(s,[&]{
+    if(!on)throw daw::Error("Missing metronome state");
+    // A live graph is authoritative when one exists, so a caller sees what the
+    // engine will actually click; with none, the remembered intent is next up.
+    if(s->output)*on=s->output->renderer.metronome()?1:0;
+    else if(s->duplex)*on=s->duplex->renderer.metronome()?1:0;
+    else *on=s->metronomeEnabled?1:0;
+});}
 /* Tempo and time-signature ABI sanity mirrors the MIDI block: obvious shape
  * and range rejections happen before the domain owns the command. Changing a
  * map alters the timeline, so a stale playback preparation is cancelled.
@@ -772,7 +1001,7 @@ int daw_poll_dawproject_export(daw_dawproject_job* job,daw_dawproject_status* ou
 void daw_cancel_dawproject_export(daw_dawproject_job* job){if(job)job->result->cancel.store(true,std::memory_order_release);}
 void daw_release_dawproject_export(daw_dawproject_job* job){delete job;}
 int daw_save_draft(daw_session* s,const char* path) { return guard(s,[&]{daw::writeDraft(s->model.state(),required(path));}); }
-int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
+int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();closeMidiCapture(s);s->midiRecorder.reset();s->midiClipStart=0;s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
 namespace {
 daw_import_job* beginImport(daw_session* s,const char* path,const char* name,uint64_t baseRevision,ImportIntent intent,ImportFormat format,uint64_t trackID,uint64_t startFrame) {
     daw_import_job* job=nullptr;
