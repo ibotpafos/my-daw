@@ -30,6 +30,8 @@ final class PianoRollEditorView: NSView, NSTableViewDataSource, NSTableViewDeleg
     var onNotesChange: (([PianoRollNote]) -> Void)?
     var onAddNote: (() -> Void)?
     var onRemoveNote: ((Int) -> Void)?
+    var onAddClip: (() -> Void)?
+    var onRemoveClip: ((Int) -> Void)?
 
     private let clipPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let clipCaption = NSTextField(labelWithString: "MIDI-КЛИПЫ")
@@ -37,6 +39,8 @@ final class PianoRollEditorView: NSView, NSTableViewDataSource, NSTableViewDeleg
     private let scroll = NSScrollView()
     private let addButton = NSButton(title: "+ Нота", target: nil, action: nil)
     private let removeButton = NSButton(title: "− Удалить", target: nil, action: nil)
+    private let addClipButton = NSButton(title: "+ Клип", target: nil, action: nil)
+    private let removeClipButton = NSButton(title: "− Клип", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "Отсчёт от начала клипа · ⌘Z отменяет изменение")
 
     override init(frame: NSRect) {
@@ -64,8 +68,12 @@ final class PianoRollEditorView: NSView, NSTableViewDataSource, NSTableViewDeleg
         removeButton.bezelStyle = .texturedRounded; removeButton.font = DAWDesignTokens.Typography.caption
         addButton.target = self; addButton.action = #selector(addNote)
         removeButton.target = self; removeButton.action = #selector(removeNote)
+        addClipButton.bezelStyle = .texturedRounded; addClipButton.font = DAWDesignTokens.Typography.caption
+        removeClipButton.bezelStyle = .texturedRounded; removeClipButton.font = DAWDesignTokens.Typography.caption
+        addClipButton.target = self; addClipButton.action = #selector(addClipNow)
+        removeClipButton.target = self; removeClipButton.action = #selector(removeClipNow)
         hint.font = DAWDesignTokens.Typography.caption; hint.textColor = DAWDesignTokens.Color.secondaryText
-        let header = NSStackView(views: [clipCaption, clipPopup]); header.orientation = .vertical; header.alignment = .leading; header.spacing = 4
+        let header = NSStackView(views: [clipCaption, clipPopup, NSStackView(views: [addClipButton, removeClipButton])]); header.orientation = .vertical; header.alignment = .leading; header.spacing = 4
         let controls = NSStackView(views: [addButton, removeButton, hint]); controls.spacing = 6; controls.alignment = .centerY
         let stack = NSStackView(views: [header, scroll, controls]); stack.orientation = .vertical; stack.alignment = .width; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
@@ -81,16 +89,24 @@ final class PianoRollEditorView: NSView, NSTableViewDataSource, NSTableViewDeleg
         addButton.setAccessibilityHelp("Вставляет ноту C4 на текущей позиции воспроизведения, 10 мс, скорость 100.")
         removeButton.setAccessibilityLabel("Удалить выбранную ноту")
         removeButton.setAccessibilityHelp("Удаляет только выбранную строку; ⌘Z отменяет удаление.")
+        addClipButton.setAccessibilityLabel("Добавить MIDI-клип на позиции воспроизведения")
+        addClipButton.setAccessibilityHelp("Создаёт пустой четырёхтактовый клип, начиная с ближайшей половины такта от позиции воспроизведения; ⌘Z отменяет.")
+        removeClipButton.setAccessibilityLabel("Удалить выбранный MIDI-клип")
+        removeClipButton.setAccessibilityHelp("Убирает текущий клип из раскрывающегося списка вместе с его нотами; ⌘Z отменяет.")
         hint.setAccessibilityLabel("Подсказка MIDI-редактора")
         applyEnabled()
     }
     @objc private func noop() {}
+    @objc private func addClipNow() { onAddClip?() }
+    @objc private func removeClipNow() { guard let index = selectedClip else { return }; onRemoveClip?(index) }
 
     private func reloadClips() {
         clipPopup.removeAllItems()
         for clip in clips { clipPopup.addItem(withTitle: clip.title) }
         syncClipSelection()
         removeButton.isEnabled = editorEnabled && !clips.isEmpty
+        addClipButton.isEnabled = editorEnabled && !clips.isEmpty
+        removeClipButton.isEnabled = editorEnabled && selectedClip != nil && !clips.isEmpty
     }
     private func syncClipSelection() {
         guard !clips.isEmpty else { clipPopup.isEnabled = false; return }
@@ -105,6 +121,8 @@ final class PianoRollEditorView: NSView, NSTableViewDataSource, NSTableViewDeleg
         addButton.isEnabled = editorEnabled && !clips.isEmpty
         removeButton.isEnabled = editorEnabled && !clips.isEmpty
         clipPopup.isEnabled = editorEnabled && !clips.isEmpty
+        addClipButton.isEnabled = editorEnabled && !clips.isEmpty
+        removeClipButton.isEnabled = editorEnabled && selectedClip != nil && !clips.isEmpty
     }
 
     @objc private func selectClip() {

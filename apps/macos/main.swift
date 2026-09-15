@@ -1010,6 +1010,23 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         inspectorBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
         inspectorBrowser.onMidiClipSelect = { [weak self] index in guard let self, let track = self.inspectorTrackID else { return }; self.midiClipIndex = index; self.loadMidiInspector(track) }
+        inspectorBrowser.onMidiAddClip = { [weak self] in
+            guard let self, let track = self.inspectorTrackID, !self.isRecording else { return }
+            var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
+            _ = daw_get_transport(self.session, &transport)
+            var clip = daw_midi_clip(); clip.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size); clip.version = UInt32(DAW_MIDI_CLIP_VERSION)
+            clip.start = transport.frame / 48000 * 48000; clip.length = 192000; clip.lane = 0; clip.color = 0
+            guard self.check(daw_add_midi_clip(self.session, track, &clip, nil, 0, self.revision)) else { return }
+            var count: UInt32 = 0; _ = daw_get_midi_clip_count(self.session, track, &count)
+            self.midiClipIndex = count > 0 ? Int(count - 1) : nil
+            self.refresh(); self.loadMidiInspector(track)
+        }
+        inspectorBrowser.onMidiRemoveClip = { [weak self] index in
+            guard let self, let track = self.inspectorTrackID, !self.isRecording else { return }
+            guard self.check(daw_remove_midi_clip(self.session, track, UInt32(index), self.revision)) else { return }
+            self.midiClipIndex = nil
+            self.refresh(); self.loadMidiInspector(track)
+        }
         inspectorBrowser.onMidiInputSelect = { [weak self] id in self?.selectMidiInput(id) }
         inspectorBrowser.onMidiRecordToggle = { [weak self] in self?.toggleMidiRecording() }
         inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }

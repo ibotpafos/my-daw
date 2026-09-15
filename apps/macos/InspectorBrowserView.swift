@@ -70,6 +70,8 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onChannelSolo: ((Bool) -> Void)?
     var onClipChange: ((InspectorClipModel) -> Void)?
     var onMidiClipSelect: ((Int) -> Void)?
+    var onMidiAddClip: (() -> Void)?
+    var onMidiRemoveClip: ((Int) -> Void)?
     var onMidiInputSelect: ((UInt32) -> Void)?
     var onMidiRecordToggle: (() -> Void)?
     var onMidiNotesChange: (([PianoRollNote]) -> Void)?
@@ -180,6 +182,8 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         midiEditor.onClipSelect = { [weak self] index in self?.onMidiClipSelect?(index) }
         midiEditor.onNotesChange = { [weak self] notes in self?.onMidiNotesChange?(notes) }
         midiEditor.onAddNote = { [weak self] in self?.onMidiAddNote?() }
+        midiEditor.onAddClip = { [weak self] in self?.onMidiAddClip?() }
+        midiEditor.onRemoveClip = { [weak self] index in self?.onMidiRemoveClip?(index) }
         midiEditor.onRemoveNote = { [weak self] row in self?.onMidiRemoveNote?(row) }
         search.target = self; search.action = #selector(filterBrowser)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item")); column.title = ""; column.width = 220

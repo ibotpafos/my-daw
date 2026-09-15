@@ -44,6 +44,8 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.61.0](68-midi-foundation.md) — добавление и удаление MIDI-клипов из пиано-ролла: «+ Клип» на позиции воспроизведения (снап к полутакту, 4 такта), «− Клип» выбранного.
+
 [1.60.0](77-project-package.md) — проектным архивом `.mydawzip`: упаковка сохранённого черновика с манифестом и атомарное извлечение («Файл → Упаковать проект…» / «Открыть проект из архива…»).
 
 [1.59.0](76-clip-track-editing.md) — панорама клипа: одиннадцатое поле региона, unity-центровый закон как у дорожки, v21, пресеты в меню клипа.
