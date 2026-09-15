@@ -89,7 +89,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     weak var trackTimelineSplit: NSSplitView?
     weak var arrangementInspectorSplit: NSSplitView?
     weak var arrangementConsoleSplit: NSSplitView?
+    weak var consoleView: NSView?
     var restoringWorkspaceLayout = false
+    var workspaceLayoutReady = false
     let inspectorBrowser = InspectorBrowserView(frame: .zero)
     var inspectorTrackID: UInt64?
     var inspectorClipIndex: Int?
@@ -225,17 +227,42 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         applyWorkspaceMode(workspaceMode.selectedSegment)
         status.stringValue = "Режим: \(titles[workspaceMode.selectedSegment])"
     }
+    func fitTrackHeaderWidth() {
+        guard let trackTimelineSplit else { return }
+        let stored = CGFloat(UserDefaults.standard.double(forKey: "workspace.trackHeaderRatio.v3"))
+        let ratio: CGFloat = stored > 0.05 && stored < 0.5 ? stored : 0.16
+        trackTimelineSplit.setPosition(min(260, max(195, trackTimelineSplit.bounds.width * ratio)), ofDividerAt: 0)
+    }
     func applyWorkspaceMode(_ mode: Int) {
         guard let arrangementInspectorSplit, let arrangementConsoleSplit else { return }
-        window.contentView?.layoutSubtreeIfNeeded()
         restoringWorkspaceLayout = true
         defer { restoringWorkspaceLayout = false }
+        let arrangementFirst = mode < 2
+        inspectorBrowser.isHidden = arrangementFirst
+        consoleView?.isHidden = arrangementFirst
+        arrangementInspectorSplit.adjustSubviews()
+        arrangementConsoleSplit.adjustSubviews()
+        window.contentView?.layoutSubtreeIfNeeded()
+        guard !arrangementFirst else { fitTrackHeaderWidth(); return }
         let height = arrangementConsoleSplit.bounds.height
-        let ratio: CGFloat = mode == 1 ? 0.74 : (mode >= 2 ? 0.36 : 0.68)
-        let arrangementHeight = min(max(260, height - 190), max(260, height * ratio))
+        let modeKey = mode == 3 ? "mastering" : "mixing"
+        let savedHeightRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementHeightRatio"))
+        let heightRatio: CGFloat = savedHeightRatio > 0.25 && savedHeightRatio < 0.75 ? savedHeightRatio : (mode == 3 ? 0.42 : 0.46)
+        let arrangementHeight = min(max(260, height - 190), max(260, height * heightRatio))
         arrangementConsoleSplit.setPosition(arrangementHeight, ofDividerAt: 0)
-        let inspectorWidth: CGFloat = mode == 1 ? 260 : (mode >= 2 ? 340 : 300)
-        arrangementInspectorSplit.setPosition(max(420, arrangementInspectorSplit.bounds.width - inspectorWidth), ofDividerAt: 0)
+        let savedArrangementRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementRatio"))
+        let arrangementRatio: CGFloat = savedArrangementRatio > 0.5 && savedArrangementRatio < 0.9 ? savedArrangementRatio : (mode == 3 ? 0.70 : 0.73)
+        arrangementInspectorSplit.setPosition(max(420, arrangementInspectorSplit.bounds.width * arrangementRatio), ofDividerAt: 0)
+        fitTrackHeaderWidth()
+        if mode == 2, selectedMixerID == nil || selectedMixerID == 0 {
+            if let firstTrackID = trackIDs[0] {
+                selectedMixerID = firstTrackID; inspectorTrackID = firstTrackID; inspectorClipIndex = nil
+                refresh(); updateMixerInspector(firstTrackID)
+            } else {
+                selectedMixerID = nil; inspectorTrackID = nil; inspectorClipIndex = nil
+                inspectorBrowser.channel = nil; inspectorBrowser.clip = nil
+            }
+        }
         if mode == 3 {
             selectedMixerID = 0; inspectorTrackID = nil; inspectorClipIndex = nil
             refresh(); updateMixerInspector(0)
@@ -265,27 +292,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             content.topAnchor.constraint(equalTo: root.topAnchor, constant: DAWDesignTokens.Space.sm),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -DAWDesignTokens.Space.sm)
         ])
-        let brand=label("MY DAW",size:17,color:DAWDesignTokens.Color.text)
-        let buildLabel=label("LOCAL SESSION",size:10,color:DAWDesignTokens.Color.secondaryText)
         summary.font = .monospacedSystemFont(ofSize: 10, weight: .medium); summary.textColor = DAWDesignTokens.Color.secondaryText
         workspaceMode.selectedSegment = max(0, min(3, UserDefaults.standard.integer(forKey: "workspace.mode"))); workspaceMode.target = self; workspaceMode.action = #selector(changeWorkspaceMode); workspaceMode.controlSize = .small
-        let header=NSStackView(views:[brand,buildLabel,workspaceMode,flexibleSpace(),summary]);header.alignment = .centerY;header.spacing=DAWDesignTokens.Space.sm
-        header.wantsLayer = true; header.layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor; header.layer?.cornerRadius = DAWDesignTokens.Radius.card; header.edgeInsets = NSEdgeInsets(top: 7, left: 10, bottom: 7, right: 10)
-        content.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
-        func section(_ title: String, _ views: [NSView]) -> NSStackView {
-            let controls=NSStackView(views:views); controls.spacing = 8; controls.alignment = .centerY
-            let heading=label(title,size:10,color:.tertiaryLabelColor)
-            let group=NSStackView(views:[heading,controls]); group.orientation = .vertical; group.alignment = .leading; group.spacing = 7
-            group.edgeInsets=NSEdgeInsets(top:9,left:11,bottom:10,right:11); group.wantsLayer = true
-            group.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor; group.layer?.cornerRadius = DAWDesignTokens.Radius.card
-            return group
-        }
         undoButton.target = self; undoButton.action = #selector(undo)
         redoButton.target = self; redoButton.action = #selector(redo)
         tempoStepper.minValue = 40; tempoStepper.maxValue = 240; tempoStepper.increment = 1; tempoStepper.integerValue = tempo
-        tempoStepper.target = self; tempoStepper.action = #selector(changeTempo(_:))
+        tempoStepper.target = self; tempoStepper.action = #selector(changeTempo(_:));tempoStepper.setAccessibilityLabel("Темп проекта, BPM");tempoStepper.setAccessibilityHelp("Изменяет темп от 40 до 240 BPM")
         gridPopup.addItems(withTitles: ["Сетка выкл.", "1/4", "1/8", "1/16"]); gridPopup.selectItem(at: 2)
-        gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:))
+        gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:));gridPopup.setAccessibilityLabel("Сетка таймлайна")
         rangeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); rangeLabel.textColor = .secondaryLabelColor
         tempoLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); tempoLabel.textColor = .secondaryLabelColor
         let importButton=button("Импорт…",#selector(importWav));let addTrackButton=button("＋ Track",#selector(addTrack));let addBusButton=button("＋ Bus",#selector(addBus));let workflowButton=button("Workflow…",#selector(runVocalWorkflow))
@@ -304,11 +318,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         automationArmPopup.addItem(withTitle:"ARM: none");automationArmPopup.target=self;automationArmPopup.action=#selector(changeAutomationArm(_:));automationArmPopup.widthAnchor.constraint(equalToConstant:170).isActive=true
         exportButton.title="WAV…";exportButton.toolTip="Экспортировать микс WAV";dawprojectButton.title="DAWproject…";cancelExportButton.title="Отмена";cancelExportButton.toolTip="Отменить экспорт"
         updateRecordButton(false); styleIconButton(playButton, icon: .play); styleIconButton(stopButton, icon: .stop); styleIconButton(loopButton, icon: .loop); styleIconButton(undoButton, icon: .undo); styleIconButton(redoButton, icon: .redo)
-        let transportTools=NSStackView(views:[recordButton,playButton,stopButton,iconButton(.rewind,#selector(rewindAudio)),loopButton,undoButton,redoButton,flexibleSpace(),button("Открыть…",#selector(openDraft)),button("Сохранить",#selector(saveDraft)),exportButton,dawprojectButton,cancelExportButton]);transportTools.spacing=DAWDesignTokens.Space.xs;transportTools.alignment = .centerY
-        let projectTools=NSStackView(views:[label("EDIT",size:9,color:.tertiaryLabelColor),importButton,addTrackButton,addBusButton,workflowButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,rangeLabel,flexibleSpace(),label("GRID",size:9,color:.tertiaryLabelColor),tempoLabel,tempoStepper,gridPopup]);projectTools.spacing=6;projectTools.alignment = .centerY
-        let toolbar=NSStackView(views:[transportTools,projectTools]);toolbar.orientation = .vertical;toolbar.alignment = .leading;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:8,left:10,bottom:8,right:10);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.panel
-        transportTools.widthAnchor.constraint(equalTo:toolbar.widthAnchor,constant:-14).isActive=true
-        projectTools.widthAnchor.constraint(equalTo:toolbar.widthAnchor,constant:-14).isActive=true
+        styleIconButton(importButton, icon: .importAudio);styleIconButton(addTrackButton, icon: .addTrack);styleIconButton(addBusButton, icon: .addBus);styleIconButton(workflowButton, icon: .workflow)
+        styleIconButton(rangeStartButton, icon: .rangeStart);styleIconButton(rangeEndButton, icon: .rangeEnd);styleIconButton(clearRangeButton, icon: .clearRange)
+        let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
+        let saveButton=button("Сохранить",#selector(saveDraft));styleIconButton(saveButton,icon:.saveProject)
+        styleIconButton(exportButton,icon:.exportAudio);styleIconButton(dawprojectButton,icon:.exportProject);styleIconButton(cancelExportButton,icon:.cancel)
+        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
         rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         content.addArrangedSubview(toolbar);toolbar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         playButton.target = self; playButton.action = #selector(playAudio)
@@ -317,7 +332,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         recordButton.contentTintColor = DAWDesignTokens.Color.coral
         exportButton.target = self; exportButton.action = #selector(exportMix)
         dawprojectButton.target = self; dawprojectButton.action = #selector(exportDawproject)
-        cancelExportButton.target = self; cancelExportButton.action = #selector(cancelExport); cancelExportButton.isEnabled = false
+        cancelExportButton.target = self; cancelExportButton.action = #selector(cancelExport); cancelExportButton.isEnabled = false; cancelExportButton.isHidden = true
         transportLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         transportLabel.textColor = DAWDesignTokens.Color.mint
         let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
@@ -346,14 +361,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let consoleDocument=DraftCanvas();consoleDocument.translatesAutoresizingMaskIntoConstraints=false;consoleDocument.addSubview(consoleRows)
         let consoleScroll=NSScrollView();consoleScroll.hasVerticalScroller=true;consoleScroll.drawsBackground=false;consoleScroll.documentView=consoleDocument
         NSLayoutConstraint.activate([consoleDocument.widthAnchor.constraint(equalTo:consoleScroll.contentView.widthAnchor),consoleRows.leadingAnchor.constraint(equalTo:consoleDocument.leadingAnchor),consoleRows.trailingAnchor.constraint(equalTo:consoleDocument.trailingAnchor),consoleRows.topAnchor.constraint(equalTo:consoleDocument.topAnchor),consoleRows.bottomAnchor.constraint(equalTo:consoleDocument.bottomAnchor)])
-        let console=NSStackView();console.orientation = .vertical;console.alignment = .leading;console.spacing=5;let mixerHeading=label("MIXER",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold);console.addArrangedSubview(mixerHeading);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll);mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;mixerWorkspace.heightAnchor.constraint(equalToConstant:188).isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:92).isActive=true
+        let console=NSStackView();self.consoleView=console;console.orientation = .vertical;console.alignment = .leading;console.spacing=5;let mixerHeading=label("MIXER",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold);console.addArrangedSubview(mixerHeading);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll);mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;mixerWorkspace.heightAnchor.constraint(equalToConstant:188).isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:92).isActive=true
         inspectorBrowser.translatesAutoresizingMaskIntoConstraints=false
         inspectorBrowser.widthAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true
         inspectorBrowser.widthAnchor.constraint(lessThanOrEqualToConstant:380).isActive=true
         let arrangementSplit=NSSplitView();self.arrangementInspectorSplit=arrangementSplit;arrangementSplit.delegate=self;arrangementSplit.isVertical=true;arrangementSplit.dividerStyle = .thin;arrangementSplit.addArrangedSubview(trackTimelineSplit);arrangementSplit.addArrangedSubview(inspectorBrowser)
         let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
-        let statusBar=NSStackView(views:[status,flexibleSpace(),transportLabel,label("Пробел — Play/Stop · ⇧ snap off · ⌥ клип",size:10,color:.tertiaryLabelColor)]);statusBar.spacing=10;statusBar.alignment = .centerY;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
+        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton]);transportControls.spacing=4;transportControls.alignment = .centerY
+        let statusBar=NSStackView(views:[summary,status,flexibleSpace(),transportControls,transportLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
+        summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         mixerWorkspace.onSelect = { [weak self] id in guard let self else{return};self.selectedMixerID=id;self.refresh();self.updateMixerInspector(id) }
         mixerWorkspace.onArm = { [weak self] id,armed in guard let self, self.mixerKinds[id] == .track else{return};self.armedTrackID=armed ? id:nil;self.refresh() }
         mixerWorkspace.onMute = { [weak self] id,muted in self?.mixerSetMute(id,muted) }
@@ -380,34 +397,41 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard let trackTimelineSplit,let arrangementInspectorSplit,let arrangementConsoleSplit else{return}
         window.contentView?.layoutSubtreeIfNeeded();restoringWorkspaceLayout=true;defer{restoringWorkspaceLayout=false}
         func ratio(_ key:String,_ fallback:CGFloat)->CGFloat { let value=CGFloat(UserDefaults.standard.double(forKey:key));return value > 0.05 && value < 0.95 ? value:fallback }
-        let headerWidth=min(320,max(210,trackTimelineSplit.bounds.width*ratio("workspace.trackHeaderRatio",0.22)))
+        let headerWidth=min(260,max(195,trackTimelineSplit.bounds.width*ratio("workspace.trackHeaderRatio.v3",0.16)))
         trackTimelineSplit.setPosition(headerWidth,ofDividerAt:0)
         let inspectorWidth=min(360,max(260,arrangementInspectorSplit.bounds.width*(1-ratio("workspace.arrangementRatio",0.75))))
         arrangementInspectorSplit.setPosition(max(420,arrangementInspectorSplit.bounds.width-inspectorWidth),ofDividerAt:0)
         let arrangementHeight=min(max(280,arrangementConsoleSplit.bounds.height-210),max(280,arrangementConsoleSplit.bounds.height*ratio("workspace.arrangementHeightRatio",0.60)))
         arrangementConsoleSplit.setPosition(arrangementHeight,ofDividerAt:0)
         applyWorkspaceMode(workspaceMode.selectedSegment)
+        workspaceLayoutReady = true
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard !restoringWorkspaceLayout,let split=notification.object as? NSSplitView,split.arrangedSubviews.count>1 else{return}
+        guard workspaceLayoutReady,!restoringWorkspaceLayout,let split=notification.object as? NSSplitView,split.arrangedSubviews.count>1 else{return}
         let total=split.isVertical ? split.bounds.width:split.bounds.height;guard total>1 else{return}
         let first=split.arrangedSubviews[0].frame
         let ratio=(split.isVertical ? first.maxX:first.maxY)/total
-        if split === trackTimelineSplit { UserDefaults.standard.set(Double(ratio),forKey:"workspace.trackHeaderRatio") }
-        else if split === arrangementInspectorSplit { UserDefaults.standard.set(Double(ratio),forKey:"workspace.arrangementRatio") }
-        else if split === arrangementConsoleSplit { UserDefaults.standard.set(Double(ratio),forKey:"workspace.arrangementHeightRatio") }
+        if split === trackTimelineSplit { UserDefaults.standard.set(Double(ratio),forKey:"workspace.trackHeaderRatio.v3") }
+        else if split === arrangementInspectorSplit, workspaceMode.selectedSegment >= 2 {
+            let modeKey = workspaceMode.selectedSegment == 3 ? "mastering" : "mixing"
+            UserDefaults.standard.set(Double(ratio),forKey:"workspace.\(modeKey).arrangementRatio")
+        }
+        else if split === arrangementConsoleSplit, workspaceMode.selectedSegment >= 2 {
+            let modeKey = workspaceMode.selectedSegment == 3 ? "mastering" : "mixing"
+            UserDefaults.standard.set(Double(ratio),forKey:"workspace.\(modeKey).arrangementHeightRatio")
+        }
     }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if splitView === trackTimelineSplit{return 190}
+        if splitView === trackTimelineSplit{return 195}
         if splitView === arrangementInspectorSplit{return 420}
         if splitView === arrangementConsoleSplit{return 260}
         return proposedMinimumPosition
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if splitView === trackTimelineSplit{return min(340,splitView.bounds.width-420)}
+        if splitView === trackTimelineSplit{return min(260,splitView.bounds.width-420)}
         if splitView === arrangementInspectorSplit{return splitView.bounds.width-240}
         if splitView === arrangementConsoleSplit{return splitView.bounds.height-190}
         return proposedMaximumPosition
@@ -726,6 +750,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
         dawprojectButton.isEnabled = !exportBusy && !isRecording
         cancelExportButton.isEnabled = exportBusy
+        cancelExportButton.isHidden = !exportBusy
         updateTimelineTools()
         if let track=inspectorTrackID,let clip=inspectorClipIndex {updateClipInspector(track,clip)}
         else if let selected=selectedMixerID,mixerKinds[selected] != nil {updateMixerInspector(selected)}

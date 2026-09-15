@@ -2,13 +2,12 @@
 
 Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
 
-**Состояние: аудиопрототип 1.28.0.** Рабочее окно использует единую Studio Pro-inspired дизайн-систему: тёмные semantic tokens, SF Symbols, плотные track rows, адаптивный mixer и режимы Создание/Запись/Сведение/Мастеринг с реальными пропорциями workspace. Импортированный клип автоматически выбирается и сразу открывается в Inspector. Channel strips публикуют отдельные accessibility роли для stereo meter, volume fader и pan; fader поддерживает VoiceOver increment/decrement и клавиши вверх/вниз. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
+**Состояние: аудиопрототип 1.29.0.** Рабочее окно использует Studio Pro-inspired arrangement-first компоновку: один плотный top toolbar, компактный bottom transport/status и 195-point pinned track headers. В режимах Создание и Запись arrangement занимает почти всё окно; Inspector и Mixer появляются в Сведении и Мастеринге, где channel strips остаются доступны через отдельные AX meter, fader и pan controls. Импортированный клип автоматически выбирается и открывает Inspector в подходящем режиме. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Локальный visual/AX QA прошёл на QA draft; listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
 
 Собрать и запустить на Apple Silicon Mac:
 
 ```sh
-./scripts/build-macos.sh
-open 'build/My DAW.app'
+./script/build_and_run.sh
 ```
 
 [Открыть единый HTML-справочник](docs/index.html) — все разделы, навигация, таблицы и ссылки; работает без сети. Markdown-файлы ниже — редактируемые исходники.
@@ -43,6 +42,7 @@ open 'build/My DAW.app'
 
 | Документ | Содержание |
 |---|---|
+| [56 Arrangement-first Studio Pro layout](docs/56-studio-pro-arrangement-first-layout.md) | Один top toolbar, compact bottom transport, режимные Inspector/Mixer и visual/AX QA |
 | [55 Accessible mixer controls](docs/55-accessible-mixer-controls.md) | AX roles/labels/value, keyboard и VoiceOver increment/decrement для channel strips |
 | [54 Design system and workspace modes](docs/54-design-system-workspace-modes.md) | Semantic UI kit, functional workspace modes, compact lanes/mixer и результаты визуального QA |
 | [53 Async AUv3 hosting](docs/53-async-auv3-hosting.md) | Bounded render-graph prepare, strict system OOP verification, cancel/stale transport и UI state |
@@ -111,7 +111,7 @@ python3 scripts/check_docs.py
 python3 scripts/doctor.py
 ```
 
-Первая команда проверяет локальные ссылки и примеры контрактов. Вторая читает состояние инструментов разработки и ничего не устанавливает. Приложение собирается через `./scripts/build-macos.sh`, ядро — через CMake presets. Swift Package не создавался, поэтому `swift build` здесь не используется.
+Первая команда проверяет локальные ссылки и примеры контрактов. Вторая читает состояние инструментов разработки и ничего не устанавливает. Приложение собирается и запускается через `./script/build_and_run.sh`; Run action в Codex вызывает тот же entrypoint. Низкоуровневая bundle-сборка остаётся в `./scripts/build-macos.sh`, ядро — через CMake presets. Swift Package не создавался, поэтому `swift build` здесь не используется.
 
 Полная проверка JSON Schema и пересборка HTML:
 
