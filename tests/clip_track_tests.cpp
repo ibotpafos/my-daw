@@ -97,6 +97,49 @@ int main(){try{
         CHECK(s.state().tracks.size()==2&&s.state().tracks[1].id==id);
     }
 
+    // ---- Cross-track clipboard: copy/move audio regions + MIDI clips ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));  // 2s stereo
+        const auto other=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.5f));
+        s.importAt("Audio",clip,0,0);                                      // track 1 (shares source with 3), rev 1
+        s.importAt("Other",other,0,1);                                      // track 2 foreign source, rev 2
+        s.importAt("Twin",clip,0,2);                                        // track 3 same shared_ptr, rev 3
+        s.setClipColor(1,0,0xFF0000u,3);                                   // rev 4
+        s.setClipGain(1,0,-3.5,4);                                          // rev 5
+        s.copyClipToTrack(1,0,3,96000,5);                                   // rev 6 — paste onto same-source track
+        { const auto& t=s.state().tracks[2];
+          CHECK(t.regions.size()==2&&t.regions[1].start==96000&&t.regions[1].color==0xFF0000u&&std::abs(t.regions[1].gain+3.5)<1e-9);
+          CHECK(s.state().tracks[0].regions.size()==1); }                   // source keeps its clip
+        rejectsMessage("The target track does not share the clip's audio source",[&]{s.copyClipToTrack(1,0,2,0,6);});
+        rejectsMessage("Audio clip not found",[&]{s.copyClipToTrack(1,5,3,0,6);});
+        rejectsMessage("Track not found",[&]{s.copyClipToTrack(1,0,99,0,6);});
+        CHECK(s.state().revision==6);
+        rejectsMessage("No timeline space for the clip",[&]{s.copyClipToTrack(1,0,3,48000ull*601,6);});
+        s.moveClipToTrack(3,0,3,240000,6);                                  // rev 7 — same-track move reorders
+        { const auto& t=s.state().tracks[2];
+          CHECK(t.regions.size()==2&&t.regions[0].start==96000&&t.regions[1].start==240000); }
+        rejectsMessage("The last clip keeps the imported audio attached to its track",[&]{s.moveClipToTrack(1,0,3,0,7);});
+        CHECK(s.state().revision==7);
+        const uint64_t moved=s.state().revision; s.undo(moved);              // rev 8
+        CHECK(s.state().tracks[2].regions[0].start==0&&s.state().tracks[2].regions[1].start==96000);
+        const uint64_t back=s.state().revision; s.redo(back);                // rev 9
+        CHECK(s.state().tracks[2].regions[0].start==96000&&s.state().tracks[2].regions[1].start==240000);
+        // MIDI: notes, colour and the non-negative lane all travel cross-track; validate owns overlaps.
+        MidiClip mc; mc.track=2; mc.start=0; mc.length=48000; mc.color=0x77AA00u;
+        mc.notes.push_back({2400,1200,65,1,90});
+        s.addMidiClip(1,mc,9);                                              // rev 10 — lane 2 on track 1
+        s.copyMidiClipToTrack(1,0,2,96000,10);                              // rev 11
+        { const auto& mc2=s.state().tracks[1].midiClips[0];
+          CHECK(s.state().tracks[1].midiClips.size()==1&&mc2.start==96000&&mc2.track==2&&mc2.color==0x77AA00u&&mc2.notes.size()==1&&mc2.notes[0].pitch==65); }
+        s.moveMidiClipToTrack(1,0,2,192000,11);                             // rev 12 — source lane empties
+        CHECK(s.state().tracks[0].midiClips.empty()&&s.state().tracks[1].midiClips.size()==2);
+        rejectsMessage("MIDI clip overlap is not allowed",[&]{s.moveMidiClipToTrack(2,1,2,120000,12);});
+        CHECK(s.state().revision==12);
+        rejectsMessage("MIDI clip not found",[&]{s.copyMidiClipToTrack(1,0,2,0,12);});
+        const uint64_t cur=s.state().revision; s.undo(cur);                  // rev 13 — move back
+        CHECK(s.state().tracks[0].midiClips.size()==1&&s.state().tracks[1].midiClips.size()==1);
+    }
+
     // ---- MIDI clip: color, transpose (clamped), quantize ----
     {   Session s; s.add("MIDI",0);                                     // track 1, rev 1
         MidiClip mc; mc.track=0; mc.start=0; mc.length=48000*8;
@@ -155,6 +198,6 @@ int main(){try{
         sqlite3_close(db);
     }
 
-    std::cout << "PASS: clip/track editing: track mute/solo/color/gain + duplicateTrack, per-region clip color + gain (dB), MIDI clip color/transpose(clamped)/quantize, all revision-checked with silent no-ops and snapshot undo/redo, and schema v19 round trip persisting track/region color and per-region gain" << std::endl;
+    std::cout << "PASS: clip/track editing: track mute/solo/color/gain + duplicateTrack, per-region clip color + gain (dB), cross-track clipboard copy/move for audio regions (take-source rule, last-clip and timeline-space guards) and MIDI clips (lane/notes/colour travel, overlap via validate), MIDI clip color/transpose(clamped)/quantize, all revision-checked with silent no-ops and snapshot undo/redo, and schema v19 round trip persisting track/region color and per-region gain" << std::endl;
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}

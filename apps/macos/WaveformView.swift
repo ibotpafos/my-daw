@@ -73,7 +73,7 @@ final class WaveformView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.slider)
         setAccessibilityLabel("Позиция на аудиоволне")
-        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, Delete — удалить выбранный клип. Правая кнопка — меню клипа.")
+        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, Delete — удалить выбранный клип. Правая кнопка — меню клипа.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     private var lane: NSRect { NSRect(x: 14, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - 28), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
@@ -189,6 +189,8 @@ final class WaveformView: NSView {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "s": onClipHotkey?("s"); return
             case "d": onClipHotkey?("d"); return
+            case "c": onClipHotkey?("c"); return
+            case "v": onClipHotkey?("v"); return
             default: break
             }
         }

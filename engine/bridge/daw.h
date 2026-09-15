@@ -524,6 +524,15 @@ int daw_get_marker(daw_session*, uint32_t index, daw_marker* out);
 int daw_add_marker(daw_session*, uint64_t frame, const char* name, uint64_t expected_revision);
 int daw_rename_marker(daw_session*, uint64_t frame, const char* new_name, uint64_t expected_revision);
 int daw_remove_marker(daw_session*, uint64_t frame, uint64_t expected_revision);
+/* Cross-track clipboard. Copy keeps the source, move erases it (a lone region
+ * cannot leave its imported track). An audio paste requires the target track
+ * to resolve the same take source at the same take start (take 0 is the base
+ * audio; indices are track-local), and region overlap follows the crossfade
+ * rule. MIDI clips keep their lane; note and clip limits stay domain-owned. */
+int daw_copy_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
+int daw_move_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
+int daw_copy_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
+int daw_move_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
 /* Preview is read-only. Pass changes=NULL/capacity=0 to query change_count.
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);

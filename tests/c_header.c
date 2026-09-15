@@ -220,6 +220,26 @@ int main(void) {
     if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 2) result |= 1;
     if (daw_redo(session, base + 5) != 0) result |= 1;
     if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 1) result |= 1;
+    /* Cross-track clipboard on the post-undo state (tracks 2..4; track 2 owns the
+     * coloured lane-3 clip at index 0). Audio paste speaks the domain rules, a
+     * MIDI clip travels whole with its lane/notes/colour, validate owns overlaps. */
+    daw_snapshot now = {0}; now.struct_size = sizeof(now);
+    result |= daw_get_snapshot(session, &now);
+    const uint64_t r = now.revision;
+    if (daw_copy_clip_to_track(session, 2, 0, 999, 0, r) == 0) result |= 1;        /* source region missing */
+    if (daw_move_clip_to_track(session, 999, 0, 2, 0, r) == 0) result |= 1;        /* source track missing */
+    if (daw_copy_midi_clip_to_track(session, 2, 99, 3, 0, r) == 0) result |= 1;    /* clip index out of range */
+    if (daw_copy_midi_clip_to_track(session, 2, 0, 3, 9600000, r) != 0) result |= 1;
+    uint32_t clip_now = 0;
+    if (daw_get_midi_clip_count(session, 3, &clip_now) != 0 || clip_now != 1) result |= 1;
+    daw_midi_clip twin = {0}; twin.struct_size = sizeof(twin);
+    if (daw_get_midi_clip(session, 3, 0, &twin, 0, NULL, 0, NULL) != 0 || twin.start != 9600000 || twin.lane != 3 || twin.note_count != 1 || twin.color != 0x10203u) result |= 1;
+    if (daw_move_midi_clip_to_track(session, 2, 0, 3, 9700000, r + 1) != 0) result |= 1;
+    if (daw_get_midi_clip_count(session, 3, &clip_now) != 0 || clip_now != 2) result |= 1;
+    if (daw_get_midi_clip_count(session, 2, &clip_now) != 0 || clip_now != 1) result |= 1;
+    if (daw_move_midi_clip_to_track(session, 3, 1, 3, 9602400, r + 2) == 0) result |= 1; /* lands on the pasted clip */
+    if (daw_undo(session, r + 2) != 0) result |= 1;
+    if (daw_get_midi_clip_count(session, 2, &clip_now) != 0 || clip_now != 2) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

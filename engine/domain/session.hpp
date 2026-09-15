@@ -229,6 +229,16 @@ public:
     void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
     void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
     void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);
+    // Cross-track clipboard moves. Copy keeps the source; move erases it, so a
+    // lone region cannot leave its imported track (same rule as deleteClip).
+    // Paste of an audio region requires the target track to carry the very same
+    // take at the region's take index (take indices are track-local). MIDI keeps
+    // its lane: validate() only requires non-negativity. start/limits/overlaps
+    // and every capacity rule stay owned by validate().
+    void copyClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
+    void moveClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
+    void copyMidiClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
+    void moveMidiClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     // Tempo/time-signature map commands follow the automation convention:
     // expected revision, upsert replaces a same-frame point, an identical
     // value is a silent no-op, and the primary frame-0 point cannot be

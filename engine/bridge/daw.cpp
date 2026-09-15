@@ -950,6 +950,10 @@ int daw_get_marker(daw_session* s,uint32_t index,daw_marker* out){return guard(s
 int daw_add_marker(daw_session* s,uint64_t frame,const char* name,uint64_t rev){return guard(s,[&]{s->model.addMarker(frame,required(name),rev);});}
 int daw_rename_marker(daw_session* s,uint64_t frame,const char* name,uint64_t rev){return guard(s,[&]{s->model.renameMarker(frame,required(name),rev);});}
 int daw_remove_marker(daw_session* s,uint64_t frame,uint64_t rev){return guard(s,[&]{s->model.removeMarker(frame,rev);});}
+int daw_copy_clip_to_track(daw_session* s,uint64_t src,uint32_t index,uint64_t dst,uint64_t start,uint64_t rev){return guard(s,[&]{s->model.copyClipToTrack(src,index,dst,start,rev);resetTransport(s);});}
+int daw_move_clip_to_track(daw_session* s,uint64_t src,uint32_t index,uint64_t dst,uint64_t start,uint64_t rev){return guard(s,[&]{s->model.moveClipToTrack(src,index,dst,start,rev);resetTransport(s);});}
+int daw_copy_midi_clip_to_track(daw_session* s,uint64_t src,uint32_t index,uint64_t dst,uint64_t start,uint64_t rev){return guard(s,[&]{s->model.copyMidiClipToTrack(src,index,dst,start,rev);resetTransport(s);});}
+int daw_move_midi_clip_to_track(daw_session* s,uint64_t src,uint32_t index,uint64_t dst,uint64_t start,uint64_t rev){return guard(s,[&]{s->model.moveMidiClipToTrack(src,index,dst,start,rev);resetTransport(s);});}
 int daw_undo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.undo(rev); resetTransport(s);}); }
 int daw_redo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.redo(rev); resetTransport(s);}); }
 daw_save_job* daw_begin_save(daw_session* s,const char* path) {
