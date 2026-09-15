@@ -44,6 +44,8 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.65.0](25-offline-export.md) — диалог стемов со списком чекбоксов всех дорожек: часть — фильтр id, всё — легаси-вызов.
+
 [1.64.0](33-full-duplex-loop-recording.md) — прямой мониторинг входа в луп-записи: UNITY-сумма моно-скретча в выходные каналы после рендера, кнопка MON.
 
 [1.63.0](25-offline-export.md) — стемы по фильтру дорожек: `daw_begin_stem_export_tracks` с предварительной валидацией id и чекбоксом «только выбранная дорожка».

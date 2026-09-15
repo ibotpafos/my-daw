@@ -310,12 +310,24 @@ extension DraftApp {
         guard check(daw_get_export_tail_summary(session, &initialOptions, &tailSummary)) else { return }
         let tailDialog = WavExportTailDialog(storedMode: initialOptions.tail_mode, storedLimitSeconds: initialOptions.manual_tail_frames / 48_000, summary: tailSummary)
         let choice = NSAlert(); choice.messageText = "Экспорт стемов"
-        choice.informativeText = "Весь проект, по WAV-файлу на слышимую дорожку: мастер-гейн и мастер-цепочка не применяются (сумма стемов даёт микс до мастера). Замьюченные и пустые дорожки пропускаются."
-        let selectedOnly = NSButton(checkboxWithTitle: "Только выбранная в микшере дорожка", target: nil, action: nil)
-        selectedOnly.isEnabled = selectedMixerID != nil
-        selectedOnly.setAccessibilityLabel("Ограничить стемы выбранной дорожкой")
-        let stemsAccessory = NSStackView(views: [tailDialog.view, selectedOnly]); stemsAccessory.orientation = .vertical; stemsAccessory.alignment = .leading
-        choice.accessoryView = stemsAccessory
+        choice.informativeText = "По WAV-файлу на слышимую выбранную дорожку: мастер-гейн и мастер-цепочка не применяются (сумма стемов даёт микс до мастера). Замьюченные и пустые дорожки пропускаются."
+        var trackChecks: [(id: UInt64, box: NSButton)] = []
+        var stemsSnapshot = daw_snapshot(); stemsSnapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+        if check(daw_get_snapshot(session, &stemsSnapshot)) {
+            let trackList = NSStackView(); trackList.orientation = .vertical; trackList.alignment = .leading; trackList.spacing = 2
+            for index in 0..<Int(stemsSnapshot.track_count) {
+                var row = daw_track(); row.struct_size = UInt32(MemoryLayout<daw_track>.size)
+                guard check(daw_get_track(session, UInt32(index), &row)) else { continue }
+                let box = NSButton(checkboxWithTitle: withUnsafeBytes(of: row.name) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }, target: nil, action: nil); box.state = .on
+                trackChecks.append((row.id, box)); trackList.addArrangedSubview(box)
+            }
+            let trackScroll = NSScrollView(); trackScroll.hasVerticalScroller = true; trackScroll.borderType = .bezelBorder; trackScroll.drawsBackground = false
+            trackScroll.documentView = trackList
+            trackScroll.frame = NSRect(x: 0, y: 0, width: 260, height: min(120, CGFloat(22 * max(1, trackChecks.count) + 8)))
+            trackScroll.setAccessibilityLabel("Список дорожек для экспорта стемов")
+            let stemsAccessory = NSStackView(views: [tailDialog.view, trackScroll]); stemsAccessory.orientation = .vertical; stemsAccessory.alignment = .leading
+            choice.accessoryView = stemsAccessory
+        }
         choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
         let response = choice.runModal()
         guard response != .alertThirdButtonReturn else { return }
@@ -326,10 +338,12 @@ extension DraftApp {
         panel.message = "Папка для стемов — файлы получат имена «01 − дорожка.wav», «02 − …»"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let job: OpaquePointer?
-        if selectedOnly.state == .on, let mixerSelection = selectedMixerID {
-            job = [mixerSelection].withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, 1) }
-        } else {
+        let chosen = trackChecks.filter { $0.box.state == .on }.map { $0.id }
+        if chosen.isEmpty { storageMessage("Выбери хотя бы одну дорожку для стемов."); return }
+        if chosen.count == trackChecks.count {
             job = daw_begin_stem_export(session, url.path, format, &options)
+        } else {
+            job = chosen.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, UInt32(chosen.count)) }
         }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
