@@ -940,6 +940,16 @@ int daw_get_time_signature_point(daw_session* s,uint32_t index,daw_time_signatur
     const auto& signatures=s->model.state().timeSignatures;
     if(index>=signatures.size())throw daw::Error("Time signature index out of range");
     *out={};out->struct_size=sizeof(daw_time_signature_point);out->version=DAW_TIME_SIGNATURE_POINT_VERSION;out->frame=signatures[index].frame;out->numerator=signatures[index].numerator;out->denominator=signatures[index].denominator;});}
+int daw_get_marker_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing marker count output");*count=static_cast<uint32_t>(s->model.state().markers.size());});}
+int daw_get_marker(daw_session* s,uint32_t index,daw_marker* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_marker))throw daw::Error("Marker ABI mismatch");
+    const auto& markers=s->model.state().markers;
+    if(index>=markers.size())throw daw::Error("Marker index out of range");
+    *out={};out->struct_size=sizeof(daw_marker);out->version=DAW_MARKER_VERSION;out->frame=markers[index].frame;
+    std::memcpy(out->name,markers[index].name.data(),markers[index].name.size());});}
+int daw_add_marker(daw_session* s,uint64_t frame,const char* name,uint64_t rev){return guard(s,[&]{s->model.addMarker(frame,required(name),rev);});}
+int daw_rename_marker(daw_session* s,uint64_t frame,const char* name,uint64_t rev){return guard(s,[&]{s->model.renameMarker(frame,required(name),rev);});}
+int daw_remove_marker(daw_session* s,uint64_t frame,uint64_t rev){return guard(s,[&]{s->model.removeMarker(frame,rev);});}
 int daw_undo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.undo(rev); resetTransport(s);}); }
 int daw_redo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.redo(rev); resetTransport(s);}); }
 daw_save_job* daw_begin_save(daw_session* s,const char* path) {

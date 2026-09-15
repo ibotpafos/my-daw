@@ -512,6 +512,18 @@ int daw_get_tempo_count(daw_session*, uint32_t* count);
 int daw_get_tempo_point(daw_session*, uint32_t index, daw_tempo_point* out);
 int daw_get_time_signature_count(daw_session*, uint32_t* count);
 int daw_get_time_signature_point(daw_session*, uint32_t index, daw_time_signature_point* out);
+/* Project markers: named locators ordered strictly by 48 kHz frame, unique
+ * frames, at most 256 entries, names 1-120 UTF-8 characters (domain-owned
+ * validation). A duplicate frame rejects; an identical rename is a silent
+ * no-op; every committed change costs one revision and one Undo step. The
+ * lane never affects audio, so marker commands prepare nothing. */
+enum { DAW_MARKER_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t frame; char name[128]; } daw_marker;
+int daw_get_marker_count(daw_session*, uint32_t* count);
+int daw_get_marker(daw_session*, uint32_t index, daw_marker* out);
+int daw_add_marker(daw_session*, uint64_t frame, const char* name, uint64_t expected_revision);
+int daw_rename_marker(daw_session*, uint64_t frame, const char* new_name, uint64_t expected_revision);
+int daw_remove_marker(daw_session*, uint64_t frame, uint64_t expected_revision);
 /* Preview is read-only. Pass changes=NULL/capacity=0 to query change_count.
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);

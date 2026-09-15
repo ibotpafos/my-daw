@@ -35,6 +35,9 @@ _Static_assert(offsetof(daw_midi_device, struct_size) == 0 && offsetof(daw_midi_
 _Static_assert(sizeof(daw_midi_device) == 148, "MIDI device ABI size");
 _Static_assert(offsetof(daw_midi_record_status_t, struct_size) == 0 && offsetof(daw_midi_record_status_t, armed) == 8 && offsetof(daw_midi_record_status_t, open_notes) == 16, "MIDI capture status prefix");
 _Static_assert(sizeof(daw_midi_record_status_t) == 48, "MIDI capture status ABI size");
+_Static_assert(DAW_MARKER_VERSION == 1, "marker ABI version");
+_Static_assert(offsetof(daw_marker, struct_size) == 0 && offsetof(daw_marker, frame) == 8 && offsetof(daw_marker, name) == 16, "marker layout");
+_Static_assert(sizeof(daw_marker) == 144, "marker ABI size");
 _Static_assert(DAW_VST3_FLAG_INSTRUMENT == 1u, "VST3 component flag ABI value");
 _Static_assert(offsetof(daw_vst3_component, struct_size) == 0, "VST3 component prefix");
 _Static_assert(offsetof(daw_vst3_component, available) == 4 && offsetof(daw_vst3_component, flags) == 8 && offsetof(daw_vst3_component, class_id) == 12, "VST3 component flag placement");
@@ -196,6 +199,27 @@ int main(void) {
     daw_snapshot after = {0}; after.struct_size = sizeof(after);
     result |= daw_get_snapshot(session, &after);
     if (after.revision != idle.revision) result |= 1;                               /* capture and click are never commands */
+    /* Markers (domain v18): add, rename, identical-rename no-op, readback,
+     * duplicate-frame rejection, remove, undo/redo on the revision ladder. */
+    const uint64_t base = after.revision;
+    if (daw_add_marker(session, 48000, "Intro", base) != 0) result |= 1;
+    if (daw_add_marker(session, 192000, "Hook", base + 1) != 0) result |= 1;
+    if (daw_rename_marker(session, 48000, "Verse", base + 2) != 0) result |= 1;
+    if (daw_rename_marker(session, 48000, "Verse", base + 3) != 0) result |= 1;    /* no-op must still succeed */
+    uint32_t marker_count = 9;
+    if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 2) result |= 1;
+    daw_marker marker = {0};
+    marker.struct_size = sizeof(marker);
+    if (daw_get_marker(session, 0, &marker) != 0 || marker.frame != 48000 || marker.version != DAW_MARKER_VERSION || marker.name[0] != 'V' || marker.name[5] != 0) result |= 1;
+    if (daw_get_marker(session, 2, &marker) == 0) result |= 1;                      /* index out of range */
+    if (daw_add_marker(session, 192000, "Dup", base + 3) == 0) result |= 1;        /* frame already taken */
+    if (daw_add_marker(session, 48000, "", base + 3) == 0) result |= 1;            /* empty name rejected by the domain */
+    if (daw_remove_marker(session, 48000, base + 3) != 0) result |= 1;
+    if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 1) result |= 1;
+    if (daw_undo(session, base + 4) != 0) result |= 1;
+    if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 2) result |= 1;
+    if (daw_redo(session, base + 5) != 0) result |= 1;
+    if (daw_get_marker_count(session, &marker_count) != 0 || marker_count != 1) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

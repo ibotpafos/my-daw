@@ -163,34 +163,59 @@ final class AutomationSlider: NSSlider {
 }
 
 @MainActor
+/// Маркер-локатор проекта (POD daw_marker): позиция на общей шкале 48 кГц и имя.
+struct ProjectMarker {
+    let frame: UInt64
+    let name: String
+}
+
 final class TimelineRulerView: NSView {
     var projectFrames: UInt64 = 48000 * 12 { didSet { needsDisplay = true } }
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
     /// Тактовые метки из темпо-карты проекта; пустой массив — прежняя секундная шкала без второго слоя.
     var barMarks: [ProjectBarStart] = [] { didSet { needsDisplay = true } }
+    /// Маркеры-локаторы: отдельная верхняя полоса флажков (домен v18, мост v1).
+    var markers: [ProjectMarker] = [] { didSet { needsDisplay = true } }
+    var onMarkerSeek: ((UInt64) -> Void)?
+    var onMarkerAdd: ((UInt64) -> Void)?
+    var onMarkerMenu: ((ProjectMarker) -> NSMenu?)?
     /// Высота верхней полосы под номера тактов; секундная шкала остаётся ниже.
     static let barBand: CGFloat = 14
+    /// Полоса флажков маркеров над тактовой полосой.
+    static let markerBand: CGFloat = 16
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         NSColor(white: 0.07, alpha: 1).setFill();bounds.fill();let frames=max(UInt64(1),projectFrames);let seconds=Double(frames)/48000;let raw=max(1,seconds/Double(max(1,Int(bounds.width/110))));let step:Double=raw <= 1 ? 1:(raw <= 2 ? 2:(raw <= 5 ? 5:10));let attributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:10,weight:.regular),.foregroundColor:NSColor.secondaryLabelColor]
         // Второй слой: номера тактов из темпо-карты в верхней полосе. Горизонтальный
         // маппинг кадр↔пиксель тот же, что у секундной шкалы; меняется только то,
         // что метки приходят из карты, а не из локального темпа.
+        // Верхняя полоса: флажки маркеров с именами и вертикальная линия на всю линейку.
+        if !markers.isEmpty {
+            NSColor(white:1,alpha:0.05).setFill();NSBezierPath(rect:NSRect(x:0,y:0,width:bounds.width,height:Self.markerBand)).fill()
+            let markerAttributes:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:9,weight:.medium),.foregroundColor:NSColor.systemYellow.withAlphaComponent(0.92)]
+            for marker in markers {
+                if marker.frame > frames { continue }
+                let x=CGFloat(Double(marker.frame)/Double(frames))*bounds.width
+                NSColor.systemYellow.withAlphaComponent(0.45).setStroke();let drop=NSBezierPath();drop.move(to:NSPoint(x:x,y:7));drop.line(to:NSPoint(x:x,y:bounds.height));drop.lineWidth=1;drop.stroke()
+                NSColor.systemYellow.setFill();let flag=NSBezierPath();flag.move(to:NSPoint(x:x-4,y:0));flag.line(to:NSPoint(x:x+4,y:0));flag.line(to:NSPoint(x:x,y:7));flag.close();flag.fill()
+                marker.name.draw(at:NSPoint(x:x+6,y:6),withAttributes:markerAttributes)
+            }
+        }
         if !barMarks.isEmpty {
             let barAttributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:9,weight:.medium),.foregroundColor:NSColor.systemMint.withAlphaComponent(0.86)]
-            NSColor(white:1,alpha:0.08).setFill();NSBezierPath(rect:NSRect(x:0,y:0,width:bounds.width,height:Self.barBand)).fill()
-            NSColor(white:1,alpha:0.14).setStroke();let divider=NSBezierPath();divider.move(to:NSPoint(x:0,y:Self.barBand));divider.line(to:NSPoint(x:bounds.width,y:Self.barBand));divider.stroke()
+            NSColor(white:1,alpha:0.08).setFill();NSBezierPath(rect:NSRect(x:0,y:Self.markerBand,width:bounds.width,height:Self.barBand)).fill()
+            NSColor(white:1,alpha:0.14).setStroke();let divider=NSBezierPath();divider.move(to:NSPoint(x:0,y:Self.markerBand+Self.barBand));divider.line(to:NSPoint(x:bounds.width,y:Self.markerBand+Self.barBand));divider.stroke()
             var lastLabelX:CGFloat = -60
             for mark in barMarks {
                 if mark.frame > frames { break }
                 let x=CGFloat(Double(mark.frame)/Double(frames))*bounds.width
-                NSColor(white:1,alpha:0.26).setStroke();let tick=NSBezierPath();tick.move(to:NSPoint(x:x,y:Self.barBand-9));tick.line(to:NSPoint(x:x,y:Self.barBand));tick.stroke()
+                NSColor(white:1,alpha:0.26).setStroke();let tick=NSBezierPath();tick.move(to:NSPoint(x:x,y:Self.markerBand+Self.barBand-9));tick.line(to:NSPoint(x:x,y:Self.markerBand+Self.barBand));tick.stroke()
                 guard x-lastLabelX >= 20 else { continue }
                 lastLabelX=x
-                String(mark.number).draw(at:NSPoint(x:x+3,y:1),withAttributes:barAttributes)
+                String(mark.number).draw(at:NSPoint(x:x+3,y:Self.markerBand+1),withAttributes:barAttributes)
             }
         }
-        let baseline=Self.barBand
+        let baseline=Self.markerBand+Self.barBand
         var second:Double=0;while second<=seconds {let x=CGFloat(second/seconds)*bounds.width;NSColor(white:1,alpha:0.16).setStroke();let line=NSBezierPath();line.move(to:NSPoint(x:x,y:bounds.height-8));line.line(to:NSPoint(x:x,y:bounds.height));line.stroke();String(format:"%.0f",second).draw(at:NSPoint(x:x+3,y:baseline+2),withAttributes:attributes);second+=step};let cursor=CGFloat(Double(min(playhead,frames))/Double(frames))*bounds.width;NSColor.systemMint.setStroke();let cursorLine=NSBezierPath();cursorLine.move(to:NSPoint(x:cursor,y:0));cursorLine.line(to:NSPoint(x:cursor,y:bounds.height));cursorLine.stroke()
     }
 }
@@ -518,7 +543,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         gridPopup.addItems(withTitles: ["Сетка выкл.", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32"]); gridPopup.selectItem(at: 4)
         gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:));gridPopup.setAccessibilityLabel("Деление сетки таймлайна в битах темпо-карты")
         gridLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular); gridLabel.textColor = .secondaryLabelColor
-        timelineRuler.setAccessibilityLabel("Линейка проекта: верхний слой — такты из темпо-карты, нижний — секунды"); timelineRuler.setAccessibilityHelp("Номера тактов считаются по карте темпа и размеров; точка смены размера двигает сетку тактов")
+        timelineRuler.setAccessibilityLabel("Линейка проекта: флажки маркеров сверху, затем такты из темпо-карты и секунды"); timelineRuler.setAccessibilityHelp("Клик по флажку — переход к маркеру. Двойной клик по полосе маркеров — добавить маркер. Правый клик по флажку — переименовать или удалить")
+        timelineRuler.onMarkerSeek = { [weak self] frame in self?.seekAudio(frame) }
+        timelineRuler.onMarkerAdd = { [weak self] frame in self?.promptAddMarker(frame) }
+        timelineRuler.onMarkerMenu = { [weak self] marker in self?.markerMenu(marker) }
         gridLabel.setAccessibilityLabel("Сетка таймлайна: деление и темп под позицией воспроизведения")
         rangeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); rangeLabel.textColor = .secondaryLabelColor
         tempoLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); tempoLabel.textColor = .secondaryLabelColor
@@ -570,7 +598,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         document.addSubview(timelineRuler);document.addSubview(rows); scroll.documentView = document
         timelineZoom=CGFloat(UserDefaults.standard.double(forKey:"timelineZoom"));if timelineZoom < 1{timelineZoom=1}
         timelineWidthConstraint=document.widthAnchor.constraint(equalToConstant:1400*timelineZoom);timelineWidthConstraint?.isActive=true
-        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.barBand+28).isActive=true
+        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28).isActive=true
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),timelineRuler.leadingAnchor.constraint(equalTo:document.leadingAnchor),timelineRuler.trailingAnchor.constraint(equalTo:document.trailingAnchor),timelineRuler.topAnchor.constraint(equalTo:document.topAnchor),
             rows.leadingAnchor.constraint(equalTo: document.leadingAnchor), rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
@@ -579,7 +607,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let headerScroll=NSScrollView();trackHeaderScroll=headerScroll;headerScroll.hasVerticalScroller=false;headerScroll.hasHorizontalScroller=false;headerScroll.drawsBackground=false
         trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=8;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
         let headerDocument=DraftCanvas();headerDocument.translatesAutoresizingMaskIntoConstraints=false;let tracksHeading=label("TRACKS",size:10,color:.tertiaryLabelColor);tracksHeading.font = .systemFont(ofSize:10,weight:.semibold);tracksHeading.translatesAutoresizingMaskIntoConstraints=false;headerDocument.addSubview(tracksHeading);headerDocument.addSubview(trackHeaderRows);headerScroll.documentView=headerDocument
-        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
+        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
         scroll.contentView.postsBoundsChangedNotifications=true;headerScroll.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:headerScroll.contentView)
@@ -694,7 +722,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true)])
         if let projectMenu = main.items.last?.submenu {
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
@@ -1598,7 +1626,57 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let limit = min(max(timelineRuler.projectFrames, playheadFrame + 48000 * 30), BeatFrameMap.timelineLimitFrame)
         tempoBars = tempoMap.barStarts(upToFrame: limit)
         timelineRuler.barMarks = tempoBars
+        refreshMarkers()
     }
+    /// Полная перечитка дорожки маркеров: домен остаётся единственным носителем,
+    /// линейка лишь отображает срез после каждой команды/Undo/Redo/Load.
+    func refreshMarkers() {
+        var count: UInt32 = 0
+        guard daw_get_marker_count(session, &count) == 0 else { timelineRuler.markers = []; return }
+        var list: [ProjectMarker] = []
+        for index in 0..<Int(count) {
+            var marker = daw_marker(); marker.struct_size = UInt32(MemoryLayout<daw_marker>.size)
+            guard daw_get_marker(session, UInt32(index), &marker) == 0 else { continue }
+            let name = withUnsafeBytes(of: marker.name) { bytes in String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            list.append(ProjectMarker(frame: marker.frame, name: name))
+        }
+        timelineRuler.markers = list
+    }
+    func promptAddMarker(_ frame: UInt64) {
+        guard !isRecording else { return }
+        finishEditing()
+        let snapped = gridSnap(atFrame: Int64(frame)).anchor
+        let alert = NSAlert(); alert.messageText = "Новый маркер"; alert.informativeText = "Имя 1–120 символов; позиция " + String(format: "%.2f", Double(snapped)/48000) + " с от начала проекта."
+        let field = NSTextField(string: "Маркер \((timelineRuler.markers.count + 1))"); field.widthAnchor.constraint(equalToConstant: 220).isActive = true; field.setAccessibilityLabel("Имя маркера")
+        let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 8; form.addArrangedSubview(field); form.frame = NSRect(x:0,y:0,width:260,height:34); alert.accessoryView = form
+        alert.addButton(withTitle: "Добавить"); alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if check(daw_add_marker(session, snapped, field.stringValue, revision)) { refresh(); pollTransport() }
+    }
+    func markerMenu(_ marker: ProjectMarker) -> NSMenu {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for (title, selector) in [("Перейти к маркеру", #selector(markerSeekAction(_:))), ("Переименовать…", #selector(markerRenameAction(_:))), ("Удалить маркер", #selector(markerDeleteAction(_:)))] {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; item.representedObject = marker; menu.addItem(item)
+        }
+        return menu
+    }
+    @objc func markerSeekAction(_ sender: NSMenuItem) { guard let marker = sender.representedObject as? ProjectMarker else { return }; seekAudio(marker.frame) }
+    @objc func markerRenameAction(_ sender: NSMenuItem) {
+        guard let marker = sender.representedObject as? ProjectMarker, !isRecording else { return }
+        finishEditing()
+        let alert = NSAlert(); alert.messageText = "Переименовать маркер"; alert.informativeText = "Позиция \(String(format: "%.2f", Double(marker.frame)/48000)) с остаётся прежней."
+        let field = NSTextField(string: marker.name); field.widthAnchor.constraint(equalToConstant: 220).isActive = true; field.setAccessibilityLabel("Новое имя маркера")
+        let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 8; form.addArrangedSubview(field); form.frame = NSRect(x:0,y:0,width:260,height:34); alert.accessoryView = form
+        alert.addButton(withTitle: "Сохранить"); alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if check(daw_rename_marker(session, marker.frame, field.stringValue, revision)) { refresh(); pollTransport() }
+    }
+    @objc func markerDeleteAction(_ sender: NSMenuItem) {
+        guard let marker = sender.representedObject as? ProjectMarker, !isRecording else { return }
+        finishEditing()
+        if check(daw_remove_marker(session, marker.frame, revision)) { refresh(); pollTransport() }
+    }
+    @objc func menuAddMarkerAtPlayhead() { promptAddMarker(playheadFrame) }
     @objc func changeTempo(_ sender:NSStepper) { commitTempo(Double(sender.integerValue)) }
     @objc func commitTempoField(_ sender:NSTextField) {
         let raw = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
