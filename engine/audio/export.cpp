@@ -261,7 +261,7 @@ void writeWavRange(const State &snapshot, const std::string &path,
       throw ExportCanceled{};
     auto count = static_cast<uint32_t>(
         std::min<uint64_t>(block, inputFrames - inputDone));
-    renderer.render(left.data(), right.data(), count);
+    renderer.renderExport(left.data(), right.data(), count); // bounced files never carry the monitoring click
     consume(count);
     inputDone += count;
   }

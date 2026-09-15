@@ -342,6 +342,81 @@ int main(){try{
         std::vector<float> al(512),ar(512); a.render(al.data(),ar.data(),512);
         CHECK(a.position==512 && al[300]>0.15f && al[480]>0.2f); // gain ramp smooths from zero
     }
-    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap, instrument voice with release and loop cutoffs\n";
+    // --- METRONOME-ENGINE: post-master click track on the domain beat map ---
+    {
+        auto silent=[](uint64_t frames){std::vector<float> pcm(size_t(frames)*2,0.0f);return std::make_shared<const daw::Clip>(std::move(pcm));};
+        auto peakWindow=[](const std::vector<float> &buffer,size_t from,size_t to){float m=0;for(size_t i=from;i<to;++i)m=std::max(m,std::abs(buffer[i]));return m;};
+        // Envelope-aware zero-crossing density: 1000 Hz -> 9 interior sign
+        // flips per 240-frame blip, 1500 Hz -> 14. Sub-threshold samples at
+        // exact sine zeros are skipped so float error cannot fake a flip.
+        auto crossings=[](const std::vector<float> &buffer,size_t from,size_t to){
+            int flips=0,previous=0;
+            for(size_t i=from;i<to;++i){const float x=buffer[i];
+                if(std::abs(x)<1e-4f) continue;
+                const int sign=x>0?1:-1;
+                if(previous!=0&&sign!=previous) ++flips;
+                previous=sign;}
+            return flips;
+        };
+        auto renderAll=[](daw::Renderer &r,size_t frames,bool exportPath){
+            std::vector<float> left(frames),right(frames);
+            for(size_t off=0;off<frames;off+=512){const auto count=uint32_t(std::min<size_t>(512,frames-off));
+                if(exportPath) r.renderExport(left.data()+off,right.data()+off,count);
+                else r.render(left.data()+off,right.data()+off,count);}
+            return std::pair{left,right};
+        };
+        const size_t span=192000; // four seconds at the fixed 48 kHz project rate
+        daw::Session metro; metro.import("Silence",silent(span),0);
+        CHECK(metro.state().tempo.size()==1&&metro.state().tempo[0].bpm==120.0); // default map
+        daw::Renderer on; on.prepare(metro.state()); on.setMetronome(true); on.playing=true;
+        auto [left,right]=renderAll(on,span,false);
+        CHECK(on.position==span);
+        // (a) 120 BPM default: eight quarter-note beats at k*24000 frames.
+        for(int k=0;k<8;++k){
+            const size_t beat=size_t(k)*24000;
+            CHECK(peakWindow(left,beat,beat+300)>0.05f);   // -18 dBFS >> threshold
+            CHECK(peakWindow(right,beat,beat+300)>0.05f);  // both channels
+        }
+        CHECK(std::memcmp(left.data(),right.data(),span*sizeof(float))==0); // mono click, L==R
+        for(size_t i=240;i<12000;++i) CHECK(left[i]==0.0f); // inter-blip silence preserved
+        // Default signature numerator 4 -> beats 0 and 4 are bar starts (1500 Hz),
+        // beats 1..3 and 5 ordinary (1000 Hz); accent judged by crossing density.
+        const int accent=crossings(left,0,240),accent4=crossings(left,96000,96240);
+        const int ordinary1=crossings(left,24000,24240),ordinary2=crossings(left,48000,48240),
+                  ordinary3=crossings(left,72000,72240),ordinary5=crossings(left,120000,120240);
+        CHECK(accent>=12&&accent<=17&&accent4>=12&&accent4<=17);
+        CHECK(ordinary1>=7&&ordinary1<=11&&ordinary2>=7&&ordinary2<=11&&ordinary3>=7&&ordinary3<=11&&ordinary5>=7&&ordinary5<=11);
+        daw::Renderer never; never.prepare(metro.state()); never.playing=true;
+        auto [controlL,controlR]=renderAll(never,span,false);
+        bool anyClick=false; for(size_t i=0;i<span;++i) if(controlL[i]!=0.0f) {anyClick=true;break;}
+        CHECK(!anyClick); // (b) control render with the switch untouched is pure silence
+        daw::Renderer cycled; cycled.prepare(metro.state());
+        cycled.setMetronome(true); cycled.setMetronome(false); cycled.playing=true;
+        auto [cycledL,cycledR]=renderAll(cycled,span,false);
+        CHECK(std::memcmp(cycledL.data(),controlL.data(),span*sizeof(float))==0&&
+              std::memcmp(cycledR.data(),controlR.data(),span*sizeof(float))==0); // off == control byte-for-byte
+        CHECK(std::memcmp(left.data(),controlL.data(),span*sizeof(float))!=0);    // on == audible
+        // (c) tempo map {0:120, 96000:60}: beat spacing doubles after 96000.
+        metro.setTempoAt(96000,60.0,metro.state().revision);
+        daw::Renderer map; map.prepare(metro.state()); map.setMetronome(true); map.playing=true;
+        auto [mapL,mapR]=renderAll(map,span,false);
+        for(size_t beat:{0ull,24000ull,48000ull,72000ull,96000ull,144000ull})
+            CHECK(peakWindow(mapL,beat,beat+300)>0.05f);
+        for(size_t i=96240;i<119000;++i) CHECK(mapL[i]==0.0f); // no 24000-frame echo
+        CHECK(peakWindow(mapL,120000,120300)==0.0f);
+        CHECK(peakWindow(mapL,168000,168300)==0.0f);           // 144000+48000=192000 falls outside
+        CHECK(crossings(mapL,96000,96240)>=12&&crossings(mapL,144000,144240)<=11); // beat 4 accent, beat 5 ordinary
+        // (d) export-path suppression: renderExport stays click-free with the
+        // switch on; engine/audio/export.cpp's only render-loop call site uses
+        // renderExport (grep-verified in the arc report).
+        daw::Renderer bounce; bounce.prepare(metro.state()); bounce.setMetronome(true); bounce.playing=true;
+        CHECK(bounce.metronome());
+        auto [bounceL,bounceR]=renderAll(bounce,span,true);
+        daw::Renderer bounceControl; bounceControl.prepare(metro.state()); bounceControl.playing=true;
+        auto [quietL,quietR]=renderAll(bounceControl,span,false);
+        CHECK(std::memcmp(bounceL.data(),quietL.data(),span*sizeof(float))==0&&
+              std::memcmp(bounceR.data(),quietR.data(),span*sizeof(float))==0);
+    }
+    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap, instrument voice with release and loop cutoffs, metronome click/accent/tempo-map/export-suppress\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

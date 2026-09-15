@@ -210,6 +210,14 @@ class Renderer {
   float smoothMaster = 1;
   std::atomic<uint32_t> masterLatency{0}, declaredFiniteTail{0};
   std::atomic<bool> declaredInfiniteTail{false};
+  // Metronome: the audio callback reads only the atomic switch and the two
+  // persisted timeline lanes copied by prepare(); the click is synthesized
+  // post-master in renderInternal and skipped by the export path.
+  std::atomic<bool> metronomeOn{false};
+  // Timeline-only copy of the tempo/signature lanes prepared from State so the
+  // beat math runs through the domain converters (State::frameAtBeats etc.)
+  // instead of a duplicated arithmetic path. Control thread writes in prepare().
+  State metronomeTimeline{};
   // cursor is the input/timeline cursor. Audible position trails it by the
   // published graph latency and is tracked independently for transport UI.
   uint64_t cursor = 0, length = 0, loopBegin = 0, loopEnd = 0, processTime = 0,
@@ -229,6 +237,10 @@ class Renderer {
                     std::span<const PreparedMidiEvent> midi = {}) noexcept;
   void publishRuntimeStatus(uint64_t id,
                             PreparedEffectRuntimeStatus status) noexcept;
+  // Shared playback loop. suppressMetronome removes the click track from an
+  // otherwise sample-identical render; only the offline export path uses it.
+  void renderInternal(float *left, float *right, uint32_t frames,
+                      bool suppressMetronome) noexcept;
   void updateAudiblePosition() noexcept;
   void clearMeters() noexcept;
 
@@ -293,6 +305,19 @@ public:
                                uint32_t parameterID) noexcept;
   void cancelPluginParameterTouch() noexcept;
   void render(float *left, float *right, uint32_t frames) noexcept;
+  // Offline export render: identical to render() except that the metronome is
+  // suppressed even while setMetronome(true), so bounced files never carry a
+  // monitoring click.
+  void renderExport(float *left, float *right, uint32_t frames) noexcept {
+    renderInternal(left, right, frames, true);
+  }
+  // Monitoring switch; may be flipped live (atomic, control thread writes).
+  void setMetronome(bool enabled) noexcept {
+    metronomeOn.store(enabled, std::memory_order_relaxed);
+  }
+  bool metronome() const noexcept {
+    return metronomeOn.load(std::memory_order_relaxed);
+  }
   // Offline-only tail drain. It advances the prepared track/bus/master
   // graph and its PDC edges with silence; it never advances transport.
   void renderTail(float *left, float *right, uint32_t frames) noexcept;

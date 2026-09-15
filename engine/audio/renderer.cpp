@@ -15,6 +15,157 @@ constexpr uint32_t kMaximumDeclaredTailFrames = 48000 * 30;
 float gain(double db) noexcept {
   return db <= -120 ? 0.0f : static_cast<float>(std::pow(10.0, db / 20.0));
 }
+// --- Metronome synthesis (offline-safe for the RT callback: no allocation,
+// no locks; the only exceptions are caught at the timeline ceiling below). ---
+// One blip is 5 ms of sine at the fixed 48 kHz project rate, shaped by a
+// cos^2 attack and decay (1 ms each): sin^2 ramp in, cos^2 ramp out. The
+// amplitude is -18 dBFS (0.12) and the bar-start accent uses 1500 Hz against
+// the ordinary 1000 Hz beat.
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kProjectFrameRate = 48000.0;
+constexpr uint32_t kBlipFrames = 5 * 48;        // 5 ms
+constexpr uint32_t kBlipRampFrames = 48;        // 1 ms attack and 1 ms decay
+constexpr float kBlipAmplitude = 0.12f;         // -18 dBFS
+constexpr double kBlipFrequency = 1000.0;
+constexpr double kBlipAccentFrequency = 1500.0;
+// A 64-point tempo map can concentrate at most one boundary beat per segment
+// inside a (block+5 ms) window, so 128 slots bound the worst case without
+// ever touching the heap.
+constexpr size_t kMaxBlipsPerBlock = 128;
+const inline std::array<float, kBlipRampFrames> kBlipAttack = [] {
+  std::array<float, kBlipRampFrames> values{};
+  for (uint32_t j = 0; j < kBlipRampFrames; ++j) {
+    const double t =
+        std::sin(kPi * double(j) / (2.0 * double(kBlipRampFrames)));
+    values[j] = float(t * t);
+  }
+  return values;
+}();
+const inline std::array<float, kBlipRampFrames> kBlipDecay = [] {
+  std::array<float, kBlipRampFrames> values{};
+  for (uint32_t j = 0; j < kBlipRampFrames; ++j) {
+    const double t =
+        std::cos(kPi * double(j) / (2.0 * double(kBlipRampFrames)));
+    values[j] = float(t * t);
+  }
+  return values;
+}();
+struct BeatBlip {
+  uint64_t frame = 0;
+  bool accent = false;
+};
+// The first whole beat whose timeline frame is >= target; UINT64_MAX means no
+// such beat exists on the timeline. All beat arithmetic goes through the
+// domain converters instead of duplicating tempo math here.
+uint64_t firstBeatAtOrAfter(const State &state, uint64_t target) {
+  const double approx = state.beatsAtFrame(target);
+  uint64_t beat = 0;
+  if (std::isfinite(approx) && approx > 1.0)
+    beat = static_cast<uint64_t>(std::floor(approx)) - 1; // conservative
+  for (;;) {
+    uint64_t frame;
+    try {
+      frame = state.frameAtBeats(static_cast<double>(beat));
+    } catch (...) {
+      return UINT64_MAX; // past the 2^40-frame ceiling; monotonic, so none later
+    }
+    if (frame >= target)
+      return beat;
+    ++beat;
+  }
+}
+// Bar grouping: quarter-note beats count from the frame-0 anchor and the
+// count restarts at the newest point that changed the numerator; a
+// numerator-neutral signature change leaves the grid running. The governing
+// numerator is the window length in beats.
+bool isBarStartBeat(const State &state, uint64_t beat, uint64_t frame) {
+  const auto &points = state.timeSignatures;
+  size_t index = 0;
+  uint8_t numerator = kDefaultTimeSignatureNumerator;
+  bool found = false;
+  for (size_t i = points.size(); i-- > 0;)
+    if (points[i].frame <= frame) {
+      index = i;
+      numerator = points[i].numerator;
+      found = true;
+      break;
+    }
+  if (!found || numerator == 0)
+    numerator = kDefaultTimeSignatureNumerator; // defensive; validated lanes
+  size_t origin = found ? index : 0;
+  while (origin > 0 && points[origin - 1].numerator == numerator)
+    --origin;
+  const uint64_t originBeat = firstBeatAtOrAfter(state, points[origin].frame);
+  if (originBeat == UINT64_MAX || beat < originBeat)
+    return false;
+  return (beat - originBeat) % numerator == 0;
+}
+// Every beat whose 5 ms blip overlaps [blockStart, blockStart+count). Block
+// windows are half-open and contiguous, so a beat is scheduled exactly once
+// per playback pass: the walk starts kBlipFrames-1 frames early to catch the
+// tail of a blip that began in a previous block, while the mixer clamps each
+// blip to the samples this block actually owns. Seeks and loop wraps
+// re-derive the walk from the absolute timeline, so clicks follow the
+// transport. frameAtBeats throws only past the project ceiling; caught.
+size_t beatBlips(const State &state, uint64_t blockStart, uint32_t count,
+                 BeatBlip *out, size_t capacity) {
+  if (count == 0 || blockStart >= kMaxMidiFrame)
+    return 0;
+  const uint64_t windowBegin =
+      blockStart > kBlipFrames - 1 ? blockStart - (kBlipFrames - 1) : 0;
+  const uint64_t windowEnd = blockStart + uint64_t(count);
+  uint64_t beat = firstBeatAtOrAfter(state, windowBegin);
+  if (beat == UINT64_MAX)
+    return 0;
+  size_t written = 0;
+  for (size_t probed = 0; written < capacity && probed < capacity; ++probed) {
+    uint64_t frame;
+    try {
+      frame = state.frameAtBeats(static_cast<double>(beat));
+    } catch (...) {
+      break; // past the timeline ceiling: no further beats exist
+    }
+    if (frame >= windowEnd)
+      break;
+    if (frame >= windowBegin)
+      out[written++] = {frame, isBarStartBeat(state, beat, frame)};
+    ++beat;
+  }
+  return written;
+}
+// Sums the overlapping blips into a finalized master block, both channels.
+// Sample phase runs on the absolute timeline frame, so a blip split across a
+// block edge is bit-identical to one rendered whole.
+void mixMetronome(const State &state, uint64_t blockStart, uint32_t count,
+                  float *outLeft, float *outRight) noexcept {
+  BeatBlip blips[kMaxBlipsPerBlock];
+  const size_t scheduled =
+      beatBlips(state, blockStart, count, blips, kMaxBlipsPerBlock);
+  for (size_t i = 0; i < scheduled; ++i) {
+    const auto &blip = blips[i];
+    const double frequency =
+        blip.accent ? kBlipAccentFrequency : kBlipFrequency;
+    const uint64_t blockEnd = blockStart + count;
+    const uint64_t begin = std::max(blip.frame, blockStart);
+    const uint64_t end = std::min(blip.frame + kBlipFrames, blockEnd);
+    for (uint64_t g = begin; g < end; ++g) {
+      const uint32_t j = static_cast<uint32_t>(g - blip.frame);
+      float envelope = 1.0f;
+      if (j < kBlipRampFrames)
+        envelope = kBlipAttack[j];
+      else if (j >= kBlipFrames - kBlipRampFrames)
+        envelope = kBlipDecay[j - (kBlipFrames - kBlipRampFrames)];
+      const float value =
+          kBlipAmplitude * envelope *
+          static_cast<float>(std::sin(2.0 * kPi * frequency *
+                                      static_cast<double>(g) /
+                                      kProjectFrameRate));
+      const uint32_t offset = static_cast<uint32_t>(g - blockStart);
+      outLeft[offset] += value;
+      outRight[offset] += value;
+    }
+  }
+}
 } // namespace
 
 GraphTailSummary serialTail(GraphTailSummary left,
@@ -636,6 +787,10 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   smoothBusPan.fill(0);
   smoothBusGate.fill(0);
   length = end;
+  // Copy the beat lanes so renderInternal can schedule clicks through the
+  // domain converters without reaching back into the caller's State.
+  metronomeTimeline.tempo = state.tempo;
+  metronomeTimeline.timeSignatures = state.timeSignatures;
   loopBegin = loopStart;
   loopEnd = loopEndFrame;
   looping = nextLooping;
@@ -824,6 +979,11 @@ void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
 }
 
 void Renderer::render(float *left, float *right, uint32_t frames) noexcept {
+  renderInternal(left, right, frames, false);
+}
+
+void Renderer::renderInternal(float *left, float *right, uint32_t frames,
+                              bool suppressMetronome) noexcept {
   std::fill_n(left, frames, 0.0f);
   std::fill_n(right, frames, 0.0f);
   callbacks.fetch_add(1, std::memory_order_relaxed);
@@ -1055,6 +1215,11 @@ void Renderer::render(float *left, float *right, uint32_t frames) noexcept {
     }
     if (!processChain(masterEffects, masterEffectAutomation, masterEffectIDs, outL, outR, count, processTime, cursor))
       pluginErrors.fetch_add(1, std::memory_order_relaxed);
+    // The click track joins after master gain and master inserts: monitoring
+    // only, never processed, summed to both channels at cursor-relative
+    // positions (frame - blockStart). The offline export render suppresses it.
+    if (!suppressMetronome && metronomeOn.load(std::memory_order_relaxed))
+      mixMetronome(metronomeTimeline, cursor, count, outL, outR);
     processTime += count;
     cursor += count;
     done += count;
