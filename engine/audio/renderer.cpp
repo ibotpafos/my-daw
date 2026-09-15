@@ -142,7 +142,8 @@ bool Renderer::processChain(std::vector<std::unique_ptr<PreparedEffect>> &chain,
                             ChainAutomationPlan &automation,
                             const std::vector<uint64_t> &effectIDs, float *left,
                             float *right, uint32_t frames, uint64_t time,
-                            uint64_t timeline) noexcept {
+                            uint64_t timeline,
+                            std::span<const PreparedMidiEvent> midi) noexcept {
   bool okay = true;
   if (chain.size() != automation.size() || chain.size() != effectIDs.size())
     return false;
@@ -199,7 +200,8 @@ bool Renderer::processChain(std::vector<std::unique_ptr<PreparedEffect>> &chain,
     }
     const bool processed = okay && chain[effectIndex]->process(
         left, right, frames, time,
-        std::span<const PreparedParameterEvent>(parameterEvents.data(), count));
+        std::span<const PreparedParameterEvent>(parameterEvents.data(), count),
+        midi);
     auto runtime = chain[effectIndex]->runtimeStatus();
     if (!processed && runtime.state == PreparedEffectRuntimeState::ActiveInProcess)
       runtime.state = PreparedEffectRuntimeState::DryFallback;
@@ -289,6 +291,13 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   }
   if (nextVoices.empty())
     throw Error("Import a WAV before playback");
+  // MIDI plans are built for every track ordinal; silent audio-less tracks
+  // stay inactive until an instrument source arc makes them renderable, so
+  // the plan is assembled here and consumed only by active track chains.
+  std::vector<MidiTrackPlan> nextMidiPlans(state.tracks.size());
+  for (size_t i = 0; i < state.tracks.size(); ++i)
+    if (!state.tracks[i].midiClips.empty())
+      nextMidiPlans[i].build(state.tracks[i].midiClips);
   if (start > end)
     throw Error("Playback position exceeds project duration");
   const bool nextLooping = loopStart != 0 || loopEndFrame != 0;
@@ -559,6 +568,8 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   sendPdc = std::move(nextSendPdc);
   busOutputPdc = std::move(nextBusPdc);
   trackEffects = std::move(nextTrackEffects);
+  midiPlans = std::move(nextMidiPlans);
+  midiEvents.assign(kMaxMidiEventsPerBlock, {});
   busEffects = std::move(nextBusEffects);
   trackEffectAutomation = std::move(nextTrackAutomation);
   busEffectAutomation = std::move(nextBusAutomationPlans);
@@ -620,6 +631,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   processTime = 0;
   position.store(start);
   audiblePosition.store(start);
+  for (auto &plan : midiPlans) plan.reset(start);
   callbacks.store(0);
   clipped.store(0);
   pluginErrors.store(unavailable);
@@ -824,7 +836,8 @@ void Renderer::render(float *left, float *right, uint32_t frames) noexcept {
   while (done < available) {
     // Preserve loopEnd as the externally visible position when a callback
     // lands exactly on the boundary; wrap only when the next block begins.
-    if (looping && cursor == loopEnd)
+    const bool wrapped = looping && cursor == loopEnd;
+    if (wrapped)
       cursor = loopBegin;
     const auto untilLoop = looping ? static_cast<uint32_t>(loopEnd - cursor) : kRenderBlockFrames;
     const auto count = std::min({kRenderBlockFrames, available - done, untilLoop});
@@ -861,12 +874,26 @@ void Renderer::render(float *left, float *right, uint32_t frames) noexcept {
               pcm[source * 2 + 1] * envelope;
         }
     }
-    for (const auto track : activeGains)
+    for (const auto track : activeGains) {
+      uint32_t midiCount = 0;
+      if (track < midiPlans.size() && !midiPlans[track].empty()) {
+        auto &plan = midiPlans[track];
+        if (wrapped) {
+          midiCount = plan.wrapCutOffs(midiEvents.data(), kMaxMidiEventsPerBlock);
+          plan.reset(cursor);
+        }
+        if (midiCount < kMaxMidiEventsPerBlock)
+          midiCount += plan.drain(cursor, cursor + count,
+                                  midiEvents.data() + midiCount,
+                                  kMaxMidiEventsPerBlock - midiCount);
+      }
       if (!processChain(trackEffects[track], trackEffectAutomation[track], trackEffectIDs[track],
                         trackBlockLeft.data() + track * kRenderBlockFrames,
                         trackBlockRight.data() + track * kRenderBlockFrames,
-                        count, processTime, cursor))
+                        count, processTime, cursor,
+                        std::span<const PreparedMidiEvent>(midiEvents.data(), midiCount)))
         pluginErrors.fetch_add(1, std::memory_order_relaxed);
+    }
     auto *outL = left + done;
     auto *outR = right + done;
     for (uint32_t f = 0; f < count; ++f) {

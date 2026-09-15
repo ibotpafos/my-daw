@@ -142,7 +142,8 @@ int run(const char *name) {
     const uint64_t request = mapping->requestSequence.load(std::memory_order_acquire);
     if (request == last) { std::this_thread::sleep_for(std::chrono::microseconds(250)); continue; }
     if (request != last + 1 || mapping->request.sequence != request ||
-        mapping->request.frames > kMaximumFrames || mapping->request.eventCount > kMaximumParameterEvents) {
+        mapping->request.frames > kMaximumFrames || mapping->request.eventCount > kMaximumParameterEvents ||
+        mapping->request.midiEventCount > kMaximumMidiEvents) {
       mapping->helperState.store(2, std::memory_order_release); cleanup(); return 14;
     }
     const auto &input = mapping->request;
@@ -154,10 +155,18 @@ int run(const char *name) {
       if (event.sampleOffset >= input.frames || event.normalizedValue < 0 || event.normalizedValue > 1) { mapping->helperState.store(2, std::memory_order_release); cleanup(); return 15; }
       events[i] = {event.parameterID, event.sampleOffset, event.normalizedValue};
     }
+    std::array<PreparedMidiEvent, kMaximumMidiEvents> midi{};
+    for (uint32_t i = 0; i < input.midiEventCount; ++i) {
+      const auto &event = input.midiEvents[i];
+      if (event.sampleOffset >= input.frames || event.channel > 15 || event.pitch > 127 ||
+          event.velocity > 127 || event.noteOff > 1) { mapping->helperState.store(2, std::memory_order_release); cleanup(); return 15; }
+      midi[i] = {event.sampleOffset, event.channel, event.pitch, event.velocity, event.noteOff != 0};
+    }
     std::copy_n(input.left.data(), input.frames, output.left.data());
     std::copy_n(input.right.data(), input.frames, output.right.data());
     if (!effect->process(output.left.data(), output.right.data(), output.frames, output.sampleTime,
-                         std::span<const PreparedParameterEvent>(events.data(), input.eventCount))) {
+                         std::span<const PreparedParameterEvent>(events.data(), input.eventCount),
+                         std::span<const PreparedMidiEvent>(midi.data(), input.midiEventCount))) {
       mapping->helperState.store(2, std::memory_order_release); cleanup(); return 16;
     }
     mapping->helperHeartbeat.fetch_add(1, std::memory_order_release);

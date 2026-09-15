@@ -41,6 +41,14 @@ std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> bytes, cons
                                       uint32_t* sourceRate = nullptr, uint32_t* sourceChannels = nullptr,
                                       uint64_t* sourceFrames = nullptr);
 std::shared_ptr<const Clip> readWav(const std::string& path);
+std::shared_ptr<const Clip> decodeAiff(std::span<const unsigned char> bytes);
+std::shared_ptr<const Clip> decodeAiff(std::span<const unsigned char> bytes, const ImportControl& control,
+                                       uint32_t* sourceRate = nullptr, uint32_t* sourceChannels = nullptr,
+                                       uint64_t* sourceFrames = nullptr);
+std::shared_ptr<const Clip> readAiff(const std::string& path);
+std::shared_ptr<const Clip> readAiff(const std::string& path, const ImportControl& control,
+                                     uint32_t* sourceRate = nullptr, uint32_t* sourceChannels = nullptr,
+                                     uint64_t* sourceFrames = nullptr);
 std::shared_ptr<const Clip> readWav(const std::string& path, const ImportControl& control,
                                     uint32_t* sourceRate = nullptr, uint32_t* sourceChannels = nullptr,
                                     uint64_t* sourceFrames = nullptr);

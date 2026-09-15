@@ -18,6 +18,10 @@ struct Vst3ScannedClass {
     std::string name;
     std::string vendor;
     std::string version;
+    // True when the VST3 sub-category declares "Instrument". Hosting stays
+    // audio-only until the note-timeline arc lands on the renderer side; the
+    // flag is what lets the browser separate note sinks from effects.
+    bool instrument = false;
 };
 
 struct Vst3QuarantineRecord {

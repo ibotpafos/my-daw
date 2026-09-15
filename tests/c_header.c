@@ -24,6 +24,12 @@ _Static_assert(DAW_IMPORT_RUNNING == 0 && DAW_IMPORT_READY == 1 && DAW_IMPORT_FA
 _Static_assert(DAW_IMPORT_PHASE_NONE == 0 && DAW_IMPORT_PHASE_READING == 1 && DAW_IMPORT_PHASE_DECODING == 2 && DAW_IMPORT_PHASE_CONVERTING == 3 && DAW_IMPORT_PHASE_READY == 4, "import phase ABI values");
 _Static_assert(offsetof(daw_import_status, struct_size) == 0, "import status prefix");
 _Static_assert(sizeof(daw_import_status) == 568, "import status ABI size");
+_Static_assert(DAW_MIDI_NOTE_VERSION == 1 && DAW_MIDI_CLIP_VERSION == 1, "MIDI ABI versions");
+_Static_assert(DAW_MIDI_NOTES_PER_CALL == 8192, "MIDI per-call limit");
+_Static_assert(offsetof(daw_midi_note, struct_size) == 0, "MIDI note prefix");
+_Static_assert(sizeof(daw_midi_note) == 32, "MIDI note ABI size");
+_Static_assert(offsetof(daw_midi_clip, struct_size) == 0, "MIDI clip prefix");
+_Static_assert(sizeof(daw_midi_clip) == 32, "MIDI clip ABI size");
 int main(void) {
     daw_session* session = daw_create();
     if (!session) return 1;
@@ -47,6 +53,32 @@ int main(void) {
     result |= daw_add_track(session, "Header track", 0);
     result |= daw_move_track(session, 1, 0, 1);
     result |= daw_remove_track(session, 1, 1);
+    /* MIDI bridge smoke: add, query, edit, split, remove and undo in pure C. */
+    result |= daw_add_track(session, "Midi bridge", 2);
+    daw_midi_note notes[2] = {{sizeof(daw_midi_note), DAW_MIDI_NOTE_VERSION, 100, 2400, 60, 0, 90}, {sizeof(daw_midi_note), DAW_MIDI_NOTE_VERSION, 3000, 1800, 64, 15, 127}};
+    daw_midi_clip clip = {0}; clip.struct_size = sizeof(clip); clip.version = DAW_MIDI_CLIP_VERSION; clip.start = 0; clip.length = 48000; clip.lane = 3; clip.note_count = 2;
+    result |= daw_add_midi_clip(session, 2, &clip, notes, 2, 3);
+    uint32_t midi_count = 0;
+    result |= daw_get_midi_clip_count(session, 2, &midi_count);
+    if (midi_count != 1) result |= 1;
+    daw_midi_note read_notes[2] = {{0}};
+    uint32_t written = 0;
+    result |= daw_get_midi_clip(session, 2, 0, &clip, 0, read_notes, 2, &written);
+    if (clip.note_count != 2 || written != 2 || read_notes[0].pitch != 60 || read_notes[0].velocity != 90 || read_notes[1].channel != 15 || clip.lane != 3) result |= 1;
+    result |= daw_set_midi_notes(session, 2, 0, notes, 1, 4);
+    result |= daw_move_midi_clip(session, 2, 0, 96000, 5);
+    result |= daw_trim_midi_clip(session, 2, 0, 0, 48000, 6);
+    result |= daw_split_midi_clip(session, 2, 0, 24000, 7);
+    result |= daw_get_midi_clip_count(session, 2, &midi_count);
+    if (midi_count != 2) result |= 1;
+    result |= daw_remove_midi_clip(session, 2, 1, 8);
+    result |= daw_undo(session, 9);
+    /* ABI rejections must fail without consuming a revision. */
+    daw_midi_clip bad = clip; bad.struct_size = 0;
+    if (daw_add_midi_clip(session, 2, &bad, notes, 2, 10) == 0) result |= 1;
+    daw_midi_note bad_note = notes[0]; bad_note.pitch = 128;
+    if (daw_add_midi_clip(session, 2, &clip, &bad_note, 1, 10) == 0) result |= 1;
+    if (daw_get_midi_clip(session, 2, 0, &bad, 0, read_notes, DAW_MIDI_NOTES_PER_CALL + 1, &written) == 0) result |= 1;
     if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 1) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

@@ -5,9 +5,9 @@ aside strong{display:block;font-size:21px;margin-bottom:18px}nav a{display:block
 main{margin-left:265px;padding:24px 5vw 80px;max-width:1600px}article{padding:28px 0 52px;border-bottom:1px solid #ccc;scroll-margin-top:16px}h1{font-size:32px;line-height:1.2;letter-spacing:-.6px;margin:0 0 24px}h2{font-size:22px;margin:34px 0 14px}h3{font-size:18px;margin-top:28px}p,li{max-width:950px}a{color:#184e72;text-underline-offset:3px}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:18px;background:#f4f4f4;border:1px solid #ddd;font-size:13px;line-height:1.55}code{font-size:.87em;overflow-wrap:anywhere}.table-scroll{overflow-x:auto;margin:20px 0}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.5;min-width:660px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #ddd}th{background:#eee;font-weight:600}tr:nth-child(even) td{background:#fafafa}.footnote{font-size:12px;color:#555}figure{margin:25px 0;padding:20px 0;border-block:1px solid #ccc}.flow{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:13px}.flow span{padding:9px 12px;border:1px solid #aaa}.flow b{font-weight:400}figcaption{font-size:12px;color:#555;margin-top:14px}input{width:100%;padding:9px;border:1px solid #bbb;background:white;margin-bottom:18px;font:inherit;font-size:13px}.note{font-size:12px;color:#666}
 @media(max-width:900px){aside{position:relative;width:auto;border-right:0;border-bottom:1px solid #ddd;max-height:300px}main{margin:0;padding:24px}h1{font-size:27px}}
 @media print{aside{display:none}main{margin:0;padding:0;max-width:none}article{break-before:page;border:0}article:first-child{break-before:auto}h1,h2,h3{break-after:avoid}table{min-width:0;font-size:9px}pre{font-size:10px}a{color:#222}th,td{padding:6px}.table-scroll{overflow:visible}}
-</style></head><body><aside><strong>My DAW</strong><label for="filter" class="note">Найти раздел</label><input id="filter" type="search" placeholder="Стек, аудио, атлас…"><nav aria-label="Разделы документации"><a href="#README-md">My DAW</a><a href="#docs-01-product-md">Продукт и опыт работы</a><a href="#docs-02-mvp-md">Спецификация первой версии</a><a href="#docs-03-stack-md">Технологический стек</a><a href="#docs-04-architecture-md">Архитектура системы</a><a href="#docs-05-audio-engine-md">Аудиодвижок</a><a href="#docs-06-project-format-md">Формат проекта и сохранение</a><a href="#docs-07-extensions-md">Расширения и command API</a><a href="#docs-08-plugin-hosting-md">Хостинг аудиоплагинов</a><a href="#docs-09-ai-and-macos-md">ИИ и интеграция с macOS</a><a href="#docs-10-quality-md">Проверка качества и производительности</a><a href="#docs-11-roadmap-md">План разработки</a><a href="#docs-12-development-md">Начало разработки</a><a href="#docs-13-open-source-md">Открытая разработка и распространение</a><a href="#docs-14-research-md">Выводы исследования</a><a href="#docs-15-daw-atlas-md">Атлас DAW и музыкальных рабочих сред</a><a href="#docs-16-implementation-md">Первый рабочий срез — 0.1.0</a><a href="#docs-17-audio-slice-md">Аудиосрез — 0.2.0</a><a href="#docs-18-waveform-slice-md">Аудиоволна и выбор позиции — 0.3.0</a><a href="#docs-19-clip-editing-md">Перемещение и обрезка клипа — 0.4.0</a><a href="#docs-20-background-storage-md">Фоновое сохранение и восстановление — 0.5.0</a><a href="#docs-21-split-clips-md">Split и несколько клипов — 0.6.0</a><a href="#docs-22-clip-operations-fades-md">Копирование, удаление, snap и fades — 0.7.0</a><a href="#docs-23-dry-recording-md">Dry recording — 0.8.0</a><a href="#docs-24-crash-safe-recording-md">Crash-safe recording — 0.9.0</a><a href="#docs-25-offline-export-md">Offline WAV export — 1.0.0</a><a href="#docs-26-ranges-grid-layout-md">Диапазоны, музыкальная сетка и рабочие зоны — 1.1.0</a><a href="#docs-27-bounded-background-jobs-md">Ограниченные фоновые jobs — 1.2.0</a><a href="#docs-28-crossfades-md">Crossfades — 1.3.0</a><a href="#docs-29-output-lifecycle-md">Наблюдаемый lifecycle аудиовыхода — 1.4.0</a><a href="#docs-30-mixer-md">Минимальный микшер — 1.5.0</a><a href="#docs-31-take-lanes-comp-md">Take lanes и ручной comp — 1.6.0</a><a href="#docs-32-loop-playback-shell-md">Loop playback и DAW-оболочка — 1.7.0</a><a href="#docs-33-full-duplex-loop-recording-md">Full-duplex loop recording — 1.8.0</a><a href="#docs-34-tracktion-engine-spike-md">Tracktion Engine vertical proof</a><a href="#docs-35-routing-buses-sends-md">Routing, buses и sends — 1.9.0</a><a href="#docs-36-apple-au-master-inserts-md">Apple Audio Unit master inserts — 1.10.0</a><a href="#docs-37-au-scanner-parameters-md">Installed AU scanner and parameters — 1.11.0</a><a href="#docs-38-volume-automation-pdc-md">Volume automation and PDC — 1.12.0</a><a href="#docs-39-multi-automation-workflow-md">Multi-target automation and workflow preview — 1.13.0</a><a href="#docs-40-vocal-preparation-workflow-md">Vocal preparation workflow — 1.14.0</a><a href="#docs-41-dawproject-export-md">DAWproject export</a><a href="#docs-42-vst3-foundation-md">VST3 compatibility foundation</a><a href="#docs-43-vst3-master-effects-md">VST3 master effects</a><a href="#docs-44-automation-write-pdc-plan-md">Automation write and graph PDC plan</a><a href="#docs-45-track-bus-inserts-pdc-md">Track/bus inserts and graph PDC</a><a href="#docs-46-plugin-automation-tail-export-md">Plug-in parameter automation and tail export</a><a href="#docs-47-plugin-touch-audible-playhead-md">Plug-in Touch/Latch and audible playhead</a><a href="#docs-48-professional-workspace-md">Professional DAW workspace</a><a href="#docs-49-studio-pro-workspace-meters-md">Studio Pro-inspired workspace and live meters</a><a href="#docs-50-inspector-browser-md">Editable inspector and integrated browser</a><a href="#docs-51-pinned-headers-keyboard-md">Pinned track headers and keyboard command routing</a><a href="#docs-52-ui-qa-hosting-policy-md">UI QA и политика размещения плагинов — 1.25.0</a><a href="#docs-53-async-auv3-hosting-md">Асинхронный playback prepare и AUv3 OOP — 1.26.0</a><a href="#docs-54-design-system-workspace-modes-md">Design system и режимы workspace — 1.27.0</a><a href="#docs-55-accessible-mixer-controls-md">Доступные controls микшера — 1.28.0</a><a href="#docs-56-studio-pro-arrangement-first-layout-md">Studio Pro-inspired arrangement-first layout — 1.29.0</a><a href="#docs-57-studio-pro-mixer-console-md">Studio Pro-inspired mixer console — 1.30.0–1.31.0</a><a href="#docs-58-vst3-managed-runtime-isolation-md">Managed VST3 runtime isolation</a><a href="#docs-59-vst3-remote-parameter-editor-md">VST3 remote parameter editor</a><a href="#docs-60-infinite-tail-export-policy-md">Infinite-tail export policy — 1.33.0</a><a href="#docs-61-audio-browser-preview-md">61. Browser audio preview</a><a href="#docs-62-variable-rate-wav-import-md">Variable-rate PCM WAV import</a><a href="#docs-63-background-wav-import-md">Background WAV import</a><a href="#docs-64-delete-track-undo-md">Delete track with Undo — 1.37.0</a><a href="#docs-65-track-reorder-md">Track reorder — 1.38.0</a><a href="#docs-adr-README-md">Реестр архитектурных решений</a><a href="#specs-README-md">Машиночитаемые контракты v0</a><a href="#docs-sources-md">Реестр первичных источников</a></nav><p class="note">Для поиска по тексту — ⌘F.<br>Документация, не работающая DAW.</p></aside><main><article id="README-md"><h1 id="README-md-my-daw">My DAW</h1>
+</style></head><body><aside><strong>My DAW</strong><label for="filter" class="note">Найти раздел</label><input id="filter" type="search" placeholder="Стек, аудио, атлас…"><nav aria-label="Разделы документации"><a href="#README-md">My DAW</a><a href="#docs-01-product-md">Продукт и опыт работы</a><a href="#docs-02-mvp-md">Спецификация первой версии</a><a href="#docs-03-stack-md">Технологический стек</a><a href="#docs-04-architecture-md">Архитектура системы</a><a href="#docs-05-audio-engine-md">Аудиодвижок</a><a href="#docs-06-project-format-md">Формат проекта и сохранение</a><a href="#docs-07-extensions-md">Расширения и command API</a><a href="#docs-08-plugin-hosting-md">Хостинг аудиоплагинов</a><a href="#docs-09-ai-and-macos-md">ИИ и интеграция с macOS</a><a href="#docs-10-quality-md">Проверка качества и производительности</a><a href="#docs-11-roadmap-md">План разработки</a><a href="#docs-12-development-md">Начало разработки</a><a href="#docs-13-open-source-md">Открытая разработка и распространение</a><a href="#docs-14-research-md">Выводы исследования</a><a href="#docs-15-daw-atlas-md">Атлас DAW и музыкальных рабочих сред</a><a href="#docs-16-implementation-md">Первый рабочий срез — 0.1.0</a><a href="#docs-17-audio-slice-md">Аудиосрез — 0.2.0</a><a href="#docs-18-waveform-slice-md">Аудиоволна и выбор позиции — 0.3.0</a><a href="#docs-19-clip-editing-md">Перемещение и обрезка клипа — 0.4.0</a><a href="#docs-20-background-storage-md">Фоновое сохранение и восстановление — 0.5.0</a><a href="#docs-21-split-clips-md">Split и несколько клипов — 0.6.0</a><a href="#docs-22-clip-operations-fades-md">Копирование, удаление, snap и fades — 0.7.0</a><a href="#docs-23-dry-recording-md">Dry recording — 0.8.0</a><a href="#docs-24-crash-safe-recording-md">Crash-safe recording — 0.9.0</a><a href="#docs-25-offline-export-md">Offline WAV export — 1.0.0</a><a href="#docs-26-ranges-grid-layout-md">Диапазоны, музыкальная сетка и рабочие зоны — 1.1.0</a><a href="#docs-27-bounded-background-jobs-md">Ограниченные фоновые jobs — 1.2.0</a><a href="#docs-28-crossfades-md">Crossfades — 1.3.0</a><a href="#docs-29-output-lifecycle-md">Наблюдаемый lifecycle аудиовыхода — 1.4.0</a><a href="#docs-30-mixer-md">Минимальный микшер — 1.5.0</a><a href="#docs-31-take-lanes-comp-md">Take lanes и ручной comp — 1.6.0</a><a href="#docs-32-loop-playback-shell-md">Loop playback и DAW-оболочка — 1.7.0</a><a href="#docs-33-full-duplex-loop-recording-md">Full-duplex loop recording — 1.8.0</a><a href="#docs-34-tracktion-engine-spike-md">Tracktion Engine vertical proof</a><a href="#docs-35-routing-buses-sends-md">Routing, buses и sends — 1.9.0</a><a href="#docs-36-apple-au-master-inserts-md">Apple Audio Unit master inserts — 1.10.0</a><a href="#docs-37-au-scanner-parameters-md">Installed AU scanner and parameters — 1.11.0</a><a href="#docs-38-volume-automation-pdc-md">Volume automation and PDC — 1.12.0</a><a href="#docs-39-multi-automation-workflow-md">Multi-target automation and workflow preview — 1.13.0</a><a href="#docs-40-vocal-preparation-workflow-md">Vocal preparation workflow — 1.14.0</a><a href="#docs-41-dawproject-export-md">DAWproject export</a><a href="#docs-42-vst3-foundation-md">VST3 compatibility foundation</a><a href="#docs-43-vst3-master-effects-md">VST3 master effects</a><a href="#docs-44-automation-write-pdc-plan-md">Automation write and graph PDC plan</a><a href="#docs-45-track-bus-inserts-pdc-md">Track/bus inserts and graph PDC</a><a href="#docs-46-plugin-automation-tail-export-md">Plug-in parameter automation and tail export</a><a href="#docs-47-plugin-touch-audible-playhead-md">Plug-in Touch/Latch and audible playhead</a><a href="#docs-48-professional-workspace-md">Professional DAW workspace</a><a href="#docs-49-studio-pro-workspace-meters-md">Studio Pro-inspired workspace and live meters</a><a href="#docs-50-inspector-browser-md">Editable inspector and integrated browser</a><a href="#docs-51-pinned-headers-keyboard-md">Pinned track headers and keyboard command routing</a><a href="#docs-52-ui-qa-hosting-policy-md">UI QA и политика размещения плагинов — 1.25.0</a><a href="#docs-53-async-auv3-hosting-md">Асинхронный playback prepare и AUv3 OOP — 1.26.0</a><a href="#docs-54-design-system-workspace-modes-md">Design system и режимы workspace — 1.27.0</a><a href="#docs-55-accessible-mixer-controls-md">Доступные controls микшера — 1.28.0</a><a href="#docs-56-studio-pro-arrangement-first-layout-md">Studio Pro-inspired arrangement-first layout — 1.29.0</a><a href="#docs-57-studio-pro-mixer-console-md">Studio Pro-inspired mixer console — 1.30.0–1.31.0</a><a href="#docs-58-vst3-managed-runtime-isolation-md">Managed VST3 runtime isolation</a><a href="#docs-59-vst3-remote-parameter-editor-md">VST3 remote parameter editor</a><a href="#docs-60-infinite-tail-export-policy-md">Infinite-tail export policy — 1.33.0</a><a href="#docs-61-audio-browser-preview-md">61. Browser audio preview</a><a href="#docs-62-variable-rate-wav-import-md">Variable-rate PCM WAV import</a><a href="#docs-63-background-wav-import-md">Background WAV import</a><a href="#docs-64-delete-track-undo-md">Delete track with Undo — 1.37.0</a><a href="#docs-65-track-reorder-md">Track reorder — 1.38.0</a><a href="#docs-66-alpha-acceptance-md">Приёмка альфы (S1)</a><a href="#docs-67-aiff-import-md">AIFF/AIFC import</a><a href="#docs-68-midi-foundation-md">68. MIDI-фундамент (срез 1.40.0)</a><a href="#docs-adr-README-md">Реестр архитектурных решений</a><a href="#specs-README-md">Машиночитаемые контракты v0</a><a href="#docs-sources-md">Реестр первичных источников</a></nav><p class="note">Для поиска по тексту — ⌘F.<br>Документация, не работающая DAW.</p></aside><main><article id="README-md"><h1 id="README-md-my-daw">My DAW</h1>
 <p>Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.</p>
-<p><strong>Состояние: аудиопрототип 1.38.0.</strong> Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. Дорожку можно удалить или переставить одним revision-aware действием из arrangement или mixer; Undo возвращает её содержимое либо прежний порядок, включая медиа, дубли, automation и inserts. Импорт и импорт дубля принимают mono/stereo PCM WAV с частотой 44,1 / 48 / 88,2 / 96 / 192 кГц, читают и конвертируют их к внутренним 48 кГц в фоне, а затем добавляют одним revision-aware действием. Во время импорта можно редактировать и слушать проект; отмена, состояние и готовый результат видны в status surface. Browser умеет локально прослушать выбранный WAV через AVFoundation: это отдельный короткий audition, не трогающий DAW transport, Undo, revision и проект. AUv3 использует обязательный системный out-of-process path, а VST3 может работать через managed helper: отдельный процесс на подготовленный OOP insert, fixed 4096-frame stereo/48 kHz pipeline и явный runtime badge. WAV export предоставляет явную политику infinite component: автоматический безопасный предел, исключение infinite component или ограничение 2/5/15/30 секунд при сохранении known finite decay. Реальная совместимость vendor plug-ins, listening acceptance и hardware presentation latency ещё не подтверждены.</p>
+<p><strong>Состояние: аудио+MIDI прототип 1.40.0.</strong> Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. Дорожку можно удалить или переставить одним revision-aware действием из arrangement или mixer; Undo возвращает её содержимое либо прежний порядок, включая медиа, дубли, automation и inserts. Импорт и импорт дубля принимают mono/stereo PCM WAV с частотой 44,1 / 48 / 88,2 / 96 / 192 кГц, читают и конвертируют их к внутренним 48 кГц в фоне, а затем добавляют одним revision-aware действием. Во время импорта можно редактировать и слушать проект; отмена, состояние и готовый результат видны в status surface. Импорт принимает также AIFF/AIFC (PCM 16/24/32-bit и 32-bit float) в тех же границах частот, с ресемплингом в 48 kHz в фоне; UI-путь AIFF смонтирован (роутинг по расширению). MIDI-фундамент: нотная модель и команды в domain, черновик v16, версионированный C-ABI со страничным чтением, доставка событий в renderer-план и VST3 managed-runtime (протокол v2), вход CoreMIDI и табличный MIDI-редактор в инспекторе; тембры дают сторонние AU/VST3 — собственных плагинов нет, audible-плеер MIDI-only дорожек ждёт арку instrument-source. Browser умеет локально прослушать выбранный WAV через AVFoundation: это отдельный короткий audition, не трогающий DAW transport, Undo, revision и проект. AUv3 использует обязательный системный out-of-process path, а VST3 может работать через managed helper: отдельный процесс на подготовленный OOP insert, fixed 4096-frame stereo/48 kHz pipeline и явный runtime badge. WAV export предоставляет явную политику infinite component: автоматический безопасный предел, исключение infinite component или ограничение 2/5/15/30 секунд при сохранении known finite decay. Реальная совместимость vendor plug-ins, живое MIDI-железо, listening acceptance и hardware presentation latency ещё не подтверждены.</p>
 <p>Собрать и запустить на Apple Silicon Mac:</p>
 <pre><code class="language-sh">./script/build_and_run.sh
 </code></pre>
@@ -89,6 +89,14 @@ main{margin-left:265px;padding:24px 5vw 80px;max-width:1600px}article{padding:28
 <tr>
 <td><a href="#docs-65-track-reorder-md">65 Track reorder</a></td>
 <td>Reorder дорожек, точный owner subtree, Undo и SQLite round-trip</td>
+</tr>
+<tr>
+<td><a href="#docs-66-alpha-acceptance-md">66 Alpha acceptance</a></td>
+<td>Матрица приёмки S1, физические гейты и команды проверки</td>
+</tr>
+<tr>
+<td><a href="#docs-67-aiff-import-md">67 AIFF import</a></td>
+<td>Импорт AIFF/AIFC (PCM 16/24/32-bit, float32) с фоновым ресемплингом в 48 kHz</td>
 </tr>
 <tr>
 <td><a href="#docs-64-delete-track-undo-md">64 Delete track with Undo</a></td>
@@ -595,8 +603,8 @@ python3 scripts/doctor.py
 <tr>
 <td>FX-01</td>
 <td>S0</td>
-<td>Встроенные gain/pan и простой EQ</td>
-<td>Тесты DSP и отсутствие RT-аллокаций в собственном коде</td>
+<td>Встроенные gain/pan; тембр/эффекты — через AU/VST3</td>
+<td>Тесты DSP и отсутствие RT-аллокаций в собственном коде; решение владельца: собственные эффекты не пишем</td>
 </tr>
 <tr>
 <td>FX-02</td>
@@ -1337,6 +1345,8 @@ python3 scripts/doctor.py
 <p><a href="#docs-63-background-wav-import-md">1.36.0</a> переносит bounded PCM WAV import с control/main thread в отдельную cancellable job: чтение, проверка, decode и resampling не блокируют editing или transport. Готовый immutable result применяется в один revision-aware commit; если проект изменился, UI не применяет его сам и предлагает явное добавление в актуальную ревизию. Новый/открытый проект и завершение приложения отменяют job до смены session. Это не streaming media engine, не proof качества resampling и не listening/physical gate.</p>
 <p><a href="#docs-64-delete-track-undo-md">1.37.0</a> добавляет базовое управление проектом: выбранная дорожка удаляется полностью одним revision-aware commit, а Undo/Redo возвращают или снова убирают тот же immutable snapshot. Удаление не меняет buses и master chain; после сохранения/открытия остаётся только surviving project state. Это не операция с корзиной, не media garbage collection и не proof слушательского или физического поведения.</p>
 <p><a href="#docs-65-track-reorder-md">1.38.0</a> делает порядок track list редактируемым и durable: пользователь переносит целую дорожку между соседями, а её media, takes, automation и inserts следуют за тем же owner. Одна перестановка — одна revision и один Undo snapshot; SQLite сохраняет новый <code>tracks.position</code>. Это не folder/group hierarchy, не rewire routing и не listening/physical gate.</p>
+<p><a href="#docs-67-aiff-import-md">1.39.0</a> закрыл формат-путь IMP-01: AIFF/AIFC импорт тем же фоново-ресемплинг путём; добавлен целевой CTest для DAWproject export; встроенный EQ выведен из скоупа решением владельца (2026-09-15) — эффекты и инструменты через AU/VST3-хостинг. UI-путь AIFF в приложении смонтирован (роутинг по расширению, панели WAV/AIFF); физические гейты (B-010/B-012/B-013) открыты.</p>
+<p><a href="#docs-68-midi-foundation-md">1.40.0</a> закрывает MIDI-фундамент: нотная модель с валидациями и лимитами в domain, SQLite <code>user_version</code> 16, версионированный C-ABI с постраничным чтением, доставка событий в renderer-план (loop wrap без висящих нот, carry без потерь), 6-й аргумент <code>process()</code> и протокол managed-runtime v2 с frame-accurate эхом в изоляционном тесте, флаг Instrument в сканере VST3 (кэш 2), вход CoreMIDI (ring drop-oldest, running status) и табличный MIDI-редактор в инспекторе. Собственных тембров нет — их дают сторонние инструменты. Открытые гейты: audible-плеер MIDI-only дорожек (instrument-source), живой .vst3-синт, живое MIDI-железо, клики GUI.</p>
 <h2 id="docs-11-roadmap-md-_3">Последовательность</h2>
 <p>Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.</p>
 <div class="table-scroll" tabindex="0"><table>
@@ -2210,7 +2220,7 @@ benchmarks/               # fixtures and reports
 </div></article><article id="docs-16-implementation-md"><h1 id="docs-16-implementation-md-010">Первый рабочий срез — 0.1.0</h1>
 <blockquote>
 <p>Исторический статус 0.1.0. Текущее поведение и изменение формата описаны в <a href="#docs-17-audio-slice-md">аудиосрезе 0.2.0</a>.</p>
-<p>Текущий срез 1.38.0: <a href="#docs-65-track-reorder-md">перестановка дорожек с Undo</a>. Формат SQLite не менялся: save/open сохраняет текущий порядок дорожек и каждый полный owner subtree, а Undo восстанавливает прежний порядок в памяти до следующего Save.</p>
+<p>Текущий срез 1.39.0: <a href="#docs-67-aiff-import-md">импорт AIFF/AIFC</a>. Формат SQLite не менялся; нотная MIDI-модель добавляется отдельной аркой (следующий срез).</p>
 </blockquote>
 <p>Дата проверки: 14 сентября 2026. Это запускаемое macOS-приложение для редактирования дорожек. Воспроизведения, записи, waveform, микширования аудиосигнала и plugin hosting пока нет. Fader меняет сохранённый параметр модели; он ещё не управляет звуком.</p>
 <h2 id="docs-16-implementation-md-_1">Что работает</h2>
@@ -3197,7 +3207,285 @@ Crash: открыть только confirmed_frames
 </ol>
 <p>Debug/sanitizer CTest, документационные schema/link checks и arm64 app build запускаются в release verification. UI smoke проверяет меню дорожки, клавиатурную команду, selection по ID и одинаковый порядок arrangement/mixer. Сам pointer drag target остаётся отдельной ручной проверкой.</p>
 <h2 id="docs-65-track-reorder-md-_4">Границы</h2>
-<p>Срез не добавляет группы, folders, multi-select reorder, DAWproject migration или изменение signal routing. Он не доказывает listening acceptance, physical device behavior или совместимость реальных сторонних plug-ins.</p></article><article id="docs-adr-README-md"><h1 id="docs-adr-README-md-_1">Реестр архитектурных решений</h1>
+<p>Срез не добавляет группы, folders, multi-select reorder, DAWproject migration или изменение signal routing. Он не доказывает listening acceptance, physical device behavior или совместимость реальных сторонних plug-ins.</p></article><article id="docs-66-alpha-acceptance-md"><h1 id="docs-66-alpha-acceptance-md-s1">Приёмка альфы (S1)</h1>
+<p>Базовый уровень приёмки ALPHA (рабочая альфа, этап S1 из <a href="#docs-02-mvp-md">docs/02-mvp.md</a>). Документ фиксирует честное текущее состояние прототипа 1.38.0 и перечень того, что можно закрыть только на реальном железе, прослушивании и vendor-плагинах.</p>
+<h2 id="docs-66-alpha-acceptance-md-_1">Статус альфы</h2>
+<p>«Alpha/S1» здесь означает законченную запись вокала с дублями, ручным comp, базовым микшером, AU-эффектами и восстановлением (см. границы S1 в <a href="#docs-02-mvp-md">docs/02-mvp.md</a>). Честное текущее состояние: C++ ядро собирается через CMake, все 14 headless CTests зелёные в debug preset (<code>storage_jobs_crash</code>, <code>audio_render_storage</code>, <code>background_wav_import</code>, <code>aiff_import</code>, <code>offline_wav_export</code>, <code>dawproject_export</code>, <code>recording_crash_recovery</code>, <code>vst3_runtime_isolation</code>, <code>approved_au_host</code>, <code>session_storage_bridge</code>, <code>pure_c_bridge</code>, <code>midi_model</code>, <code>midi_bridge</code>, <code>midi_input</code>); в sanitizers preset (CI-гейт, ASan/UBSan) — 13/13 (<code>vst3_runtime_isolation</code> debug-only), thread-sanitizer — 13/13; AU/VST3 browser audition (<code>macos_audio_browser_preview</code>) запускается вручную через <code>scripts/test-audio-preview.sh</code> и не входит в CTest (требует реального устройства); macOS AppKit-приложение собирается через <code>scripts/build-macos.sh</code> и запускается; <code>hardware_smoke</code> проходит на этой машине (есть реальное output-устройство). При этом физические гейты остаются: полный full-duplex путь, прослушивание, приёмка на слух, vendor-матрица AU/VST3, hardware presentation latency и полный VoiceOver-аудит не закрыты в этой среде. Зелёный CI и проверка Markdown/SQL не равны сквозной приёмке S1 — успех требует приложения и аудио на физическом устройстве (см. пример сквозной приёмки в <a href="#docs-02-mvp-md">docs/02-mvp.md</a>).</p>
+<h2 id="docs-66-alpha-acceptance-md-s1_1">Матрица приёмки S1</h2>
+<p>Статусы используются точно: <strong>Проверено на этой машине</strong> — есть конкретное headless- или device-доказательство, полученное на этой машине; <strong>Готово в коде (нужен физический гейт)</strong> — код завершён и покрыт срезами/CTest, остаётся физическая проверка (железо/прослушивание/vendor); <strong>Физический гейт (не закрыт здесь)</strong> — проверка возможна только на реальном устройстве/топологии, которая в этой среде недоступна (или есть незакрытый code gap, отмеченный в зазоре).</p>
+<blockquote>
+<p>Примечание: требования <strong>EXT-01</strong> и <strong>AI-01</strong> относятся к этапу <strong>S2 (пост-альфа)</strong> и не входят в базовый уровень приёмки S1; включены в таблицу для полноты карты требований из <a href="#docs-02-mvp-md">docs/02-mvp.md</a>.</p>
+</blockquote>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Требование (кратко)</th>
+<th>Статус</th>
+<th>Доказательство / где проверено</th>
+<th>Оставшийся зазор</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DEV-01</td>
+<td>Выбор одного full-duplex Core Audio устройства и каналов</td>
+<td>Физический гейт (не закрыт здесь)</td>
+<td><a href="#docs-29-output-lifecycle-md">docs/29-output-lifecycle.md</a> — <code>hardware_smoke</code> 3×350 ms, 33 callbacks, отдельные тексты device change/stall/buffer-error; macOS app собирается и запускается, <code>hardware_smoke</code> проходит на реальном output-устройстве</td>
+<td>Full-duplex требует единое устройство или aggregate: <code>daw_duplex_hardware_smoke</code> не запускается на раздельных входе/выходе MacBook; property listener ещё не установлен (poll 100 мс); восстановление доступного UID при reopen не проверено на реальном устройстве</td>
+</tr>
+<tr>
+<td>DEV-02</td>
+<td>Разрешение микрофона; отказ не ведёт к падению</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-23-dry-recording-md">docs/23-dry-recording.md</a> — проверка разрешения перед Record, объяснение в UI, запись <code>Info.plist</code>; CTest не открывает микрофон</td>
+<td>Реальный системный TCC-запрос и физический микрофон не прогнаны автоматически; ad-hoc подпись вызывает повторный запрос между сборками (нужна стабильная Developer ID identity)</td>
+</tr>
+<tr>
+<td>TRN-01</td>
+<td>Play/Stop/Seek/Record; UI соответствует engine acknowledgement</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-17-audio-slice-md">docs/17-audio-slice.md</a> — AppKit: импорт, Play с движущейся позицией, ручной Stop, save/reopen; <a href="#docs-18-waveform-slice-md">docs/18-waveform-slice.md</a> — seek; <code>hardware_smoke</code> подтверждает output-callbacks</td>
+<td>Полный путь Record и синхронизация UI↔engine acknowledgement проверены в коде, но требуют реального устройства/микрофона; full-duplex transport не запускался (<code>daw_duplex_hardware_smoke</code>)</td>
+</tr>
+<tr>
+<td>IMP-01</td>
+<td>Импорт PCM WAV/AIFF mono/stereo; медиа в проект; ресемплинг вне RT</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td>CTest <code>background_wav_import</code> (<a href="#docs-63-background-wav-import-md">docs/63-background-wav-import.md</a>) и <code>audio_render_storage</code>; <a href="#docs-62-variable-rate-wav-import-md">docs/62-variable-rate-wav-import.md</a> — 44,1/48/88,2/96/192 кГц; AIFF/AIFC закрыты CTest <code>aiff_import</code> (<a href="#docs-67-aiff-import-md">docs/67-aiff-import.md</a>) — 16/24/32-bit int, AIFC fl32, mono/stereo, 44,1/48/96 kHz, ресемплинг в 48 kHz, отмена; полный suite 14/14 Debug, 13/13 ASan; <code>hardware_smoke</code> (тихой playback)</td>
+<td>UI-путь AIFF в приложении смонтирован (роутинг по расширению .aif/.aiff, панели WAV/AIFF; сборка приложения зелёная); остаются прослушивание converted audio и качество resampling (listening gate)</td>
+</tr>
+<tr>
+<td>REC-01</td>
+<td>Запись одного mono входа; корректный клип и воспроизводимый файл</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td>CTest <code>recording_crash_recovery</code> (<a href="#docs-24-crash-safe-recording-md">docs/24-crash-safe-recording.md</a>: mono→stereo, NaN, clamp, bounded overflow, continuous prefix, header, region position, C bridge, delete after commit, reject corrupt); <a href="#docs-23-dry-recording-md">docs/23-dry-recording.md</a></td>
+<td>Реальный микрофонный вход и прослушивание записанного дубля не проверены; USB-disconnect и смена sample rate во время записи открыты</td>
+</tr>
+<tr>
+<td>REC-02</td>
+<td>До двух одновременных входных каналов; 30 мин без пропусков</td>
+<td>Физический гейт (не закрыт здесь)</td>
+<td>Кодовая база собирается; multi-channel capture не покрыт прогоном</td>
+<td>Требует единое full-duplex устройство или aggregate; <code>daw_duplex_hardware_smoke</code> не запускается на раздельных входе/выходе; 30-минутный прогон без xruns и two-channel capture не закрыты здесь</td>
+</tr>
+<tr>
+<td>REC-03</td>
+<td>Loop recording, take lanes, pre-roll/metronome</td>
+<td>Физический гейт (не закрыт здесь)</td>
+<td><a href="#docs-31-take-lanes-comp-md">docs/31-take-lanes-comp.md</a> — comp-логика, v8 roundtrip; <a href="#docs-33-full-duplex-loop-recording-md">docs/33-full-duplex-loop-recording.md</a> — CTest разбиения проходов <code>4+4+2</code>, batch Undo, format v8</td>
+<td><strong>Code gap:</strong> pre-roll/metronome и latency compensation для loop ещё не реализованы (<a href="#docs-23-dry-recording-md">docs/23-dry-recording.md</a>, <a href="#docs-33-full-duplex-loop-recording-md">docs/33-full-duplex-loop-recording.md</a>); плюс sample-exact loop recording требует единое устройство/aggregate (<code>daw_duplex_hardware_smoke</code> не запускается)</td>
+</tr>
+<tr>
+<td>EDT-01</td>
+<td>Move/trim/split/clip gain/fades; недеструктивно</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-19-clip-editing-md">docs/19-clip-editing.md</a>, <a href="#docs-21-split-clips-md">docs/21-split-clips.md</a>, <a href="#docs-22-clip-operations-fades-md">docs/22-clip-operations-fades.md</a> — format v3/v4/v5, Undo, проверка недеструктивности</td>
+<td>Автоматизированный headless CTest для editing не входит в прошедшие 10 CTests; ручная UI-проверка на реальном устройстве и listening остаются</td>
+</tr>
+<tr>
+<td>EDT-02</td>
+<td>Comp диапазонов из take lanes; границы и fades редактируемы; оригиналы сохранены</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-31-take-lanes-comp-md">docs/31-take-lanes-comp.md</a> — comp left/selected/right, source в Renderer, take сохранён после fade/split, Undo/Redo, v8 roundtrip</td>
+<td>Прослушивание comp, fades на comp-границах и реальный recording в armed lane не проверены (physical gate, B-010)</td>
+</tr>
+<tr>
+<td>MIX-01</td>
+<td>Gain/pan/mute/solo/master; предсказуемый mono/stereo; без маскировки clipping</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-30-mixer-md">docs/30-mixer.md</a> — gainDb/pan/muted/solo/master, safety clamp <code>[-1,1]</code>, без нормализации, v7 roundtrip, точное совпадение с offline export</td>
+<td>Listening acceptance и layout на разных размерах окна открыты; mono pan пока balance, не equal-power (нет channel metadata в asset)</td>
+</tr>
+<tr>
+<td>MIX-02</td>
+<td>Audio bus, pre/post-fader send; цикл отклоняется до изменения графа</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-35-routing-buses-sends-md">docs/35-routing-buses-sends.md</a> — DFS-проверка цикла до commit, pre/post sends, format v9; <a href="#docs-45-track-bus-inserts-pdc-md">docs/45-track-bus-inserts-pdc.md</a> — полный graph PDC; CTests покрывают cycle/self-route rejection</td>
+<td>Реальный routing graph на устройстве не проверен; bus solo и sidechain частично не реализованы (<a href="#docs-35-routing-buses-sends-md">docs/35-routing-buses-sends.md</a>)</td>
+</tr>
+<tr>
+<td>FX-01</td>
+<td>Встроенные gain/pan; тембр/эффекты — через AU/VST3; без RT-аллокаций</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-30-mixer-md">docs/30-mixer.md</a> — built-in gain/pan, smoothing, без RT-аллокаций в собственном коде</td>
+<td>EQ закрыт решением владельца (2026-09-15): собственные эффекты вне скоупа, тембр — через AU/VST3-хостинг; listening/DSP acceptance остаётся физическим гейтом</td>
+</tr>
+<tr>
+<td>FX-02</td>
+<td>AU effects arm64; scan/editor/state/automation/latency по матрице</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td>CTest <code>approved_au_host</code> (<a href="#docs-36-apple-au-master-inserts-md">docs/36-apple-au-master-inserts.md</a>: AUDynamicsProcessor/AUPeakLimiter/AUMatrixReverb state/latency/finite output), <code>vst3_runtime_isolation</code> (<a href="#docs-58-vst3-managed-runtime-isolation-md">docs/58-vst3-managed-runtime-isolation.md</a>); <a href="#docs-37-au-scanner-parameters-md">docs/37-au-scanner-parameters.md</a>, <a href="#docs-45-track-bus-inserts-pdc-md">docs/45-track-bus-inserts-pdc.md</a>, <a href="#docs-53-async-auv3-hosting-md">docs/53-async-auv3-hosting.md</a></td>
+<td>Vendor AU/VST3 compatibility matrix (B-012) не прогнана: реальные сторонние плагины, editor proxy, listening acceptance и hardware presentation latency остаются (physical/vendor gate)</td>
+</tr>
+<tr>
+<td>MIDI-01</td>
+<td>Нотная модель: домен, хранение v16, C-ABI, табличный редактор</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-68-midi-foundation-md">docs/68-midi-foundation.md</a> — валидации/лимиты, undo/redo, round-trip v16 и fallback ≤15; CTests <code>midi_model</code>, <code>midi_bridge</code>, <code>pure_c_bridge</code> (MIDI-дым+негативы)</td>
+<td>Живые клики редактора, undo после MIDI-мутаций на глаз и paging &gt;8192 нот в UI не проверены; audible-плеер MIDI-only дорожек — code gap до арки instrument-source</td>
+</tr>
+<tr>
+<td>MIDI-02</td>
+<td>Доставка нот в VST3-инструменты хостингом</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><code>vst3_runtime_isolation</code> MIDI-эхо (frame-accurate доставка через границу процессов, протокол v2, reject-пути), флаг Instrument в сканере (кэш v2)</td>
+<td>Доставка в живой .vst3-синт и скан реального инструмента не прогнаны (нет плагина в этой среде); AU MusicDevice — отдельная арка</td>
+</tr>
+<tr>
+<td>MIDI-03</td>
+<td>MIDI-вход с устройства (ring, running status, timestamps)</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td>CTest <code>midi_input</code> — парсер пакетов, resync, drop-oldest кольцо, арифметика кадров; <a href="#docs-68-midi-foundation-md">docs/68-midi-foundation.md</a></td>
+<td>Живой контроллер, доставка через run loop приложения и запись в клипы не проверены; MIDI 2.0 (MIDIEventList) — будущая арка</td>
+</tr>
+<tr>
+<td>AUT-01</td>
+<td>Read/write volume и pan automation; sample offset; одна Undo-группа на drag</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-38-volume-automation-pdc-md">docs/38-volume-automation-pdc.md</a> — sample-accurate lanes, format v11, Undo; <a href="#docs-44-automation-write-pdc-plan-md">docs/44-automation-write-pdc-plan.md</a> — Read/Touch/Latch, atomic gesture Undo; <a href="#docs-46-plugin-automation-tail-export-md">docs/46-plugin-automation-tail-export.md</a> — sample-offset lanes, format v14; <a href="#docs-47-plugin-touch-audible-playhead-md">docs/47-plugin-touch-audible-playhead.md</a></td>
+<td>Listening acceptance и hardware presentation timestamp (B-013 gate) не проверены; автоматизированный listening/QA не запускались</td>
+</tr>
+<tr>
+<td>PRJ-01</td>
+<td>Save/reopen/Save As; переносимые пути; копия открывается без оригинала</td>
+<td>Проверено на этой машине</td>
+<td>CTest <code>session_storage_bridge</code> и <code>storage_jobs_crash</code>; <a href="#docs-17-audio-slice-md">docs/17-audio-slice.md</a> — AppKit: save → перемещение исходного WAV → reopen восстановил 12 с аудио; <a href="#docs-64-delete-track-undo-md">docs/64-delete-track-undo.md</a> / <a href="#docs-65-track-reorder-md">docs/65-track-reorder.md</a> — SQLite round-trip</td>
+<td>Только surviving project state и SQLite round-trip проверены; глубокая matrix power-loss/коррупции вне scope</td>
+</tr>
+<tr>
+<td>PRJ-02</td>
+<td>Crash recovery; последняя подтверждённая транзакция; recoverable recording отдельно</td>
+<td>Проверено на этой машине</td>
+<td>CTest <code>recording_crash_recovery</code> (<a href="#docs-24-crash-safe-recording-md">docs/24-crash-safe-recording.md</a>: дочерний <code>_exit</code> после checkpoint → родитель читает confirmed prefix) и <code>storage_jobs_crash</code>; <a href="#docs-24-crash-safe-recording-md">docs/24-crash-safe-recording.md</a> — recovery <code>.mydawtake</code></td>
+<td>Реальный device disconnect/смена sample rate/power-loss во время записи не проверены (physical gate); filesystem corruption matrix отдельная</td>
+</tr>
+<tr>
+<td>EXP-01</td>
+<td>WAV stereo 24-bit PCM / 32-bit float; длина/частота/каналы/уровень; отмена без «готового» файла</td>
+<td>Проверено на этой машине</td>
+<td>CTest <code>offline_wav_export</code> (<a href="#docs-25-offline-export-md">docs/25-offline-export.md</a>: точное совпадение с renderer, заголовки PCM24/float32, PCM24 с допуском, неизменность файла при отмене, отказ пустого проекта, 6/6); целевой CTest <code>dawproject_export</code> — DAWproject export завершается успехом и zip содержит <code>project.xml</code>, <code>metadata.xml</code>, <code>loss-report.json</code>, <code>audio/</code> (атомарная публикация и кооперативная отмена — реализация <code>writeZipPackage</code>)</td>
+<td>Listening PCM24/float32 acceptance остаётся (physical); нет stems/LUFS/true-peak/sample-rate conversion/metadata</td>
+</tr>
+<tr>
+<td>EXP-02</td>
+<td>Offline bounce с AU и хвостами; unsupported offline plugin → realtime bounce; сравнение по допуску</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-25-offline-export-md">docs/25-offline-export.md</a> — renderer match; <a href="#docs-46-plugin-automation-tail-export-md">docs/46-plugin-automation-tail-export.md</a> — finite VST3 tail, AU tail=0; <a href="#docs-60-infinite-tail-export-policy-md">docs/60-infinite-tail-export-policy.md</a> — automatic/finite-only/limit 2/5/15/30 с; CTest <code>offline_wav_export</code> покрывает VST3 sentinel/sequential/parallel tail (прогон sanitizers: 10/10)</td>
+<td>Listening-сравнение playback vs export; реальный AU tail для reverb/delay не объявлен (AU tail=0); realtime-bounce fallback для unsupported offline plugin нужно подтвердить на реальных плагинах (vendor gate); tail-dialog visual/VoiceOver smoke не завершён (<a href="#docs-60-infinite-tail-export-policy-md">docs/60-infinite-tail-export-policy.md</a>)</td>
+</tr>
+<tr>
+<td>EXT-01</td>
+<td>Один workflow-модуль через публичный контракт (S2)</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-11-roadmap-md">docs/11-roadmap.md</a> — B-015 «Code scope готов» (Lead/Doubles, peak/RMS, preview, atomic apply)</td>
+<td><strong>S2 (пост-альфа):</strong> вне базового уровня приёмки S1; требует listening evidence и реального модуля; не входит в гейты альфы</td>
+</tr>
+<tr>
+<td>AI-01</td>
+<td>Preview плана поддержанных команд (S2)</td>
+<td>Готово в коде (нужен физический гейт)</td>
+<td><a href="#docs-11-roadmap-md">docs/11-roadmap.md</a> — B-014 «Prototype готов» (bundled manifest, typed preview, atomic one-revision commit)</td>
+<td><strong>S2 (пост-альфа):</strong> вне базового уровня приёмки S1; не входит в гейты альфы</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="docs-66-alpha-acceptance-md-s1_2">Физические гейты, остающиеся для S1</h2>
+<p>То, что можно закрыть только на реальном железе, прослушивании или vendor-плагинах (не дефекты кода, а ограничения среды/топологии/лицензий):</p>
+<ul>
+<li><strong>Sample-exact loop recording (REC-03)</strong> требует единое full-duplex устройство или aggregate в Audio MIDI Setup; <code>daw_duplex_hardware_smoke</code> не запускается на типичном MacBook с раздельными входом/выходом (ограничение топологии железа).</li>
+<li><strong>До двух одновременных входов (REC-02)</strong> и 30-минутный прогон без xruns — то же ограничение единого устройства; многоканальный capture не прогнан.</li>
+<li><strong>Full-duplex выбор устройства (DEV-01)</strong> и property-listener обнаружение device-lost — нужен реальный device/disconnect; reopen UID restore не проверен.</li>
+<li><strong>Прослушивание / listening acceptance (IMP-01, REC-01, MIX-01, EDT-02, AUT-01, EXP-01/02, FX-02)</strong> — ни один автоматический тест не заменяет приёмку на слух; quality resampling и точное совпадение playback↔export на музыкальном материале не подтверждены.</li>
+<li><strong>Матрица совместимости AU/VST3 (FX-02, B-012)</strong> — реальные сторонние плагины, editor proxy, sidechain и compatibility matrix не прогнаны (self-hosted fake helper только для VST3 isolation, <a href="#docs-58-vst3-managed-runtime-isolation-md">docs/58-vst3-managed-runtime-isolation.md</a>).</li>
+<li><strong>Hardware presentation latency (B-013)</strong> — measured round-trip latency и causal monitoring ещё не измерены на устройстве.</li>
+<li><strong>Полный VoiceOver-аудит</strong> — Accessibility backend переставал возвращать дерево окна после подтверждения системных панелей (<a href="#docs-60-infinite-tail-export-policy-md">docs/60-infinite-tail-export-policy.md</a>, <a href="#docs-62-variable-rate-wav-import-md">docs/62-variable-rate-wav-import.md</a>), поэтому tail-dialog, browser-preview UI-состояния и общий VoiceOver pass не завершены.</li>
+<li><strong>Crash / disconnect тесты на реальном устройстве (B-005, PRJ-02)</strong> — device disconnect во время playback/recording, смена sample rate и power-loss не прогнаны на железе; filesystem corruption matrix отдельная.</li>
+<li><strong>TCC / микрофон (DEV-02, TRN-01, REC-01)</strong> — реальный системный запрос разрешения и стабильность между сборками (ad-hoc подпись) не проверены.</li>
+</ul>
+<h2 id="docs-66-alpha-acceptance-md-_2">Как собрать и проверить</h2>
+<p>Из корня репозитория:</p>
+<pre><code class="language-sh"># Ядро (CMake presets)
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+
+# macOS AppKit-приложение
+./scripts/build-macos.sh
+
+# Утилиты разработки и документации
+python3 scripts/doctor.py
+python3 scripts/check_docs.py
+</code></pre>
+<p>Headless CTest: debug — 11 тестов (<code>storage_jobs_crash</code>, <code>audio_render_storage</code>, <code>background_wav_import</code>, <code>aiff_import</code>, <code>offline_wav_export</code>, <code>dawproject_export</code>, <code>recording_crash_recovery</code>, <code>vst3_runtime_isolation</code>, <code>approved_au_host</code>, <code>session_storage_bridge</code>, <code>pure_c_bridge</code>); sanitizers — 10 (<code>vst3_runtime_isolation</code> собирается только с VST3 runtime helper, то есть debug-only).</p>
+<p>Device-тесты запускаются <strong>вручную</strong> на машине с аудиоустройством (не входят в общий CI):</p>
+<pre><code class="language-sh"># Тихой output smoke (реальное output-устройство)
+./build/debug/daw_hardware_smoke
+
+# Full-duplex loop smoke — требует единое устройство или aggregate
+./build/debug/daw_duplex_hardware_smoke
+
+# Browser audio preview (отдельный ручной listening/AX smoke)
+./scripts/test-audio-preview.sh
+</code></pre>
+<p>Полная валидация JSON Schema в <code>check_docs.py</code> пропускается без пакета <code>jsonschema</code>; ссылки Markdown и SQL-ограничения PASS. Для полной проверки схем и пересборки HTML — см. раздел «Проверка подготовленных материалов» в <a href="#README-md">README.md</a>.</p>
+<h2 id="docs-66-alpha-acceptance-md-_3">Следующие шаги до беты</h2>
+<p>Связано с backlog M2/M3 из <a href="#docs-11-roadmap-md">docs/11-roadmap.md</a> и этапом M4:</p>
+<ul>
+<li><strong>B-010</strong> — физическое доказательство take lanes / loop recording / playback loop / AUHAL loop recording (latency/recovery v2, pre-roll/metronome, sample-exact на едином устройстве).</li>
+<li><strong>B-012</strong> — vendor matrix AU/VST3: реальные сторонние плагины, editor proxy, sidechain, compatibility matrix (закрывает физический гейт FX-02).</li>
+<li><strong>B-013</strong> — listening acceptance и hardware presentation timestamp (закрывает гейты AUT-01/MIX/FX и EXP-02).</li>
+<li><strong>B-005</strong> — полный physical disconnect / смена sample rate / power-loss на реальном устройстве (закрывает DEV-01/REC-01/PRJ-02 device-гейты).</li>
+<li><strong>B-014 / B-015 / B-016</strong> — workflow SDK v0, preview/Undo и один полезный модуль (EXT-01), AI preview плана (AI-01), DAWproject import matrix.</li>
+<li><strong>MIDI-фундамент</strong> — модель, доставка в инструменты и пианино-ролл: следующая крупная арка за пределами S1.</li>
+<li><strong>Темпо-карта</strong> — выход за фиксированный темп 120 BPM: модель, transport и доставка в аудио/плагины.</li>
+<li><strong>М4</strong> — VST3 production hardening, DAWproject migration, install evidence и beta acceptance (compatibility, migration, crash/disconnect на реальном устройстве).</li>
+</ul></article><article id="docs-67-aiff-import-md"><h1 id="docs-67-aiff-import-md-aiffaifc-import">AIFF/AIFC import</h1>
+<p>Версия 1.39.0 закрывает IMP-01 для второй контейнерной семьи: My DAW принимает mono/stereo <strong>AIFF и AIFC</strong> с PCM-семантикой, а также AIFC со сжатием <code>fl32</code>. Границы формата повторяют <a href="#docs-62-variable-rate-wav-import-md">версию 1.35</a>: PCM 16/24/32-bit или 32-bit float, частоты 44,1 / 48 / 88,2 / 96 / 192 kHz, длительность до 60 секунд, размер файла до 32 MiB. Результат — тот же канонический immutable stereo Float32 Clip 48 kHz; формат проекта, storage и доменная модель не меняются.</p>
+<p>Это форматный срез внутри существующего импорт-пути, а не общий media importer. Типы сжатия AIFC кроме <code>NONE</code>/<code>none</code>/<code>fl32</code>, больше двух каналов, 8-bit и 64-bit float не поддерживаются и отклоняются с точной причиной.</p>
+<h2 id="docs-67-aiff-import-md-_1">Поведение</h2>
+<ol>
+<li>Читатель проверяет big-endian структуру <code>FORM</code>: допустимы только формы <code>AIFF</code> и <code>AIFC</code>; точный размер <code>FORM</code> (усечение и хвостовые байты отклоняются), duplicate <code>COMM</code>/<code>SSND</code> отклоняются, chunks идут с pad-выравниванием по спецификации, <code>SSND</code> offset и выравнивание кадров проверяются, фактические данные не короче объявленного числа frames.</li>
+<li>Из <code>COMM</code> берутся каналы (mono/stereo), frames, битность и частота (80-bit IEEE extended). AIFC дополнительно проверяет четырёхбуквенный тип сжатия. PCM 16/24/32 нормализуется в Float32, float32 читается как есть; non-finite или выходящие за диапазон выборки отклоняются. Mono дублируется в stereo.</li>
+<li>Для частот кроме 48 kHz используется тот же <code>resampleStereoTo48k</code> (Apple <code>AudioConverter</code> вне realtime), что и для WAV; 48 kHz остаётся direct fast path без преобразования. Проектная частота не меняется.</li>
+<li>Фоновая задача <code>startAiffImport</code> использует контракт <a href="#docs-63-background-wav-import-md">версии 1.36</a>: фазы reading → decoding → converting → ready, прогресс с кооперативной отменой в ограниченных чанках, по завершении — immutable Clip, job не удерживает session. Отменённый или упавший job не публикует частичный Clip и возвращает фоновые слоты.</li>
+<li>Storage записывает уже сконвертированный PCM 48 kHz, поэтому после save/open клип не зависит от исходного файла — как и WAV-импорт.</li>
+</ol>
+<h2 id="docs-67-aiff-import-md-bridge-ui">Bridge и UI</h2>
+<p>C bridge реализует синхронные revision-aware команды <code>daw_import_aiff</code> и <code>daw_import_take_aiff</code> (<code>engine/bridge/daw.cpp</code>), с той же семантикой ошибок, что и WAV: неудачный импорт не меняет revision, Undo и проект. Публичное объявление в <code>daw.h</code> и UI-путь приложения (панель открытия, роутинг по расширению <code>.aif</code>/<code>.aiff</code>) подключаются текущим изменением и на момент этого среза ещё не проверены через приложение. Фоновый контракт пока покрыт на engine-уровне; отдельные background C API команды для AIFF не введены.</p>
+<h2 id="docs-67-aiff-import-md-_2">Проверка и границы доказательств</h2>
+<ul>
+<li>Тест не хранит бинарные фикстуры в git: writer в тесте генерирует AIFF/AIFC вручную (big-endian, 80-bit частота) в tmp.</li>
+<li>CTest <code>aiff_import</code> (<code>tests/aiff_import_tests.cpp</code>): матрица 24 вариантов — 44,1 / 48 / 96 kHz × mono/stereo × {PCM 16, 24, 32-bit, AIFC <code>fl32</code>32-bit} через <code>startAiffImport</code>: статус Ready, source rate/channels/frames, ожидаемое число проектных frames после resampling (округление к ближайшему), содержимое каналов, mono→stereo дублирование, только finite выборки; <code>cancelImport</code> неприменённого job возвращает количество фоновых задач к baseline; битый <code>FORM</code> без <code>COMM</code>/<code>SSND</code> отклоняется.</li>
+<li>Полный прогон этого среза: debug CTest — 11/11, sanitizers (ASan/UBSan) — 10/10. Срез также добавил целевой CTest <code>dawproject_export</code> (zip DAWproject содержит <code>project.xml</code>, <code>metadata.xml</code>, <code>loss-report.json</code>, <code>audio/</code>).</li>
+<li>Честные границы: формат-декодер и фоновый job проверены headless; UI-путь импорта AIFF через приложение <strong>не проверен</strong> (в работе). Матрица CTest покрывает 44,1 / 48 / 96 kHz — 88,2 и 192 kHz используют тот же <code>supportedRate</code>/converter путь, что и WAV, но в <code>aiff_import</code> отдельно не проверены. Прослушивание клипов, созданных из AIFF, не проверялось (это общий S1 listening-гейт).</li>
+</ul>
+<h2 id="docs-67-aiff-import-md-_3">Следующие границы</h2>
+<ul>
+<li>AIFF UI-путь: панель открытия, роутинг по расширению, статус/ошибки в приложении и его smoke-проверка (в работе).</li>
+<li>88,2 и 192 kHz в матрицу <code>aiff_import</code>; отрицательные кейсы для неподдерживаемых AIFC-компрессий.</li>
+<li>Общий прослушивающий acceptance для converted audio (WAV и AIFF) остаётся отдельным физическим гейтом S1.</li>
+</ul></article><article id="docs-68-midi-foundation-md"><h1 id="docs-68-midi-foundation-md-68-midi-1400">68. MIDI-фундамент (срез 1.40.0)</h1>
+<h2 id="docs-68-midi-foundation-md-_1">Что это</h2>
+<p>MIDI-фундамент: нотная модель данных, хранение, C-ABI, доставка событий в рендерер и VST3-хостинг, вход CoreMIDI и табличный редактор в приложении. Согласно решению владельца от 2026-09-15 собственные плагины не пишутся — звук нотам дают сторонние AU/VST3-инструменты; этот срез проводит событие по всем контурам исполнения от модели до хоста. Аудиогенерации собственных тембров здесь нет и не будет.</p>
+<h2 id="docs-68-midi-foundation-md-enginedomain">Модель (<code>engine/domain</code>)</h2>
+<p><code>MidiNote{start,length,pitch,channel,velocity}</code> и <code>MidiClip{start,length,notes,track}</code> в <code>Track.midiClips</code> (координаты нот — relative к клипу). Валидация: клипы на треке не пересекаются (касание разрешено — следствие split), нота целиком внутри клипа, pitch 0..127, channel 0..15, velocity 1..127, длина ноты ≤ 480000 кадров (10 с), границы клипа ≤ 2^40, не более 64 клипов на трек и 65536 нот в проекте. Команды expected-revision с no-op: addMidiClip, removeMidiClip, setMidiNotes (полная замена — семантика редактора), moveMidiClip, trimMidiClip (рост окна сдвигает относительные ноты, сужение удаляет непоместившиеся целиком), splitMidiClip. Сплит через тело ноты — явная ошибка ('A MIDI note cannot cross the split position'): молчаливая обрезка или дубль заметны на слух; явная «разрезать ноту» — операция UI-арки. Трек с нотами и без аудио валиден — это MIDI-дорожка.</p>
+<h2 id="docs-68-midi-foundation-md-_2">Хранение</h2>
+<p>Черновик <code>user_version</code> 15→16: таблицы <code>midi_clips(track_id,position,start,length,lane, PK(track_id,position))</code> и <code>midi_notes(track_id,clip_position,position,start,length,pitch,channel,velocity, PK(...,position))</code> — реляционно в стиле sends/automation, запись в той же транзакции. Черновики ≤15 открываются с пустым MIDI (гейт <code>formatVersion&gt;=16</code>, проверено тестом даунгрейд-прагмы); читалка проверяет порядок, диапазоны и лимиты до <code>validate()</code>. <code>specs/project-v0.sql</code> — исторический v0-пример, не затрагивался; актуальную схему описывают этот документ и storage.cpp.</p>
+<h2 id="docs-68-midi-foundation-md-c-abi-enginebridge">C-ABI (<code>engine/bridge</code>)</h2>
+<p><code>daw_midi_note</code>/<code>daw_midi_clip</code> — версионированные POD (префикс struct_size+version, 32 байта). Команды: <code>daw_add_midi_clip</code>, <code>daw_remove_midi_clip</code>, <code>daw_set_midi_notes</code>, <code>daw_move_midi_clip</code>, <code>daw_trim_midi_clip</code>, <code>daw_split_midi_clip</code>; запросы: <code>daw_get_midi_clip_count</code> и страничный <code>daw_get_midi_clip(note_offset,capacity≤8192,&amp;written)</code> — <code>out.note_count</code> это всего в клипе, <code>written</code> — за вызов; клипы больше 8192 нот читаются постранично. ABI-валидация (struct_size/version/null/capacity) не дублирует доменную; <code>guard()</code> транслирует доменные ошибки в коды без потребления ревизии. MIDI-мутации намеренно не дёргают resetTransport: транспорт считает аудио-длину, пока нет instrument-source.</p>
+<h2 id="docs-68-midi-foundation-md--engineaudio">Рендер-план (<code>engine/audio</code>)</h2>
+<p><code>MidiTrackPlan</code> (renderer.hpp): на prepare строит для каждого ординала трека отсортированные absolute-пары on@<code>clip.start+note.start</code> / off@<code>+note.length</code>; при равном кадре off идёт раньше on (касание клипов корректно). <code>drain(blockStart,blockEnd,out,capacity)</code> выдаёт точные <code>sampleOffset</code>; переполнение буфера (1024 события/блок) не теряет события — курсор стоит, следующие блоки отдают с clamp offset 0 (поздно, но без потерь). <code>wrapCutOffs</code> по bitmask 16×128 звучащих нот: при loop wrap нота, закрытая после loopEnd (её off в лупе недостижим), получает синтетический velocity-0 off на offset 0 нового прохода, затем reset перематывает курсор — нота переигрывается с начала; ни застреваний, ни обрезанных аккордов. Хвосты за пределами проекта и bus/master-цепочки MIDI не получают (документировано). События передаются шестым аргументом <code>process()</code> всем звеньям цепочки инсертов трека. Ограничение среза: трек без аудио не имеет голосов и не рендерится — audible-плеер MIDI-дорожек включится аркой instrument-source (AU MusicDevice / VST3-instrument insert).</p>
+<h2 id="docs-68-midi-foundation-md-vst3">Хостинг VST3</h2>
+<p>Контракт <code>PreparedMidiEvent{sampleOffset,channel,pitch,velocity,noteOff}</code> + 6-й параметр <code>process(...)</code> с дефолтом — обратная совместимость всех реализаций. Wire-протокол managed-runtime v1→v2 (хендшейк отклоняет несогласованного пира; host и helper всегда из одного дерева): <code>MidiEvent</code> POD-зеркало, ≤512 событий на блок. Хост валидирует offset/ch/pitch/velocity — при ошибке fault без публикации запроса (ноты не исчезают молча), переполнение → DryFallback. In-process путь собирает <code>BoundedEventList</code> (512 слотов, ноль аллокаций в RT) по фактической раскладке SDK (<code>busIndex/sampleOffset/ppqPosition</code>; у <code>NoteOffEvent</code> длины в SDK нет). Fake-плагин в <code>vst3_runtime_isolation</code> эхо-кодирует принятые события в аудио (frame-accurate по left, mixed-radix поля по right) — доставка проверена через границу процессов; доставка в живой .vst3-синт — физический гейт. Скан VST3 сохраняет subCategory и флаг Instrument (кэш bump 1→2, старые кэши пересканируются). AU: непустой MIDI-канал явно отвергается — MusicDevice отдельная арка.</p>
+<h2 id="docs-68-midi-foundation-md-coremidi">Вход (CoreMIDI)</h2>
+<p><code>engine/platform/macos/midi_input.{hpp,cpp}</code>: <code>listMidiInputDevices()</code> (без бросков, headless → пусто), <code>MidiInput::open/close/poll/dropped</code> — CoreMIDI read-thread декодирует short-пакеты в lock-free ring 4096 (drop-oldest + точный счётчик), контроль-тред дренирует; ни чего не исполняется на audio-тред. Running status с resync по байту, 0x90 velocity-0 → note-off, CC/pitch-bend/program/system пропускаются без потери синхронизации, sysex обрывает разбор пакета (v0). hostTime (mach absolute) → наносекунды → кадры 48 к чистой функцией. Миграция на MIDIEventList (MIDI 2.0) — будущая арка; живое MIDI-железо — физический гейт.</p>
+<h2 id="docs-68-midi-foundation-md-ui-v0">UI v0 (табличный редактор)</h2>
+<p><code>PianoRollView.swift</code> + инспектор: кнопка <code>＋ MIDI</code> в toolbar и меню «Добавить MIDI-дорожку» (дорожка + рабочий клип 0–10 с), popup клипов, таблица нот (Начало/Длит. мс, Нота с парсером <code>C4</code>/<code>A#5</code>/число, Vel), <code>+ Нота</code> на playhead (C4, 480 кадров, vel 100, clamp в клип), <code>− Удалить</code> по строке; правка = полная <code>daw_set_midi_notes</code>-замена с откатом UI при доменном reject, чтение с paging по 8192, undo существующей кнопкой. Редактор скрыт без клипов и неактивен во время записи.</p>
+<h2 id="docs-68-midi-foundation-md-_3">Гейты</h2>
+<p>Headless на этой машине: debug CTest <strong>14/14</strong> (вкл. <code>midi_model</code>, <code>midi_bridge</code>, <code>midi_input</code>, <code>vst3_runtime_isolation</code> с MIDI-эхо), sanitizers (ASan/UBSan, CI-гейт) <strong>13/13</strong>, thread-sanitizer <strong>13/13</strong>, <code>pure_c_bridge</code> с MIDI-дымом и ABI-негативами зелёный; <code>scripts/build-macos.sh</code> собирает и ad-hoc подписывает приложение, запуск живёт. Открытые физические гейты: живые клики в редакторе и undo после MIDI-мутаций на глаз, paging &gt;8192 нот в UI, реальное MIDI-устройство (enumeration, запись, timestamps против аудио-часов), доставка в живой .vst3-синт и скан живого инструмента, listening-приёмка инструментов, audible-плеер MIDI-only дорожек (ждёт instrument-source).</p>
+<h2 id="docs-68-midi-foundation-md-_4">Следующие шаги</h2>
+<p>Instrument-source (AU MusicDevice / VST3 instrument insert + audible MIDI-треки), запись MIDI с контроллера в клипы, темпо-карта (beat↔frame), метроном/pre-roll, маркеры, явная «разрезать ноту», MIDI 2.0 (MIDIEventList).</p></article><article id="docs-adr-README-md"><h1 id="docs-adr-README-md-_1">Реестр архитектурных решений</h1>
 <p>Статус <code>selected-for-spike</code> означает выбранное рабочее направление, которое ещё не доказано реализацией. <code>proposed</code> — решение перед подключением/распространением. Ни один ADR не означает готовую функцию.</p>
 <div class="table-scroll" tabindex="0"><table>
 <thead>

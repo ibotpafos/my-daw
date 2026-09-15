@@ -318,8 +318,14 @@ public:
     scheduled.resize(capacity);
   }
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
-               std::span<const PreparedParameterEvent> parameterEvents) noexcept
+               std::span<const PreparedParameterEvent> parameterEvents,
+               std::span<const PreparedMidiEvent> midiEvents) noexcept
       override {
+    // AU instruments: separate MusicDevice arc. This catalog only contains
+    // AudioUnit effect types, so a caller that hands notes to an AU effect is
+    // a programming error; reject it instead of silently dropping the lane.
+    if (!midiEvents.empty())
+      return false;
     if (!left || !right || frames > maximum)
       return false;
     std::copy_n(left, frames, inputLeft.begin());

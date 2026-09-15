@@ -15,7 +15,10 @@
 namespace daw::vst3runtime {
 
 constexpr uint32_t kProtocolMagic = 0x4d445652U; // MDVR
-constexpr uint32_t kProtocolVersion = 1;
+// Version 2 adds the bounded MIDI lane to the request block. Host and helper
+// are always built from the same tree; the handshake still rejects a stale
+// peer rather than misreading the new layout.
+constexpr uint32_t kProtocolVersion = 2;
 constexpr uint32_t kMaximumFrames = 4096;
 // The renderer has already accepted at most this many points per project. The
 // isolated wire protocol must not turn a valid persisted automation lane into
@@ -24,6 +27,9 @@ constexpr uint32_t kMaximumParameterEvents = static_cast<uint32_t>(kMaxProjectPl
 constexpr uint32_t kMaximumStateBytes = 16U * 1024U * 1024U;
 constexpr uint32_t kMaximumControlParameters = 4096;
 constexpr uint32_t kMaximumControlPayloadBytes = 8U * 1024U * 1024U;
+// One host block may carry at most this many note events. A renderer that
+// wants to send more must split the timeline; the wire never grows.
+constexpr uint32_t kMaximumMidiEvents = 512;
 
 struct ParameterEvent {
   uint32_t parameterID = 0;
@@ -32,12 +38,26 @@ struct ParameterEvent {
   uint32_t reserved = 0;
 };
 
+// POD mirror of daw::PreparedMidiEvent. noteOff uses the VST3 convention:
+// velocity on a note-off event is the release velocity.
+struct MidiEvent {
+  uint32_t sampleOffset = 0;
+  uint8_t channel = 0;
+  uint8_t pitch = 0;
+  uint8_t velocity = 0;
+  uint8_t noteOff = 0;
+  uint16_t reserved = 0;
+};
+
 struct RequestBlock {
   uint64_t sequence = 0;
   uint64_t sampleTime = 0;
   uint32_t frames = 0;
   uint32_t eventCount = 0;
+  uint32_t midiEventCount = 0;
+  uint32_t reserved = 0;
   std::array<ParameterEvent, kMaximumParameterEvents> events{};
+  std::array<MidiEvent, kMaximumMidiEvents> midiEvents{};
   std::array<float, kMaximumFrames> left{};
   std::array<float, kMaximumFrames> right{};
 };

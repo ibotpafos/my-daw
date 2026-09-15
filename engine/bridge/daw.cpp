@@ -70,11 +70,13 @@ struct daw_save_job { std::shared_ptr<daw::SaveResult> result; };
 struct daw_export_job { std::shared_ptr<daw::ExportResult> result; };
 struct daw_dawproject_job { std::shared_ptr<daw::dawproject::ExportResult> result; };
 enum class ImportIntent : uint8_t { Track, Take };
+enum class ImportFormat : uint8_t { Wav, Aiff };
 struct daw_import_job {
     std::shared_ptr<daw::ImportJobResult> result;
     std::weak_ptr<uint8_t> owner;
     uint64_t projectEpoch=0,baseRevision=0,trackID=0,startFrame=0;
     ImportIntent intent=ImportIntent::Track;
+    ImportFormat format=ImportFormat::Wav;
     std::string name;
 };
 #ifdef __APPLE__
@@ -628,6 +630,55 @@ int daw_preview_workflow(daw_session* s,const daw_workflow_operation* operations
 int daw_commit_workflow(daw_session* s,const daw_workflow_operation* operations,uint32_t count,uint64_t rev){return guard(s,[&]{s->model.commitWorkflow(workflowOperations(operations,count),rev);resetTransport(s);});}
 int daw_preview_vocal_preparation(daw_session* s,const uint64_t* selected,uint32_t count,const char* base,double targetRms,double peakCeiling,double doubleOffset,uint64_t rev,daw_vocal_preview* items,uint32_t capacity,uint32_t* itemCount,uint64_t* afterRevision){return guard(s,[&]{if(!itemCount||!afterRevision||(!items&&capacity))throw daw::Error("Invalid vocal preview output");const auto plan=vocalPlan(s,selected,count,base,targetRms,peakCeiling,doubleOffset,rev);*itemCount=count;*afterRevision=plan.preview.afterRevision;if(!items)return;if(capacity<count)throw daw::Error("Vocal preview buffer is too small");for(uint32_t index=0;index<count;++index){auto& out=items[index];if(out.struct_size!=sizeof(daw_vocal_preview))throw daw::Error("Vocal preview ABI mismatch");const auto& analysis=plan.analyses[index];const auto peak=amplitudeDb(std::max(analysis.peakLeft,analysis.peakRight));const auto rms=amplitudeDb(std::sqrt((double(analysis.rmsLeft)*analysis.rmsLeft+double(analysis.rmsRight)*analysis.rmsRight)*0.5));const auto before=std::find_if(plan.preview.before.begin(),plan.preview.before.end(),[&](const auto& track){return track.id==plan.ids[index];});const auto after=std::find_if(plan.preview.after.begin(),plan.preview.after.end(),[&](const auto& track){return track.id==plan.ids[index];});out={};out.struct_size=sizeof(daw_vocal_preview);out.track_id=plan.ids[index];out.analyzed_frames=analysis.analyzedFrames;out.peak_db=peak;out.rms_db=rms;out.proposed_gain_db=after->gainDb;out.predicted_peak_db=peak+after->gainDb;out.predicted_rms_db=rms+after->gainDb;out.peak_limited=(after->gainDb<targetRms+(index==0?0.0:doubleOffset)-rms-0.0001)?1:0;std::memcpy(out.before_name,before->name.data(),before->name.size());std::memcpy(out.after_name,after->name.data(),after->name.size());}});}
 int daw_commit_vocal_preparation(daw_session* s,const uint64_t* selected,uint32_t count,const char* base,double targetRms,double peakCeiling,double doubleOffset,uint64_t rev){return guard(s,[&]{auto plan=vocalPlan(s,selected,count,base,targetRms,peakCeiling,doubleOffset,rev);s->model.commitWorkflow(plan.operations,rev);resetTransport(s);});}
+namespace {
+// ABI-level sanity only: shape, ranges and bounds a caller could not possibly
+// mean. Timeline, overlap and capacity rules stay inside the domain's Validate.
+void validateMidiNoteArray(const daw_midi_note* notes,uint32_t count){
+    if(count>DAW_MIDI_NOTES_PER_CALL)throw daw::Error("MIDI note reads and writes are limited to 8192 notes per call");
+    if(count&&!notes)throw daw::Error("MIDI note array is missing");
+    for(uint32_t index=0;index<count;++index){const auto& note=notes[index];
+        if(note.struct_size!=sizeof(daw_midi_note)||note.version!=DAW_MIDI_NOTE_VERSION)throw daw::Error("MIDI note ABI mismatch");
+        if(note.pitch>127)throw daw::Error("MIDI pitch must be 0..127");
+        if(note.channel>15)throw daw::Error("MIDI channel must be 0..15");
+        if(note.velocity<1||note.velocity>127)throw daw::Error("MIDI velocity must be 1..127");}
+}
+void toDomainNotes(const daw_midi_note* notes,uint32_t count,std::vector<daw::MidiNote>& out){
+    out.reserve(count);
+    for(uint32_t index=0;index<count;++index)out.push_back({notes[index].start,notes[index].length,notes[index].pitch,notes[index].channel,notes[index].velocity});
+}
+}
+int daw_add_midi_clip(daw_session* s,uint64_t trackID,const daw_midi_clip* clip,const daw_midi_note* notes,uint32_t noteCount,uint64_t rev){return guard(s,[&]{
+    if(!clip||clip->struct_size!=sizeof(daw_midi_clip)||clip->version!=DAW_MIDI_CLIP_VERSION)throw daw::Error("MIDI clip ABI mismatch");
+    if(clip->lane<0)throw daw::Error("MIDI clip lane must be non-negative");
+    if(!clip->length)throw daw::Error("MIDI clip length must be positive");
+    if(clip->note_count!=noteCount)throw daw::Error("MIDI clip note_count must match the supplied note array");
+    validateMidiNoteArray(notes,noteCount);
+    std::vector<daw::MidiNote> converted;toDomainNotes(notes,noteCount,converted);
+    s->model.addMidiClip(trackID,{clip->start,clip->length,std::move(converted),clip->lane},rev);});}
+int daw_remove_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,uint64_t rev){return guard(s,[&]{s->model.removeMidiClip(trackID,index,rev);});}
+int daw_set_midi_notes(daw_session* s,uint64_t trackID,uint32_t index,const daw_midi_note* notes,uint32_t noteCount,uint64_t rev){return guard(s,[&]{
+    validateMidiNoteArray(notes,noteCount);
+    std::vector<daw::MidiNote> converted;toDomainNotes(notes,noteCount,converted);
+    s->model.setMidiNotes(trackID,index,std::move(converted),rev);});}
+int daw_move_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t rev){return guard(s,[&]{s->model.moveMidiClip(trackID,index,newStart,rev);});}
+int daw_trim_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t rev){return guard(s,[&]{s->model.trimMidiClip(trackID,index,newStart,newLength,rev);});}
+int daw_split_midi_clip(daw_session* s,uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t rev){return guard(s,[&]{s->model.splitMidiClip(trackID,index,atFrame,rev);});}
+int daw_get_midi_clip_count(daw_session* s,uint64_t trackID,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing MIDI clip count output");for(const auto& track:s->model.state().tracks)if(track.id==trackID){*count=static_cast<uint32_t>(track.midiClips.size());return;}throw daw::Error("Track not found");});}
+int daw_get_midi_clip(daw_session* s,uint64_t trackID,uint32_t clipIndex,daw_midi_clip* out,uint32_t noteOffset,daw_midi_note* notes,uint32_t capacity,uint32_t* written){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_midi_clip))throw daw::Error("MIDI clip ABI mismatch");
+    if(capacity>DAW_MIDI_NOTES_PER_CALL)throw daw::Error("MIDI note capacity exceeds the per-call limit");
+    if(capacity&&!notes)throw daw::Error("MIDI note buffer is missing");
+    for(const auto& track:s->model.state().tracks)if(track.id==trackID){
+        if(clipIndex>=track.midiClips.size())throw daw::Error("MIDI clip index out of range");
+        const auto& clip=track.midiClips[clipIndex];
+        if(noteOffset>clip.notes.size())throw daw::Error("MIDI note offset is past the clip");
+        *out={};out->struct_size=sizeof(daw_midi_clip);out->version=DAW_MIDI_CLIP_VERSION;out->start=clip.start;out->length=clip.length;out->lane=clip.track;out->note_count=static_cast<uint32_t>(clip.notes.size());
+        const uint32_t available=static_cast<uint32_t>(clip.notes.size())-noteOffset;
+        const uint32_t copied=std::min(available,capacity);
+        for(uint32_t index=0;index<copied;++index){const auto& note=clip.notes[noteOffset+index];auto& destination=notes[index];destination={};destination.struct_size=sizeof(daw_midi_note);destination.version=DAW_MIDI_NOTE_VERSION;destination.start=note.start;destination.length=note.length;destination.pitch=note.pitch;destination.channel=note.channel;destination.velocity=note.velocity;}
+        if(written)*written=copied;
+        return;}
+    throw daw::Error("Track not found");});}
 int daw_undo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.undo(rev); resetTransport(s);}); }
 int daw_redo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.redo(rev); resetTransport(s);}); }
 daw_save_job* daw_begin_save(daw_session* s,const char* path) {
@@ -698,28 +749,34 @@ void daw_release_dawproject_export(daw_dawproject_job* job){delete job;}
 int daw_save_draft(daw_session* s,const char* path) { return guard(s,[&]{daw::writeDraft(s->model.state(),required(path));}); }
 int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
 namespace {
-daw_import_job* beginImport(daw_session* s,const char* path,const char* name,uint64_t baseRevision,ImportIntent intent,uint64_t trackID,uint64_t startFrame) {
+daw_import_job* beginImport(daw_session* s,const char* path,const char* name,uint64_t baseRevision,ImportIntent intent,ImportFormat format,uint64_t trackID,uint64_t startFrame) {
     daw_import_job* job=nullptr;
     guard(s,[&]{
         if(s->model.state().revision!=baseRevision)throw daw::Error("Revision conflict: refresh the project");
         auto handle=std::make_unique<daw_import_job>();
         handle->owner=s->lifetime;handle->projectEpoch=s->projectEpoch;handle->baseRevision=baseRevision;
-        handle->intent=intent;handle->trackID=trackID;handle->startFrame=startFrame;handle->name=required(name);daw::validateName(handle->name);
+        handle->intent=intent;handle->format=format;handle->trackID=trackID;handle->startFrame=startFrame;handle->name=required(name);daw::validateName(handle->name);
         if(intent==ImportIntent::Take){
             const auto found=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& track){return track.id==trackID&&track.audio;});
             if(found==s->model.state().tracks.end())throw daw::Error("Audio track not found");
         }
-        handle->result=daw::startWavImport(required(path));
+        handle->result=(format==ImportFormat::Aiff)?daw::startAiffImport(required(path)):daw::startWavImport(required(path));
         job=handle.release();
     });
     return job;
 }
 }
 daw_import_job* daw_begin_import_wav(daw_session* s,const char* path,const char* name,uint64_t baseRevision) {
-    return beginImport(s,path,name,baseRevision,ImportIntent::Track,0,0);
+    return beginImport(s,path,name,baseRevision,ImportIntent::Track,ImportFormat::Wav,0,0);
 }
 daw_import_job* daw_begin_import_take_wav(daw_session* s,uint64_t trackID,const char* path,const char* name,uint64_t startFrame,uint64_t baseRevision) {
-    return beginImport(s,path,name,baseRevision,ImportIntent::Take,trackID,startFrame);
+    return beginImport(s,path,name,baseRevision,ImportIntent::Take,ImportFormat::Wav,trackID,startFrame);
+}
+daw_import_job* daw_begin_import_aiff(daw_session* s,const char* path,const char* name,uint64_t baseRevision) {
+    return beginImport(s,path,name,baseRevision,ImportIntent::Track,ImportFormat::Aiff,0,0);
+}
+daw_import_job* daw_begin_import_take_aiff(daw_session* s,uint64_t trackID,const char* path,const char* name,uint64_t startFrame,uint64_t baseRevision) {
+    return beginImport(s,path,name,baseRevision,ImportIntent::Take,ImportFormat::Aiff,trackID,startFrame);
 }
 int daw_poll_import(daw_import_job* job,daw_import_status* out) {
     if(!job||!out||out->struct_size!=sizeof(daw_import_status))return 1;
@@ -766,6 +823,10 @@ int daw_import_wav(daw_session* s,const char* path,const char* name,uint64_t rev
     auto clip=daw::readWav(required(path)); s->model.import(required(name),std::move(clip),rev); resetTransport(s);
 }); }
 int daw_import_take_wav(daw_session* s,uint64_t id,const char* path,const char* name,uint64_t start,uint64_t rev){return guard(s,[&]{auto clip=daw::readWav(required(path));s->model.addTake(id,required(name),std::move(clip),start,rev);resetTransport(s);});}
+int daw_import_aiff(daw_session* s,const char* path,const char* name,uint64_t rev) { return guard(s,[&]{
+    auto clip=daw::readAiff(required(path)); s->model.import(required(name),std::move(clip),rev); resetTransport(s);
+}); }
+int daw_import_take_aiff(daw_session* s,uint64_t id,const char* path,const char* name,uint64_t start,uint64_t rev){return guard(s,[&]{auto clip=daw::readAiff(required(path));s->model.addTake(id,required(name),std::move(clip),start,rev);resetTransport(s);});}
 int daw_get_take(daw_session* s,uint64_t id,uint32_t index,daw_take* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_take))throw daw::Error("Take ABI mismatch");for(const auto& t:s->model.state().tracks)if(t.id==id){if(!t.audio||index>t.takes.size())throw daw::Error("Take index out of range");const auto name=index==0?t.name:t.takes[index-1].name;const auto start=index==0?t.baseStart:t.takes[index-1].start;const auto clip=index==0?t.audio:t.takes[index-1].audio;*out={};out->struct_size=sizeof(daw_take);out->index=index;out->start=start;out->frames=clip->frames();std::memcpy(out->name,name.data(),name.size());return;}throw daw::Error("Track not found");});}
 int daw_get_take_waveform(daw_session* s,uint64_t id,uint32_t index,float* peaks,uint32_t count){return guard(s,[&]{if(!peaks||count!=512)throw daw::Error("Take waveform requires a 512-float buffer");for(const auto& t:s->model.state().tracks)if(t.id==id){if(!t.audio||index>t.takes.size())throw daw::Error("Take index out of range");const auto clip=index==0?t.audio:t.takes[index-1].audio;std::copy(clip->peaks().begin(),clip->peaks().end(),peaks);return;}throw daw::Error("Track not found");});}
 int daw_comp_range(daw_session* s,uint64_t id,uint32_t take,uint64_t start,uint64_t end,uint64_t rev){return guard(s,[&]{if(end<=start)throw daw::Error("Comp end must follow start");s->model.compRange(id,take,start,end-start,rev);resetTransport(s);});}

@@ -150,7 +150,7 @@ bool validFingerprint(std::string_view value) {
 }
 
 bool parseClass(std::string_view line, Vst3ScannedClass& value) {
-    std::array<std::string_view, 6> fields{};
+    std::array<std::string_view, 7> fields{};
     size_t begin = 0;
     for (size_t index = 0; index < fields.size() - 1; ++index) {
         const auto end = line.find('\t', begin);
@@ -162,9 +162,11 @@ bool parseClass(std::string_view line, Vst3ScannedClass& value) {
     if (!validFuid(fields[0]) || !decode(fields[1], value.modulePath) ||
         !decode(fields[2], value.moduleFingerprint) || !decode(fields[3], value.name) ||
         !decode(fields[4], value.vendor) || !decode(fields[5], value.version) ||
+        (fields[6] != "0" && fields[6] != "1") ||
         !validFingerprint(value.moduleFingerprint) || !validText(value.modulePath, kMaximumFieldBytes, true) ||
         !validText(value.name, 480, true)) return false;
     value.classId.assign(fields[0]);
+    value.instrument = fields[6] == "1";
     std::transform(value.classId.begin(), value.classId.end(), value.classId.begin(),
                    [](unsigned char byte) { return static_cast<char>(std::toupper(byte)); });
     return true;
@@ -247,7 +249,7 @@ IsolatedVst3Enumeration enumerateVst3PluginsIsolated(const std::string& helperPa
     for (const auto& path : paths) {
         const auto module = runHelper(helperPath, {"--list-module", path}, timeout);
         if (!module.started || module.timedOut || module.exitCode != 0 || !module.error.empty()) {
-            result.quarantined.push_back({{ {}, path, {}, {}, {}, {} }, "Module enumeration failed: " + probeFailure(module)});
+            result.quarantined.push_back({{ {}, path, {}, {}, {}, {}, false }, "Module enumeration failed: " + probeFailure(module)});
             continue;
         }
         bool classesValid = false;

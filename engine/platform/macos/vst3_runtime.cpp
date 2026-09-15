@@ -111,8 +111,10 @@ public:
   }
 
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
-               std::span<const PreparedParameterEvent> events) noexcept override {
-    if (!left || !right || frames > maximum_ || events.size() > kMaximumParameterEvents) return faultOnce();
+               std::span<const PreparedParameterEvent> events,
+               std::span<const PreparedMidiEvent> midiEvents) noexcept override {
+    if (!left || !right || frames > maximum_ || events.size() > kMaximumParameterEvents ||
+        midiEvents.size() > kMaximumMidiEvents) return faultOnce();
     // The fixed 4096-frame dry delay makes startup and an unhealthy worker
     // deterministic.  No branch below waits, allocates, calls the OS, or
     // invokes VST3 from the audio thread.
@@ -156,11 +158,25 @@ public:
       request.sampleTime = sampleTime;
       request.frames = frames;
       request.eventCount = static_cast<uint32_t>(events.size());
+      bool valid = true;
       for (size_t i = 0; i < events.size(); ++i) {
         const auto &event = events[i];
-        if (event.sampleOffset >= frames || event.normalizedValue < 0 || event.normalizedValue > 1) { markFault(); break; }
+        if (event.sampleOffset >= frames || event.normalizedValue < 0 || event.normalizedValue > 1) { markFault(); valid = false; break; }
         request.events[i] = {event.parameterID, event.sampleOffset, event.normalizedValue, 0};
       }
+      if (valid) {
+        // The MIDI lane is bounded and validated exactly like automation:
+        // any out-of-block offset faults the link instead of dropping the
+        // note, so a silent note can never masquerade as a working graph.
+        for (size_t i = 0; i < midiEvents.size(); ++i) {
+          const auto &event = midiEvents[i];
+          if (event.sampleOffset >= frames || event.channel > 15 || event.pitch > 127 ||
+              event.velocity > 127) { markFault(); valid = false; break; }
+          request.midiEvents[i] = {event.sampleOffset, event.channel, event.pitch, event.velocity,
+                                   static_cast<uint8_t>(event.noteOff ? 1 : 0), 0};
+        }
+      }
+      request.midiEventCount = valid ? static_cast<uint32_t>(midiEvents.size()) : 0;
       if (healthy_.load(std::memory_order_relaxed)) {
         // Input needs no immediate output: worker consumes this copy after the
         // release publication and the host is already reading the dry delay.

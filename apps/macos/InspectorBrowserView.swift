@@ -25,6 +25,13 @@ struct InspectorClipModel: Equatable {
     var fadeOutFrames: UInt64 = 0
 }
 
+struct InspectorMidiModel: Equatable {
+    var clips: [PianoRollClipModel] = []
+    var selectedClip: Int?
+    var notes: [PianoRollNote] = []
+    var editable = false
+}
+
 struct InspectorBrowserItem: Equatable, Identifiable {
     var id = UUID()
     var title = ""
@@ -36,6 +43,7 @@ struct InspectorBrowserItem: Equatable, Identifiable {
 final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var channel: InspectorChannelModel? { didSet { reloadInspector() } }
     var clip: InspectorClipModel? { didSet { reloadInspector() } }
+    var midi: InspectorMidiModel? { didSet { applyMidi() } }
     var audioItems: [InspectorBrowserItem] = [] { didSet { reloadBrowser() } }
     var pluginItems: [InspectorBrowserItem] = [] { didSet { reloadBrowser() } }
     var onChannelChange: ((Double, Double) -> Void)?
@@ -43,6 +51,10 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onChannelMute: ((Bool) -> Void)?
     var onChannelSolo: ((Bool) -> Void)?
     var onClipChange: ((InspectorClipModel) -> Void)?
+    var onMidiClipSelect: ((Int) -> Void)?
+    var onMidiNotesChange: (([PianoRollNote]) -> Void)?
+    var onMidiAddNote: (() -> Void)?
+    var onMidiRemoveNote: ((Int) -> Void)?
     var onBrowserSelect: ((InspectorBrowserKind, InspectorBrowserItem?) -> Void)?
     var onAddFolder: (() -> Void)?
     var onImport: (() -> Void)?
@@ -77,6 +89,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let insertSummary = NSTextField(wrappingLabelWithString: "")
     private let sendSummary = NSTextField(wrappingLabelWithString: "")
     private let clipForm = NSStackView()
+    private let midiEditor = PianoRollEditorView()
     private var fields: [NSTextField] = []
     private var isAudioPreviewPlaying = false
     private var previewedAudioID: UUID?
@@ -117,7 +130,12 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         let buttons=NSStackView(views:[mute,solo]);buttons.spacing=6;buttons.alignment = .centerY
         clipForm.orientation = .vertical;clipForm.alignment = .width;clipForm.spacing=6
         for(index,title) in ["Start · sec","Source offset · sec","Length · sec","Fade in · sec","Fade out · sec"].enumerated(){let field=NSTextField(string:"0.000");field.tag=index;field.target=self;field.action=#selector(changeClip);fields.append(field);clipForm.addArrangedSubview(row(title,field))}
-        for view in [nameRow,volumeRow,panRow,buttons,insertSummary,sendSummary,clipForm]{inspectorForm.addArrangedSubview(view);view.widthAnchor.constraint(equalTo:inspectorForm.widthAnchor).isActive=true}
+        for view in [nameRow,volumeRow,panRow,buttons,insertSummary,sendSummary,clipForm,midiEditor]{inspectorForm.addArrangedSubview(view);view.widthAnchor.constraint(equalTo:inspectorForm.widthAnchor).isActive=true}
+        midiEditor.isHidden = true
+        midiEditor.onClipSelect = { [weak self] index in self?.onMidiClipSelect?(index) }
+        midiEditor.onNotesChange = { [weak self] notes in self?.onMidiNotesChange?(notes) }
+        midiEditor.onAddNote = { [weak self] in self?.onMidiAddNote?() }
+        midiEditor.onRemoveNote = { [weak self] row in self?.onMidiRemoveNote?(row) }
         search.target = self; search.action = #selector(filterBrowser)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item")); column.title = ""; column.width = 220
         table.addTableColumn(column); table.headerView = nil; table.dataSource = self; table.delegate = self; table.rowHeight = 32
@@ -140,6 +158,18 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         return stack
     }
 
+    private func applyMidi() {
+        guard let midi, !midi.clips.isEmpty else {
+            midiEditor.editorEnabled = false
+            midiEditor.isHidden = true
+            return
+        }
+        midiEditor.isHidden = false
+        midiEditor.editorEnabled = midi.editable
+        midiEditor.clips = midi.clips
+        midiEditor.selectedClip = midi.selectedClip
+        midiEditor.notes = midi.notes
+    }
     private func reloadInspector() {
         guard tabs.selectedSegment == InspectorBrowserTab.inspector.rawValue else { return }
         clearBody();body.isHidden=true;inspectorForm.isHidden=false

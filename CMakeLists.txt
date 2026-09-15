@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(MyDAW VERSION 1.38.0 LANGUAGES C CXX)
+project(MyDAW VERSION 1.40.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -35,7 +35,7 @@ if(APPLE)
   enable_language(OBJCXX)
   target_sources(daw_core PRIVATE engine/audio/clip_resampler.cpp)
   set_property(TARGET daw_core PROPERTY OBJCXX_STANDARD 20)
-  target_sources(daw_core PRIVATE engine/platform/macos/input.cpp engine/platform/macos/output.cpp engine/platform/macos/duplex.cpp engine/platform/macos/storage.mm)
+  target_sources(daw_core PRIVATE engine/platform/macos/input.cpp engine/platform/macos/midi_input.cpp engine/platform/macos/output.cpp engine/platform/macos/duplex.cpp engine/platform/macos/storage.mm)
   target_sources(daw_core PRIVATE engine/platform/macos/effect.mm engine/platform/macos/plugin_parameters.cpp)
   if(EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
     target_sources(daw_core PRIVATE
@@ -68,7 +68,7 @@ if(APPLE)
     target_sources(daw_core PRIVATE engine/audio/vst3_effect_stub.cpp)
   endif()
   set_source_files_properties(engine/platform/macos/storage.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_link_libraries(daw_core PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework Foundation")
+  target_link_libraries(daw_core PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreMIDI" "-framework Foundation")
   # The scanner is intentionally independent from daw_core: it only supervises
   # disposable helper processes and never loads third-party Audio Units itself.
   add_library(daw_au_scanner STATIC engine/platform/macos/au_scanner.cpp engine/platform/macos/au_scan_cache.cpp engine/platform/macos/vst3_scanner.cpp engine/platform/macos/vst3_scan_cache.cpp)
@@ -168,6 +168,10 @@ if(BUILD_TESTING)
   target_include_directories(daw_import_jobs PRIVATE engine)
   target_link_libraries(daw_import_jobs PRIVATE daw_core)
   add_test(NAME background_wav_import COMMAND daw_import_jobs)
+  add_executable(daw_aiff_import_tests tests/aiff_import_tests.cpp)
+  target_include_directories(daw_aiff_import_tests PRIVATE engine)
+  target_link_libraries(daw_aiff_import_tests PRIVATE daw_core)
+  add_test(NAME aiff_import COMMAND daw_aiff_import_tests)
   add_executable(daw_export_tests tests/export_tests.cpp)
   target_include_directories(daw_export_tests PRIVATE engine)
   target_link_libraries(daw_export_tests PRIVATE daw_core)
@@ -193,8 +197,22 @@ if(BUILD_TESTING)
     add_executable(daw_duplex_hardware_smoke tests/duplex_hardware_smoke.cpp)
     target_include_directories(daw_duplex_hardware_smoke PRIVATE engine)
     target_link_libraries(daw_duplex_hardware_smoke PRIVATE daw_core)
-    add_test(NAME macos_audio_browser_preview COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/scripts/test-audio-preview.sh")
-    # Deliberately not in CTest: requires a real output device, never shared CI.
+    # MIDI capture tests are hardware-free by design: the packet parser, the
+    # drop-oldest ring and host-time framing are pure logic, and open() without
+    # a device must reject. Real controller capture stays a manual gate.
+    add_executable(daw_midi_input_tests tests/midi_input_tests.cpp)
+    target_include_directories(daw_midi_input_tests PRIVATE engine)
+    target_link_libraries(daw_midi_input_tests PRIVATE daw_core)
+    add_test(NAME midi_input COMMAND daw_midi_input_tests)
+    # Device-dependent smoke/audition tests are intentionally NOT registered as
+    # CTests: they require a real output/input device and are run manually on a
+    # physical machine (see scripts/test-audio-preview.sh for the AU/VST3 browser
+    # audition, and run daw_hardware_smoke / daw_duplex_hardware_smoke directly).
+    # The shared CI runner is headless and has no audio device, so registering them
+    # would break ctest on GitHub macOS runners.
+    #
+    # Note: daw_hardware_smoke and daw_duplex_hardware_smoke are built above but
+    # deliberately kept out of CTest for the same reason (physical audio gate).
   endif()
   add_executable(daw_core_tests tests/core_tests.cpp)
   target_link_libraries(daw_core_tests PRIVATE daw_core)
@@ -203,4 +221,16 @@ if(BUILD_TESTING)
   add_executable(daw_c_header_test tests/c_header.c)
   target_link_libraries(daw_c_header_test PRIVATE daw_core)
   add_test(NAME pure_c_bridge COMMAND daw_c_header_test)
+  add_executable(daw_dawproject_export_tests tests/dawproject_export_tests.cpp)
+  target_include_directories(daw_dawproject_export_tests PRIVATE engine)
+  target_link_libraries(daw_dawproject_export_tests PRIVATE daw_core)
+  add_test(NAME dawproject_export COMMAND daw_dawproject_export_tests)
+  add_executable(daw_midi_model_tests tests/midi_model_tests.cpp)
+  target_include_directories(daw_midi_model_tests PRIVATE engine)
+  target_link_libraries(daw_midi_model_tests PRIVATE daw_core)
+  add_test(NAME midi_model COMMAND daw_midi_model_tests)
+  add_executable(daw_midi_bridge_tests tests/midi_bridge_tests.cpp)
+  target_include_directories(daw_midi_bridge_tests PRIVATE engine)
+  target_link_libraries(daw_midi_bridge_tests PRIVATE daw_core)
+  add_test(NAME midi_bridge COMMAND daw_midi_bridge_tests)
 endif()

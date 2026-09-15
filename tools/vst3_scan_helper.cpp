@@ -138,8 +138,13 @@ int listModule(const std::string& path) {
     }), candidates.end());
     for (const auto& candidate : candidates) {
         const auto& info = candidate.info;
-        std::printf("%s\t%s\t%s\t%s\t%s\t%s\n", info.ID().toString().c_str(), encode(candidate.modulePath).c_str(),
-                    encode(candidate.moduleFingerprint).c_str(), encode(info.name()).c_str(), encode(info.vendor()).c_str(), encode(info.version()).c_str());
+        // VST3 marks instruments in the sub-category string, not the class
+        // category; the host browser needs the distinction to offer note sinks.
+        const std::string subCategories = info.subCategoriesString();
+        const bool instrument = subCategories.find("Instrument") != std::string::npos;
+        std::printf("%s\t%s\t%s\t%s\t%s\t%s\t%c\n", info.ID().toString().c_str(), encode(candidate.modulePath).c_str(),
+                    encode(candidate.moduleFingerprint).c_str(), encode(info.name()).c_str(), encode(info.vendor()).c_str(), encode(info.version()).c_str(),
+                    instrument ? '1' : '0');
     }
     return 0;
 }

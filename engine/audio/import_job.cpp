@@ -68,6 +68,53 @@ std::shared_ptr<ImportJobResult> startWavImport(std::string path) {
     return result;
 }
 
+std::shared_ptr<ImportJobResult> startAiffImport(std::string path) {
+    if (path.empty()) throw Error("Choose an AIFF file to import");
+    auto permit = tryAcquireBackgroundJob();
+    if (!permit) throw Error("Background job capacity reached");
+    auto result = std::make_shared<ImportJobResult>();
+    std::thread([path = std::move(path), result, permit = std::move(permit)]() mutable {
+        (void)permit;
+        try {
+            ImportControl control{&result->cancel, &result->progress, 0, 100, &setImportPhase, result.get()};
+            uint32_t sourceRate = 0, sourceChannels = 0;
+            uint64_t sourceFrames = 0;
+            result->phase.store(ImportJobPhase::Reading, std::memory_order_release);
+            auto clip = readAiff(path, control, &sourceRate, &sourceChannels, &sourceFrames);
+            checkImportCanceled(control);
+            result->sourceSampleRate.store(sourceRate, std::memory_order_release);
+            result->sourceChannels.store(sourceChannels, std::memory_order_release);
+            result->sourceFrames.store(sourceFrames, std::memory_order_release);
+            result->outputFrames.store(clip->frames(), std::memory_order_release);
+            {
+                std::lock_guard lock(result->publication);
+                if (result->status.load(std::memory_order_acquire) != ImportJobStatus::Running ||
+                    result->cancel.load(std::memory_order_acquire)) throw ImportCanceled{};
+                result->clip = std::move(clip);
+                result->phase.store(ImportJobPhase::Ready, std::memory_order_release);
+                result->status.store(ImportJobStatus::Ready, std::memory_order_release);
+            }
+        } catch (const ImportCanceled&) {
+            ImportJobStatus expected = ImportJobStatus::Running;
+            result->status.compare_exchange_strong(expected, ImportJobStatus::Canceled,
+                                                  std::memory_order_release, std::memory_order_acquire);
+        } catch (const std::exception& error) {
+            if (result->cancel.load(std::memory_order_acquire)) {
+                ImportJobStatus expected = ImportJobStatus::Running;
+                result->status.compare_exchange_strong(expected, ImportJobStatus::Canceled,
+                                                       std::memory_order_release, std::memory_order_acquire);
+            } else publishFailure(*result, error.what());
+        } catch (...) {
+            if (result->cancel.load(std::memory_order_acquire)) {
+                ImportJobStatus expected = ImportJobStatus::Running;
+                result->status.compare_exchange_strong(expected, ImportJobStatus::Canceled,
+                                                       std::memory_order_release, std::memory_order_acquire);
+            } else publishFailure(*result, "Unknown AIFF import error");
+        }
+    }).detach();
+    return result;
+}
+
 void cancelImport(ImportJobResult& result) noexcept {
     std::lock_guard lock(result.publication);
     const auto status = result.status.load(std::memory_order_acquire);

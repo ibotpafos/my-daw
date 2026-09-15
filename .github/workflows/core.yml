@@ -16,6 +16,8 @@ jobs:
         run: cmake --build --preset sanitizers
       - name: Test
         run: ctest --preset sanitizers
+      - name: Docs and contract checks
+        run: python3 scripts/check_docs.py
       - name: Build AppKit prototype
         if: runner.os == 'macOS'
         run: ./scripts/build-macos.sh

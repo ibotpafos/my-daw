@@ -15,6 +15,18 @@ struct PreparedParameterEvent {
   uint32_t sampleOffset = 0;
   float normalizedValue = 0;
 };
+// A channel voice message resolved by the MIDI source to a sample offset in
+// one bounded host block. Like parameter events, its storage belongs to the
+// caller; implementations consume the span synchronously and never retain it.
+// Only note on/off are modeled: pitch and control bend reach plug-ins through
+// a later arc once a note-event-carrying timeline exists.
+struct PreparedMidiEvent {
+  uint32_t sampleOffset = 0;
+  uint8_t channel = 0;
+  uint8_t pitch = 0;
+  uint8_t velocity = 0;
+  bool noteOff = false;
+};
 struct AudioUnitDescriptor {
   uint32_t type = 0, subtype = 0, manufacturer = 0;
   std::string name;
@@ -55,6 +67,8 @@ public:
   virtual bool process(float *left, float *right, uint32_t frames,
                        uint64_t sampleTime,
                        std::span<const PreparedParameterEvent> parameterEvents =
+                           {},
+                       std::span<const PreparedMidiEvent> midiEvents =
                            {}) noexcept = 0;
   // The initialized instance's algorithmic delay at the configured sample rate.
   // This is queried once on the control thread and is safe to cache for RT use.

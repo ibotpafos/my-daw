@@ -23,7 +23,7 @@
 | EDT-02 | S1 | Comp диапазонов из take lanes | Границы и fades редактируемы; оригинальные takes сохранены |
 | MIX-01 | S0 | Gain, pan, mute, solo, master | Предсказуемое поведение mono/stereo; отсутствие клиппинга не маскируется нормализацией |
 | MIX-02 | S1 | Audio bus, pre/post-fader send | Циклическая связь отклоняется до изменения графа |
-| FX-01 | S0 | Встроенные gain/pan и простой EQ | Тесты DSP и отсутствие RT-аллокаций в собственном коде |
+| FX-01 | S0 | Встроенные gain/pan; тембр/эффекты — через AU/VST3 | Тесты DSP и отсутствие RT-аллокаций в собственном коде; решение владельца: собственные эффекты не пишем |
 | FX-02 | S1 | AU effects, arm64 | Сканирование, editor, state save, automation и latency проверены по матрице |
 | AUT-01 | S1 | Read/write volume и pan automation | События имеют sample offset; один drag — одна Undo-группа |
 | PRJ-01 | S0 | Save, reopen, Save As | Пути переносимы; копия открывается при недоступном оригинале |

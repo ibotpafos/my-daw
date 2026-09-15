@@ -44,9 +44,19 @@ constexpr size_t kMaxProjectPluginInserts = 64;
 constexpr size_t kMaxPluginParameterAutomationLanes = 128;
 constexpr size_t kMaxPluginParameterAutomationPoints = 2048;
 constexpr size_t kMaxProjectPluginParameterAutomationPoints = 65536;
+// MIDI-1 data layer: notes are stored clip-relative on the 48 kHz project
+// timeline. The lane is an editor row owned by the UI; the domain only keeps
+// it non-negative. Rendering, delivery to instruments, and UI arrive in later
+// arcs, so nothing consumes these vectors yet.
+constexpr uint64_t kMaxMidiFrame = 1ULL << 40;
+constexpr uint64_t kMaxMidiNoteLength = 10ULL * 48000;
+constexpr size_t kMaxMidiClipsPerTrack = 64;
+constexpr size_t kMaxMidiNotesPerProject = 65536;
+struct MidiNote { uint64_t start=0, length=0; uint8_t pitch=0, channel=0, velocity=0; bool operator==(const MidiNote&) const = default; };
+struct MidiClip { uint64_t start=0, length=0; std::vector<MidiNote> notes; int track=-1; bool operator==(const MidiClip&) const = default; };
 struct PluginInsert { uint64_t id=0; uint32_t type=0, subtype=0, manufacturer=0; std::string name; bool bypassed=false; uint32_t latencyFrames=0; std::vector<uint8_t> state; std::vector<PluginParameterAutomationLane> parameterAutomation; PluginHostingMode hostingMode=PluginHostingMode::InProcess; bool operator==(const PluginInsert&) const = default; };
 bool isVst3PluginInsert(const PluginInsert& plugin) noexcept;
-struct Track { uint64_t id; std::string name; double gain; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; bool operator==(const Track&) const = default; };
+struct Track { uint64_t id; std::string name; double gain; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
 struct Bus { uint64_t id=0; std::string name; double gain=0; double pan=0; bool muted=false; uint64_t outputBus=0; std::vector<AutomationPoint> gainAutomation; std::vector<PluginInsert> inserts; bool operator==(const Bus&) const = default; };
 struct State { uint64_t revision = 0; uint64_t nextID = 1; std::vector<Track> tracks; double masterGain=0; std::vector<AutomationPoint> masterGainAutomation; std::vector<Bus> buses; std::vector<PluginInsert> masterInserts; };
 void validateName(const std::string& name);
@@ -136,6 +146,15 @@ public:
     void deleteClip(uint64_t id, uint32_t index, uint64_t expected);
     void setClipFades(uint64_t id, uint32_t index, uint64_t fadeIn, uint64_t fadeOut, uint64_t expected);
     void setCrossfade(uint64_t id,uint32_t leftIndex,uint64_t duration,uint64_t expected);
+    // MIDI clip commands follow the audio-clip convention: positional vector
+    // index, expected revision, silent no-op when the target value is already
+    // identical, and one snapshot-based undo entry per committed command.
+    void addMidiClip(uint64_t trackID,MidiClip clip,uint64_t expected);
+    void removeMidiClip(uint64_t trackID,uint32_t index,uint64_t expected);
+    void setMidiNotes(uint64_t trackID,uint32_t index,std::vector<MidiNote> notes,uint64_t expected);
+    void moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected);
+    void trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t expected);
+    void splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected);
     void addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip>,uint64_t start,uint64_t expected);
     void addTakes(uint64_t id,std::vector<Take> takes,uint64_t expected);
     void compRange(uint64_t id,uint32_t take,uint64_t start,uint64_t length,uint64_t expected);

@@ -32,6 +32,7 @@ struct ImportJobResult {
 };
 
 std::shared_ptr<ImportJobResult> startWavImport(std::string path);
+std::shared_ptr<ImportJobResult> startAiffImport(std::string path);
 // Locks publication and cancels a job that has not been applied.  A bridge
 // applying a Ready Clip must hold publication across its revision check,
 // domain mutation, and Applied transition so cancel cannot race that commit.

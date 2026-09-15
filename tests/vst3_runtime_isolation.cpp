@@ -40,13 +40,27 @@ int helper(const char *name) {
     if (mode && std::strcmp(mode, "crash") == 0) _exit(99);
     if (mode && std::strcmp(mode, "no-reply") == 0) { last = sequence; continue; }
     const auto &input = mapping->request; auto &output = mapping->reply;
-    if (input.sequence != sequence || input.frames > kMaximumFrames || input.eventCount > kMaximumParameterEvents) return 12;
+    if (input.sequence != sequence || input.frames > kMaximumFrames || input.eventCount > kMaximumParameterEvents ||
+        input.midiEventCount > kMaximumMidiEvents) return 12;
     output.sequence = mode && std::strcmp(mode, "corrupt") == 0 ? sequence + 1 : sequence;
     output.sampleTime = input.sampleTime; output.frames = input.frames;
     for (uint32_t i = 0; i < input.frames; ++i) { output.left[i] = input.left[i] * 2; output.right[i] = input.right[i] * 2; }
     for (uint32_t i = 0; i < input.eventCount; ++i)
       if (input.events[i].parameterID == 77 && input.events[i].sampleOffset < input.frames)
         output.left[input.events[i].sampleOffset] += 10;
+    // The FAKE plug-in echoes received MIDI deterministically: each event
+    // adds 1.0 to the left channel at its exact sample offset (frame-accurate
+    // delivery, event counting) and writes a mixed-radix code of the full
+    // header to the right channel. Maximum code 13,083,127 stays below 2^24,
+    // so float32 carries it exactly and every field is proven unswapped.
+    if (mode && std::strcmp(mode, "midi") == 0)
+      for (uint32_t i = 0; i < input.midiEventCount; ++i) {
+        const auto &event = input.midiEvents[i];
+        if (event.sampleOffset >= input.frames) return 12;
+        output.left[event.sampleOffset] += 1.0f;
+        output.right[event.sampleOffset] += static_cast<float>(
+            event.pitch + 200u * event.channel + 40000u * event.velocity + 8000000u * event.noteOff);
+      }
     mapping->replySequence.store(sequence, std::memory_order_release); last = sequence;
   }
 }
@@ -137,6 +151,45 @@ void expectCorruptReply() {
   CHECK(status.state == PreparedEffectRuntimeState::DryFallback && status.faultCode == 4);
   effect.reset(); assertReaped();
 }
+void expectMidiDelivery() {
+  setenv("MY_DAW_VST3_TEST_MODE", "midi", 1);
+  auto effect = prepareVst3OutOfProcessEffect(isolated());
+  std::array<float, kMaximumFrames> left{}, right{}; block(left, right);
+  const std::array<PreparedMidiEvent, 2> events{{
+      {0U, 2U, 60U, 100U, false},
+      {64U, 2U, 60U, 77U, true}}};
+  CHECK(effect->process(left.data(), right.data(), kMaximumFrames, 0, {},
+                        std::span<const PreparedMidiEvent>(events.data(), events.size())));
+  std::this_thread::sleep_for(std::chrono::milliseconds(10)); block(left, right);
+  CHECK(effect->process(left.data(), right.data(), kMaximumFrames, kMaximumFrames));
+  // One echo per event: the event counter sees exactly two deliveries and
+  // each lands on its exact sample offset with every header field intact.
+  uint32_t delivered = 0;
+  for (uint32_t i = 0; i < kMaximumFrames; ++i) delivered += left[i] == 1.0f ? 1U : 0U;
+  CHECK(delivered == 2);
+  CHECK(std::fabs(left[0] - 1.0f) < 0.0001f && std::fabs(left[64] - 1.0f) < 0.0001f);
+  CHECK(std::fabs(right[0] - 4000460.0f) < 0.5f);   // noteOn: pitch 60, channel 2, velocity 100
+  CHECK(std::fabs(right[64] - 11080460.0f) < 0.5f); // noteOff adds the 8000000 release marker
+  const auto status = effect->runtimeStatus();
+  CHECK(status.state == PreparedEffectRuntimeState::ActiveIsolated);
+  effect.reset(); assertReaped();
+  // Over-capacity and out-of-block MIDI must fail the link closed, never drop
+  // notes or produce a silently short reply.
+  auto guarded = prepareVst3OutOfProcessEffect(isolated());
+  std::array<PreparedMidiEvent, kMaximumMidiEvents + 1> overflow{};
+  block(left, right);
+  CHECK(!guarded->process(left.data(), right.data(), kMaximumFrames, 0, {},
+                          std::span<const PreparedMidiEvent>(overflow.data(), overflow.size())));
+  CHECK(guarded->runtimeStatus().state == PreparedEffectRuntimeState::DryFallback);
+  guarded.reset(); assertReaped();
+  auto shorty = prepareVst3OutOfProcessEffect(isolated());
+  const PreparedMidiEvent pastEnd{kMaximumFrames, 0U, 60U, 90U, false};
+  block(left, right);
+  CHECK(!shorty->process(left.data(), right.data(), kMaximumFrames, 0, {},
+                         std::span<const PreparedMidiEvent>(&pastEnd, 1)));
+  CHECK(shorty->runtimeStatus().faultCode == 3);
+  shorty.reset(); assertReaped();
+}
 void expectControl() {
   setenv("MY_DAW_VST3_TEST_MODE", "control-normal", 1); auto plugin = isolated(); plugin.state = {1};
   const auto parameters = remoteVst3Parameters(plugin); CHECK(parameters.size() == 1); CHECK(parameters[0].id == 77 && parameters[0].title == "Gain");
@@ -153,5 +206,5 @@ int main(int argc, char **argv) {
   if (argc == 3 && std::strcmp(argv[1], "--shared-memory") == 0) return helper(argv[2]);
   if (argc == 3 && std::strcmp(argv[1], "--control-shared-memory") == 0) return controlHelper(argv[2]);
   CHECK(argc >= 1); setVst3RuntimeHelperPathForTesting(argv[0]);
-  expectNormal(); expectNoReply(); expectCorruptReply(); expectCrash(); expectControl();
+  expectNormal(); expectNoReply(); expectCorruptReply(); expectCrash(); expectMidiDelivery(); expectControl();
 }

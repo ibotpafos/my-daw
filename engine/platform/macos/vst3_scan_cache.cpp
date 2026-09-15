@@ -16,7 +16,7 @@ namespace {
 constexpr size_t kMaximumCacheBytes = 1024 * 1024;
 constexpr size_t kMaximumEntries = 2048;
 constexpr size_t kMaximumFieldBytes = 4096;
-constexpr std::string_view kHeader = "MYDAW_VST3_SCAN_CACHE\t1";
+constexpr std::string_view kHeader = "MYDAW_VST3_SCAN_CACHE\t2";
 
 bool safeText(std::string_view value, size_t maximum, bool required = false) {
     if (required && value.empty()) return false;
@@ -59,14 +59,14 @@ std::optional<Vst3ScanCache> readVst3ScanCache(const std::string& path, std::str
     std::istringstream lines(content); std::string line; if (!std::getline(lines, line) || line != kHeader) { error = "VST3 cache header is invalid"; return std::nullopt; }
     Vst3ScanCache cache; if (!std::getline(lines, line)) { error = "VST3 cache timestamp is missing"; return std::nullopt; } const auto timestamp = fields(line); if (timestamp.size() != 2 || timestamp[0] != "created" || !parseUnsigned(timestamp[1], cache.createdAtUnixSeconds)) { error = "VST3 cache timestamp is invalid"; return std::nullopt; }
     std::set<std::string> keys;
-    while (std::getline(lines, line)) { const auto values = fields(line); if (line.empty() || values.size() != 10 || values[0] != "entry" || (values[1] != "available" && values[1] != "quarantined")) { error = "VST3 cache record is invalid"; return std::nullopt; } Vst3ScanCacheEntry entry; entry.available = values[1] == "available"; entry.plugin.classId.assign(values[2]); entry.plugin.moduleFingerprint.assign(values[3]); if (!parseUnsigned(values[4], entry.scannedAtUnixSeconds) || !decode(values[5], entry.plugin.modulePath) || !decode(values[6], entry.plugin.name) || !decode(values[7], entry.plugin.vendor) || !decode(values[8], entry.plugin.version) || !decode(values[9], entry.quarantineReason) || !validEntry(entry) || cache.entries.size() >= kMaximumEntries || !keys.insert(key(entry.plugin)).second) { error = "VST3 cache record fields are invalid"; return std::nullopt; } cache.entries.push_back(std::move(entry)); }
+    while (std::getline(lines, line)) { const auto values = fields(line); if (line.empty() || values.size() != 11 || values[0] != "entry" || (values[1] != "available" && values[1] != "quarantined")) { error = "VST3 cache record is invalid"; return std::nullopt; } Vst3ScanCacheEntry entry; entry.available = values[1] == "available"; entry.plugin.instrument = values[10] == "1"; entry.plugin.classId.assign(values[2]); entry.plugin.moduleFingerprint.assign(values[3]); if (!parseUnsigned(values[4], entry.scannedAtUnixSeconds) || !decode(values[5], entry.plugin.modulePath) || !decode(values[6], entry.plugin.name) || !decode(values[7], entry.plugin.vendor) || !decode(values[8], entry.plugin.version) || !decode(values[9], entry.quarantineReason) || !validEntry(entry) || cache.entries.size() >= kMaximumEntries || !keys.insert(key(entry.plugin)).second) { error = "VST3 cache record fields are invalid"; return std::nullopt; } cache.entries.push_back(std::move(entry)); }
     return cache;
 }
 
 bool writeVst3ScanCache(const Vst3ScanCache& cache, const std::string& path, std::string& error) {
     error.clear(); if (path.empty()) { error = "VST3 cache path is empty"; return false; } if (cache.entries.size() > kMaximumEntries) { error = "VST3 cache has too many records"; return false; }
     std::set<std::string> keys; std::ostringstream output; output << kHeader << '\n' << "created\t" << cache.createdAtUnixSeconds << '\n';
-    for (const auto& entry : cache.entries) { if (!validEntry(entry) || !keys.insert(key(entry.plugin)).second) { error = "VST3 cache contains invalid or duplicate records"; return false; } output << "entry\t" << (entry.available ? "available" : "quarantined") << '\t' << entry.plugin.classId << '\t' << entry.plugin.moduleFingerprint << '\t' << entry.scannedAtUnixSeconds << '\t' << encode(entry.plugin.modulePath) << '\t' << encode(entry.plugin.name) << '\t' << encode(entry.plugin.vendor) << '\t' << encode(entry.plugin.version) << '\t' << encode(entry.quarantineReason) << '\n'; }
+    for (const auto& entry : cache.entries) { if (!validEntry(entry) || !keys.insert(key(entry.plugin)).second) { error = "VST3 cache contains invalid or duplicate records"; return false; } output << "entry\t" << (entry.available ? "available" : "quarantined") << '\t' << entry.plugin.classId << '\t' << entry.plugin.moduleFingerprint << '\t' << entry.scannedAtUnixSeconds << '\t' << encode(entry.plugin.modulePath) << '\t' << encode(entry.plugin.name) << '\t' << encode(entry.plugin.vendor) << '\t' << encode(entry.plugin.version) << '\t' << encode(entry.quarantineReason) << '\t' << (entry.plugin.instrument ? "1" : "0") << '\n'; }
     const auto content = output.str(); if (content.size() > kMaximumCacheBytes) { error = "VST3 cache serialization exceeds 1 MiB"; return false; }
     std::string temporary = path + ".tmp.XXXXXX";
     std::vector<char> temporaryBuffer(temporary.begin(), temporary.end());

@@ -87,7 +87,7 @@ std::vector<WorkflowTrackSummary> workflowSummary(const State& state){
 void validate(const State& state) {
     if (state.revision >= static_cast<uint64_t>(INT64_MAX) || state.nextID == 0 || state.nextID >= static_cast<uint64_t>(INT64_MAX)) throw Error("Counter limit reached");
     if (state.tracks.size() > 256) throw Error("Draft supports at most 256 tracks");
-    std::set<uint64_t> ids; size_t audioCount=0, audioAssets=0,audioBytes=0;
+    std::set<uint64_t> ids; size_t audioCount=0, audioAssets=0,audioBytes=0,midiNotes=0;
     for (const auto& t : state.tracks) {
         validateName(t.name);
         if(t.audio) {
@@ -117,6 +117,26 @@ void validate(const State& state) {
         if (!std::isfinite(t.pan) || t.pan < -1 || t.pan > 1) throw Error("Pan outside -1…1");
         validateAutomation(t.volumeAutomation,-120,24,"Track volume");
         validateAutomation(t.panAutomation,-1,1,"Track pan");
+        if(t.midiClips.size()>kMaxMidiClipsPerTrack)throw Error("Track supports at most 64 MIDI clips");
+        for(size_t clipIndex=0;clipIndex<t.midiClips.size();++clipIndex) {
+            const auto& clip=t.midiClips[clipIndex];
+            if(clip.track<0)throw Error("MIDI clip lane must be non-negative");
+            if(!clip.length||clip.start>kMaxMidiFrame||clip.length>kMaxMidiFrame)throw Error("MIDI clip bounds exceed the project timeline limit");
+            const auto clipEnd=clip.start+clip.length;
+            for(size_t other=0;other<clipIndex;++other){const auto& previous=t.midiClips[other];if(clip.start<previous.start+previous.length&&previous.start<clipEnd)throw Error("MIDI clip overlap is not allowed");}
+            uint64_t noteEnd=0;
+            for(const auto& note:clip.notes) {
+                if(midiNotes==kMaxMidiNotesPerProject)throw Error("Project supports at most 65536 MIDI notes");
+                ++midiNotes;
+                if(note.pitch>127)throw Error("MIDI pitch outside 0…127");
+                if(note.channel>15)throw Error("MIDI channel outside 0…15");
+                if(note.velocity<1||note.velocity>127)throw Error("MIDI velocity outside 1…127");
+                if(!note.length||note.length>kMaxMidiNoteLength)throw Error("MIDI note length outside 1…480000 frames");
+                if(note.start>clip.length||note.length>clip.length-note.start)throw Error("MIDI notes must fit inside their clip");
+                noteEnd=std::max(noteEnd,note.start+note.length);
+            }
+            if(noteEnd>clip.length)throw Error("MIDI clip length is shorter than its notes");
+        }
     }
     if(!std::isfinite(state.masterGain)||state.masterGain < -120||state.masterGain > 24)throw Error("Master gain outside -120…24 dB");
     validateAutomation(state.masterGainAutomation,-120,24,"Master gain");
@@ -223,7 +243,7 @@ void Session::commit(State next) {
 }
 void Session::add(const std::string& name, uint64_t expected) {
     check(expected); State next = current;
-    next.tracks.push_back({next.nextID++, name, 0, {}, {},0,false,false,0,{},0,{},{},{},{}}); commit(std::move(next));
+    next.tracks.push_back({next.nextID++, name, 0, {}, {},0,false,false,0,{},0,{},{},{},{},{}}); commit(std::move(next));
 }
 void Session::removeTrack(uint64_t id, uint64_t expected) {
     check(expected);
@@ -256,7 +276,7 @@ void Session::import(const std::string& name, std::shared_ptr<const Clip> clip, 
 }
 void Session::importAt(const std::string& name, std::shared_ptr<const Clip> clip, uint64_t start, uint64_t expected) {
     check(expected); if(!clip) throw Error("Missing clip");
-    auto frames=clip->frames(); State next=current; next.tracks.push_back({next.nextID++,name,0,std::move(clip),{{start,0,frames,0,0}},0,false,false,start,{},0,{},{},{},{}});commit(std::move(next));
+    auto frames=clip->frames(); State next=current; next.tracks.push_back({next.nextID++,name,0,std::move(clip),{{start,0,frames,0,0}},0,false,false,start,{},0,{},{},{},{},{}});commit(std::move(next));
 }
 void Session::rename(uint64_t id, const std::string& name, uint64_t expected) {
     check(expected); State next = current;
@@ -503,6 +523,64 @@ void Session::setCrossfade(uint64_t id,uint32_t leftIndex,uint64_t duration,uint
         if(left.fadeIn+duration>left.length||right.fadeOut+duration>right.length+duration)throw Error("Crossfade exceeds existing fades");
         right.start-=duration;right.sourceOffset-=duration;right.length+=duration;left.fadeOut=duration;right.fadeIn=duration;
     }
+    commit(std::move(next));
+}
+namespace {
+struct TrackScope { std::vector<Track>::iterator track; };
+TrackScope findMidiTrack(State& next,uint64_t trackID,uint32_t index) {
+    auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[trackID](const auto& t){return t.id==trackID;});
+    if(it==next.tracks.end()||index>=it->midiClips.size())throw Error("MIDI clip not found");
+    return {it};
+}
+}
+void Session::addMidiClip(uint64_t trackID,MidiClip clip,uint64_t expected) {
+    check(expected); State next=current;
+    auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[trackID](const auto& t){return t.id==trackID;});
+    if(it==next.tracks.end())throw Error("Track not found");
+    it->midiClips.push_back(std::move(clip)); commit(std::move(next));
+}
+void Session::removeMidiClip(uint64_t trackID,uint32_t index,uint64_t expected) {
+    check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
+    scope.track->midiClips.erase(scope.track->midiClips.begin()+index); commit(std::move(next));
+}
+void Session::setMidiNotes(uint64_t trackID,uint32_t index,std::vector<MidiNote> notes,uint64_t expected) {
+    check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
+    auto& clip=scope.track->midiClips[index]; if(clip.notes==notes)return;
+    clip.notes=std::move(notes); commit(std::move(next));
+}
+void Session::moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected) {
+    check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
+    auto& clip=scope.track->midiClips[index]; if(clip.start==newStart)return;
+    clip.start=newStart; commit(std::move(next));
+}
+void Session::trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t expected) {
+    check(expected); if(!newLength||newStart>kMaxMidiFrame||newLength>kMaxMidiFrame)throw Error("MIDI clip bounds exceed the project timeline limit");
+    State next=current; auto scope=findMidiTrack(next,trackID,index);
+    auto& clip=scope.track->midiClips[index]; const auto oldStart=clip.start;
+    if(oldStart==newStart&&clip.length==newLength)return;
+    // Notes are clip-relative: growing the window keeps every note but shifts
+    // its start; shrinking deletes only notes that no longer fit whole.
+    std::vector<MidiNote> kept; kept.reserve(clip.notes.size());
+    for(const auto& note:clip.notes) {
+        const auto absolute=oldStart+note.start, absoluteEnd=absolute+note.length;
+        if(absolute<newStart||absoluteEnd>newStart+newLength)continue;
+        auto moved=note; moved.start=absolute-newStart; kept.push_back(moved);
+    }
+    clip={newStart,newLength,std::move(kept),clip.track}; commit(std::move(next));
+}
+void Session::splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected) {
+    check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
+    const auto original=scope.track->midiClips[index];
+    if(atFrame<=original.start||atFrame>=original.start+original.length)throw Error("Split position must be inside the clip");
+    const auto leftLength=atFrame-original.start, rightLength=original.start+original.length-atFrame;
+    std::vector<MidiNote> left, right; left.reserve(original.notes.size()); right.reserve(original.notes.size());
+    for(const auto& note:original.notes) {
+        if(note.start+note.length<=leftLength)left.push_back(note);
+        else if(note.start>=leftLength){auto moved=note;moved.start-=leftLength;right.push_back(moved);}
+        else throw Error("A MIDI note cannot cross the split position");
+    }
+    scope.track->midiClips[index]={original.start,leftLength,std::move(left),original.track};
+    scope.track->midiClips.insert(scope.track->midiClips.begin()+index+1,{atFrame,rightLength,std::move(right),original.track});
     commit(std::move(next));
 }
 void Session::addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip> clip,uint64_t start,uint64_t expected){std::vector<Take> additions;additions.push_back({name,start,std::move(clip)});addTakes(id,std::move(additions),expected);}

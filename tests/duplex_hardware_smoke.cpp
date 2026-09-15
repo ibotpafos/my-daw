@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <thread>
 #include <unistd.h>
 
@@ -15,4 +16,16 @@ int main(){try{
     auto captured=duplex->stop();if(!captured->frames())throw daw::Error("Duplex capture is empty");duplex->discardRecovery();
     std::cout<<"PASS: one AUHAL callback advanced loop playback and mono capture on the same device. Not a latency or listening test.\n";
     return 0;
-}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
+}catch(const std::exception& error){
+    const std::string message=error.what();
+    // A separate input/output device (or wrong sample rate) is a hardware
+    // topology gate, not a code regression: report SKIP instead of FAIL so the
+    // manual smoke stays meaningful on a typical MacBook without an aggregate device.
+    if(message.find("requires one input/output device")!=std::string::npos||
+       message.find("48 kHz in Audio MIDI Setup")!=std::string::npos){
+        std::cout<<"SKIP: "<<message<<'\n';
+        return 0;
+    }
+    std::cerr<<message<<'\n';
+    return 1;
+}}

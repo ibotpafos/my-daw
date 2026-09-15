@@ -170,25 +170,25 @@ extension DraftApp {
             return
         }
         guard explicitly || revision == importBaseRevision else {
-            resolveImportButton.title = "＋ WAV"
-            resolveImportButton.toolTip = "Добавить готовый WAV в текущую ревизию проекта"
-            resolveImportButton.setAccessibilityLabel("Добавить готовый WAV в текущую ревизию проекта")
+            resolveImportButton.title = "＋ WAV/AIFF"
+            resolveImportButton.toolTip = "Добавить готовый WAV/AIFF в текущую ревизию проекта"
+            resolveImportButton.setAccessibilityLabel("Добавить готовый WAV/AIFF в текущую ревизию проекта")
             resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
-            setImportMessage("WAV готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
+            setImportMessage("WAV/AIFF готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
             updateStorageStatus()
             return
         }
         guard check(daw_apply_import(session, job, revision)) else {
             setImportMessage("Не удалось добавить готовый WAV. Можно повторить или отменить импорт.", duration: .infinity)
             resolveImportButton.title = "Повторить"
-            resolveImportButton.toolTip = "Повторить добавление готового WAV"
-            resolveImportButton.setAccessibilityLabel("Повторить добавление готового WAV")
+            resolveImportButton.toolTip = "Повторить добавление готового WAV/AIFF"
+            resolveImportButton.setAccessibilityLabel("Повторить добавление готового WAV/AIFF")
             resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
             updateStorageStatus()
             return
         }
         releaseImportJob(cancel: false)
-        setImportMessage("WAV добавлен в проект")
+        setImportMessage("WAV/AIFF добавлен в проект")
         selectAppliedImport(intent)
         updateStorageStatus()
     }
@@ -196,7 +196,7 @@ extension DraftApp {
     @objc func cancelImport() {
         guard importJob != nil else { return }
         cancelImportButton.isEnabled = false
-        setImportMessage("Отмена импорта WAV…", duration: .infinity)
+        setImportMessage("Отмена импорта WAV/AIFF…", duration: .infinity)
         if let job = importJob { daw_cancel_import(job) }
         updateStorageStatus()
     }
@@ -211,23 +211,23 @@ extension DraftApp {
         case Int32(DAW_IMPORT_READY):
             if revision == result.base_revision && importSession == session { applyReadyImport(explicitly: false) }
             else {
-                resolveImportButton.title = "＋ WAV"
-                resolveImportButton.toolTip = "Добавить готовый WAV в текущую ревизию проекта"
-                resolveImportButton.setAccessibilityLabel("Добавить готовый WAV в текущую ревизию проекта")
+                resolveImportButton.title = "＋ WAV/AIFF"
+                resolveImportButton.toolTip = "Добавить готовый WAV/AIFF/AIFF в текущую ревизию проекта"
+                resolveImportButton.setAccessibilityLabel("Добавить готовый WAV/AIFF/AIFF в текущую ревизию проекта")
                 resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
-                setImportMessage("WAV готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
+                setImportMessage("WAV/AIFF готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
             }
         case Int32(DAW_IMPORT_APPLIED):
             // UI releases immediately after its own successful apply. This branch
             // keeps the bridge contract safe if a future caller applies elsewhere.
-            releaseImportJob(cancel: false); setImportMessage("WAV добавлен в проект")
+            releaseImportJob(cancel: false); setImportMessage("WAV/AIFF добавлен в проект")
         case Int32(DAW_IMPORT_CANCELED):
-            releaseImportJob(cancel: false); setImportMessage("Импорт WAV отменён")
+            releaseImportJob(cancel: false); setImportMessage("Импорт WAV/AIFF отменён")
         case Int32(DAW_IMPORT_FAILED):
             let error = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
-            releaseImportJob(cancel: false); setImportMessage("Ошибка импорта WAV: \(error.isEmpty ? "неизвестная ошибка" : error)")
+            releaseImportJob(cancel: false); setImportMessage("Ошибка импорта WAV/AIFF: \(error.isEmpty ? "неизвестная ошибка" : error)")
         default:
-            releaseImportJob(cancel: true); setImportMessage("Импорт WAV остановлен из-за неизвестного состояния")
+            releaseImportJob(cancel: true); setImportMessage("Импорт WAV/AIFF остановлен из-за неизвестного состояния")
         }
     }
     func beginSave(to url: URL, completion: (() -> Void)? = nil) {
@@ -436,12 +436,12 @@ extension DraftApp {
     func updateStorageStatus() {
         if importJob != nil, let result = importStatus {
             let percent = min(100, max(0, Int(result.progress)))
-            status.stringValue = "Импорт WAV: \(percent)% · \(importPhaseText(result.phase)) · можно продолжать работу"
-            status.setAccessibilityLabel("Статус импорта WAV")
+            status.stringValue = "Импорт WAV/AIFF: \(percent)% · \(importPhaseText(result.phase)) · можно продолжать работу"
+            status.setAccessibilityLabel("Статус импорта WAV/AIFF")
             status.setAccessibilityValue(status.stringValue)
         } else if let importMessage, Date() < importMessageUntil {
             status.stringValue = importMessage
-            status.setAccessibilityLabel("Статус импорта WAV")
+            status.setAccessibilityLabel("Статус импорта WAV/AIFF")
             status.setAccessibilityValue(status.stringValue)
         } else if let job = exportJob {
             var result = daw_export_status(); result.struct_size = UInt32(MemoryLayout<daw_export_status>.size)

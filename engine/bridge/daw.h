@@ -186,6 +186,8 @@ typedef struct {
  * informational and a failed optimistic apply leaves a ready job retryable. */
 daw_import_job* daw_begin_import_wav(daw_session*,const char* path,const char* name,uint64_t base_revision);
 daw_import_job* daw_begin_import_take_wav(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t base_revision);
+daw_import_job* daw_begin_import_aiff(daw_session*,const char* path,const char* name,uint64_t base_revision);
+daw_import_job* daw_begin_import_take_aiff(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t base_revision);
 int daw_poll_import(daw_import_job*,daw_import_status*);
 void daw_cancel_import(daw_import_job*);
 int daw_apply_import(daw_session*,daw_import_job*,uint64_t expected_revision);
@@ -193,6 +195,8 @@ int daw_apply_import(daw_session*,daw_import_job*,uint64_t expected_revision);
 void daw_release_import(daw_import_job*);
 int daw_import_wav(daw_session*, const char* path, const char* name, uint64_t expected_revision);
 int daw_import_take_wav(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t expected_revision);
+int daw_import_aiff(daw_session*, const char* path, const char* name, uint64_t expected_revision);
+int daw_import_take_aiff(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t expected_revision);
 int daw_get_take(daw_session*,uint64_t track_id,uint32_t take_index,daw_take*);
 int daw_get_take_waveform(daw_session*,uint64_t track_id,uint32_t take_index,float* peaks,uint32_t count);
 int daw_comp_range(daw_session*,uint64_t track_id,uint32_t take_index,uint64_t start_frame,uint64_t end_frame,uint64_t expected_revision);
@@ -353,6 +357,34 @@ int daw_begin_insert_parameter_automation_gesture(daw_session*,int32_t owner,uin
 int daw_write_insert_parameter_automation_gesture(daw_session*,uint64_t frame,double normalized_value);
 int daw_end_insert_parameter_automation_gesture(daw_session*,uint64_t end_frame,uint64_t expected_revision);
 void daw_cancel_insert_parameter_automation_gesture(daw_session*);
+/* MIDI clips are data-only until the renderer arc publishes them: notes are
+ * clip-relative 48 kHz frames, pitch 0..127, channel 0..15, velocity 1..127.
+ * Every call validates struct_size/version and rejects obviously invalid
+ * notes before touching the domain; the domain owns full timeline validation. */
+enum { DAW_MIDI_NOTE_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; uint8_t pitch; uint8_t channel; uint8_t velocity; } daw_midi_note;
+enum { DAW_MIDI_CLIP_VERSION = 1 };
+/* lane is the editor row of the clip, not a track reference. note_count is
+ * only filled by the caller when supplying the notes array to add. */
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; int32_t lane; uint32_t note_count; } daw_midi_clip;
+/* A read of at most 8192 notes per call; note_offset pages larger clips. */
+enum { DAW_MIDI_NOTES_PER_CALL = 8192 };
+/* Adds one clip (with its whole note array) to the track in one revision. */
+int daw_add_midi_clip(daw_session*, uint64_t track_id, const daw_midi_clip* clip, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
+int daw_remove_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t expected_revision);
+/* Replaces the full note array of one clip; empty notes clears the clip. */
+int daw_set_midi_notes(daw_session*, uint64_t track_id, uint32_t clip_index, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
+int daw_move_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t new_start, uint64_t expected_revision);
+/* Growing shifts clip-relative notes with the window; shrinking drops notes
+ * that no longer fit whole. Both parts after a split stay within bounds. */
+int daw_trim_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t new_start, uint64_t new_length, uint64_t expected_revision);
+int daw_split_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t at_frame, uint64_t expected_revision);
+/* Number of MIDI clips on the track; independent of audio clip_count. */
+int daw_get_midi_clip_count(daw_session*, uint64_t track_id, uint32_t* count);
+/* Reads clip metadata and a page of notes. out->note_count reports the total;
+ * *written reports notes copied for this page. Pass notes=NULL/capacity=0 to
+ * query metadata only. capacity above DAW_MIDI_NOTES_PER_CALL is an error. */
+int daw_get_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, daw_midi_clip* out, uint32_t note_offset, daw_midi_note* notes, uint32_t capacity, uint32_t* written);
 /* Preview is read-only. Pass changes=NULL/capacity=0 to query change_count.
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);

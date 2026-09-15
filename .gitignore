@@ -3,6 +3,7 @@
 __pycache__/
 build*/
 cmake-build-*/
+.dsh/
 DerivedData/
 xcuserdata/
 *.xcuserstate

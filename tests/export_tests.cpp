@@ -19,7 +19,7 @@ int main(){try{
     struct TailProbe final : daw::PreparedEffect {
         uint32_t value;
         explicit TailProbe(uint32_t frames):value(frames){}
-        bool process(float*,float*,uint32_t,uint64_t,std::span<const daw::PreparedParameterEvent>) noexcept override{return true;}
+        bool process(float*,float*,uint32_t,uint64_t,std::span<const daw::PreparedParameterEvent>,std::span<const daw::PreparedMidiEvent>) noexcept override{return true;}
         uint32_t latencyFrames() const noexcept override{return 0;}
         uint32_t tailFrames() const noexcept override{return value;}
     };

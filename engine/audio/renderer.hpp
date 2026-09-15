@@ -24,6 +24,93 @@ GraphTailSummary serialTail(GraphTailSummary left,
                             GraphTailSummary right) noexcept;
 GraphTailSummary parallelTail(GraphTailSummary left,
                               GraphTailSummary right) noexcept;
+// One scheduled channel-voice message on the project timeline (absolute
+// frames). The Renderer builds these from Track::midiClips in prepare().
+struct MidiPlannedEvent {
+  uint64_t frame = 0;
+  PreparedMidiEvent event;
+};
+// Per-track note plan: sorted on/off pairs drained over contiguous render
+// ranges with a monotonic cursor. Built on the control thread; the cursor and
+// sounding state are only mutated by the audio callback, which is the single
+// reader per the Renderer contract above. Deterministic rules:
+//  - note on at clip.start + note.start, note off at clip.start +
+//    note.start + note.length; at an equal frame the off sorts first;
+//  - drain() emits events with frame in [blockStart, blockEnd) at
+//    sampleOffset = frame - blockStart; events past the capacity stay at the
+//    cursor and are emitted next block clamped to offset 0 (late, never lost);
+//  - on a loop wrap wrapCutOffs() emits one velocity-0 note off at offset 0
+//    per still-sounding pitch (its off lay beyond loopEnd, unreachable in
+//    looped playback), then reset(loopBegin) rewinds so those notes restart
+//    on the next pass: no stuck notes and no clipped chords.
+class MidiTrackPlan {
+ public:
+  void build(const std::vector<MidiClip> &clips) {
+    events_.clear();
+    cursor_ = 0;
+    sounding_.fill(0);
+    for (const auto &clip : clips)
+      for (const auto &note : clip.notes) {
+        events_.push_back({clip.start + note.start,
+                           {0U, note.channel, note.pitch, note.velocity, false}});
+        events_.push_back({clip.start + note.start + note.length,
+                           {0U, note.channel, note.pitch, 0U, true}});
+      }
+    std::sort(events_.begin(), events_.end(), [](const auto &a, const auto &b) {
+      if (a.frame != b.frame) return a.frame < b.frame;
+      return a.event.noteOff && !b.event.noteOff;
+    });
+  }
+  // Rewind the cursor to the first event at or after position; clears sound.
+  void reset(uint64_t position) {
+    cursor_ = static_cast<size_t>(
+        std::lower_bound(events_.begin(), events_.end(), position,
+                         [](const MidiPlannedEvent &e, uint64_t p) {
+                           return e.frame < p;
+                         }) -
+        events_.begin());
+    sounding_.fill(0);
+  }
+  bool empty() const noexcept { return events_.empty(); }
+  uint32_t drain(uint64_t blockStart, uint64_t blockEnd,
+                 PreparedMidiEvent *out, uint32_t capacity) {
+    uint32_t written = 0;
+    while (cursor_ < events_.size() && events_[cursor_].frame < blockEnd) {
+      if (written == capacity) break; // carried, not lost
+      const auto &planned = events_[cursor_];
+      auto event = planned.event;
+      event.sampleOffset = planned.frame > blockStart
+                               ? static_cast<uint32_t>(planned.frame - blockStart)
+                               : 0U;
+      touch(event);
+      out[written++] = event;
+      ++cursor_;
+    }
+    return written;
+  }
+  uint32_t wrapCutOffs(PreparedMidiEvent *out, uint32_t capacity) {
+    uint32_t written = 0;
+    for (unsigned bit = 0; bit < 2048U && written < capacity; ++bit) {
+      if (!(sounding_[bit >> 6] & (1ULL << (bit & 63U)))) continue;
+      sounding_[bit >> 6] &= ~(1ULL << (bit & 63U));
+      out[written++] = {0U, static_cast<uint8_t>(bit >> 7),
+                        static_cast<uint8_t>(bit & 127U), 0U, true};
+    }
+    return written;
+  }
+
+ private:
+  void touch(const PreparedMidiEvent &e) {
+    const unsigned bit = (unsigned(e.channel & 15U) << 7) | unsigned(e.pitch & 127U);
+    if (e.noteOff)
+      sounding_[bit >> 6] &= ~(1ULL << (bit & 63U));
+    else
+      sounding_[bit >> 6] |= 1ULL << (bit & 63U);
+  }
+  std::vector<MidiPlannedEvent> events_;
+  size_t cursor_ = 0;
+  std::array<uint64_t, 32> sounding_{};
+};
 // One RT reader. prepare/reset only after output unit is stopped and
 // uninitialized. Gain/telemetry atomics are the only concurrently accessed
 // mutable state.
@@ -99,6 +186,11 @@ class Renderer {
   // Allocated in prepare() to the persisted project-wide automation limit.
   // Callback code writes a prefix then passes it synchronously to one effect.
   std::vector<PreparedParameterEvent> parameterEvents;
+  // Per-track MIDI plans, indexed by the same track ordinal as trackEffects.
+  // The callback only mutates each plan's private cursor/sounding state.
+  std::vector<MidiTrackPlan> midiPlans;
+  static constexpr uint32_t kMaxMidiEventsPerBlock = 1024U;
+  std::vector<PreparedMidiEvent> midiEvents;
   std::array<std::atomic<float>, 256> leftGains{}, rightGains{},
       preFaderGates{}, leftPans{}, rightPans{}, trackFaderGains{};
   std::array<float, 256> smoothLeft{}, smoothRight{}, smoothPreFaderGate{},
@@ -132,7 +224,8 @@ class Renderer {
                                  uint64_t timeline) noexcept;
   bool processChain(std::vector<std::unique_ptr<PreparedEffect>> &,
                     ChainAutomationPlan &, const std::vector<uint64_t> &, float *,
-                    float *, uint32_t, uint64_t, uint64_t) noexcept;
+                    float *, uint32_t, uint64_t, uint64_t,
+                    std::span<const PreparedMidiEvent> midi = {}) noexcept;
   void publishRuntimeStatus(uint64_t id,
                             PreparedEffectRuntimeStatus status) noexcept;
   void updateAudiblePosition() noexcept;

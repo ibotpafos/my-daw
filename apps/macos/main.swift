@@ -117,6 +117,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let inspectorBrowser = InspectorBrowserView(frame: .zero)
     var inspectorTrackID: UInt64?
     var inspectorClipIndex: Int?
+    var midiClipIndex: Int?
+    var midiNotesCache: [PianoRollNote] = []
     var browserAudioURLs: [UUID: URL] = [:]
     var browserPluginTargets: [UUID: BrowserPluginTarget] = [:]
     let audioPreview = AudioPreviewController()
@@ -125,7 +127,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var meterHolds: [UInt64: (left: Float, right: Float)] = [:]
     let status = NSTextField(labelWithString: "")
     let summary = NSTextField(labelWithString: "")
-    let transportLabel = NSTextField(labelWithString: "Импортируй WAV, чтобы услышать проект")
+    let transportLabel = NSTextField(labelWithString: "Импортируй WAV/AIFF, чтобы услышать проект")
     let workspaceMode = NSSegmentedControl(labels: ["Создание", "Запись", "Сведение", "Мастеринг"], trackingMode: .selectOne, target: nil, action: nil)
     let playButton = NSButton(title: "▶ Играть", target: nil, action: nil)
     let stopButton = NSButton(title: "■ Стоп", target: nil, action: nil)
@@ -336,7 +338,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         gridPopup.target = self; gridPopup.action = #selector(changeGrid(_:));gridPopup.setAccessibilityLabel("Сетка таймлайна")
         rangeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); rangeLabel.textColor = .secondaryLabelColor
         tempoLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); tempoLabel.textColor = .secondaryLabelColor
-        let importButton=button("Импорт…",#selector(importWav));let addTrackButton=button("＋ Track",#selector(addTrack));let addBusButton=button("＋ Bus",#selector(addBus));let workflowButton=button("Workflow…",#selector(runVocalWorkflow))
+        let importButton=button("Импорт…",#selector(importWav));let addTrackButton=button("＋ Track",#selector(addTrack));let addMidiTrackButton=button("＋ MIDI",#selector(addMidiTrack));let addBusButton=button("＋ Bus",#selector(addBus));let workflowButton=button("Workflow…",#selector(runVocalWorkflow))
         loopButton.target=self;loopButton.action=#selector(toggleLoop)
         let rangeStartButton=button("In",#selector(setRangeStart));let rangeEndButton=button("Out",#selector(setRangeEnd));let clearRangeButton=button("Очистить",#selector(clearRange))
         masterSlider.target=self;masterSlider.action=#selector(changeMasterGain(_:));masterSlider.isContinuous=true;masterSlider.widthAnchor.constraint(equalToConstant:120).isActive=true;masterSlider.setAccessibilityLabel("Уровень мастера, децибелы")
@@ -359,7 +361,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
         let saveButton=button("Сохранить",#selector(saveDraft));styleIconButton(saveButton,icon:.saveProject)
         styleIconButton(exportButton,icon:.exportAudio);styleIconButton(dawprojectButton,icon:.exportProject);styleIconButton(cancelExportButton,icon:.cancel)
-        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
+        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addMidiTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
         rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         content.addArrangedSubview(toolbar);toolbar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         playButton.target = self; playButton.action = #selector(playAudio)
@@ -499,7 +501,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false)])
         if let projectMenu = main.items.last?.submenu {
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
@@ -559,6 +561,51 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         inspectorTrackID=strip.kind == .track ? id:nil;inspectorClipIndex=nil
         inspectorBrowser.clip=nil
         inspectorBrowser.channel=InspectorChannelModel(title:strip.title,kind:kind,renameable:strip.kind != .master,volumeDb:strip.volumeDb,pan:strip.pan,muted:strip.isMuted,solo:strip.isSolo,inserts:strip.inserts.map{$0.bypassed ? "⊘ \($0.name)":$0.name},sends:strip.sends.map{"→ \($0.destination)  \(String(format:"%+.1f dB",$0.gainDb)) \($0.preFader ? "PRE":"POST")"},accent:strip.color ?? .systemBlue)
+        if strip.kind == .track { loadMidiInspector(id) } else { inspectorBrowser.midi = nil }
+    }
+    func loadMidiInspector(_ trackID: UInt64) {
+        var clipCount: UInt32 = 0
+        guard daw_get_midi_clip_count(session, trackID, &clipCount) == 0, clipCount > 0 else { midiClipIndex = nil; midiNotesCache = []; inspectorBrowser.midi = nil; return }
+        var clips: [PianoRollClipModel] = []
+        for index in 0..<Int(clipCount) {
+            var meta = daw_midi_clip(); meta.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
+            guard daw_get_midi_clip(session, trackID, UInt32(index), &meta, 0, nil, 0, nil) == 0 else { continue }
+            clips.append(PianoRollClipModel(index: index, startFrames: meta.start, lengthFrames: meta.length, noteCount: meta.note_count))
+        }
+        guard let first = clips.first else { midiClipIndex = nil; midiNotesCache = []; inspectorBrowser.midi = nil; return }
+        let selected = clips.contains(where: { $0.index == midiClipIndex }) ? midiClipIndex : first.index
+        var notes: [PianoRollNote] = []
+        if let selected {
+            var meta = daw_midi_clip(); meta.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
+            if daw_get_midi_clip(session, trackID, UInt32(selected), &meta, 0, nil, 0, nil) == 0 {
+                var offset: UInt32 = 0
+                while offset < meta.note_count {
+                    let pageSize = Int(min(meta.note_count - offset, UInt32(DAW_MIDI_NOTES_PER_CALL)))
+                    var page = [daw_midi_note](repeating: daw_midi_note(), count: pageSize)
+                    var written: UInt32 = 0
+                    let result = page.withUnsafeMutableBufferPointer { buffer in daw_get_midi_clip(session, trackID, UInt32(selected), &meta, offset, buffer.baseAddress, UInt32(pageSize), &written) }
+                    guard result == 0, written > 0 else { break }
+                    for note in page.prefix(Int(written)) { notes.append(PianoRollNote(startFrames: note.start, lengthFrames: note.length, pitch: note.pitch, channel: note.channel, velocity: note.velocity)) }
+                    offset += written
+                }
+            }
+        }
+        midiClipIndex = selected
+        midiNotesCache = notes
+        inspectorBrowser.midi = InspectorMidiModel(clips: clips, selectedClip: selected, notes: notes, editable: !isRecording)
+    }
+    func commitMidiNotes(track trackID: UInt64, clip clipIndex: Int, notes: [PianoRollNote]) {
+        guard !isRecording else { return }
+        var marshaled = notes.map { note -> daw_midi_note in
+            var value = daw_midi_note()
+            value.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); value.version = UInt32(DAW_MIDI_NOTE_VERSION)
+            value.start = note.startFrames; value.length = note.lengthFrames
+            value.pitch = note.pitch; value.channel = note.channel; value.velocity = note.velocity
+            return value
+        }
+        let noteCount = UInt32(marshaled.count)
+        let result = marshaled.withUnsafeMutableBufferPointer { buffer in daw_set_midi_notes(session, trackID, UInt32(clipIndex), buffer.baseAddress, noteCount, revision) }
+        if check(result) { refresh(); updateMixerInspector(trackID) } else { loadMidiInspector(trackID) }
     }
     func wireInspectorBrowser() {
         audioPreview.onChange = { [weak self] state in
@@ -602,6 +649,25 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             self.audioPreview.play()
         }
         inspectorBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
+        inspectorBrowser.onMidiClipSelect = { [weak self] index in guard let self, let track = self.inspectorTrackID else { return }; self.midiClipIndex = index; self.loadMidiInspector(track) }
+        inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }
+        inspectorBrowser.onMidiAddNote = { [weak self] in
+            guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex, !self.isRecording else { return }
+            guard let model = self.inspectorBrowser.midi, let meta = model.clips.first(where: { $0.index == clip }), meta.lengthFrames >= 480 else { return }
+            var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
+            _ = daw_get_transport(self.session, &transport)
+            let relative = transport.frame > meta.startFrames ? transport.frame - meta.startFrames : 0
+            var notes = self.midiNotesCache
+            notes.append(PianoRollNote(startFrames: min(relative, meta.lengthFrames - 480), lengthFrames: 480, pitch: 60, channel: 0, velocity: 100))
+            self.commitMidiNotes(track: track, clip: clip, notes: notes)
+        }
+        inspectorBrowser.onMidiRemoveNote = { [weak self] row in
+            guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }
+            var notes = self.midiNotesCache
+            guard row >= 0, row < notes.count else { return }
+            notes.remove(at: row)
+            self.commitMidiNotes(track: track, clip: clip, notes: notes)
+        }
     }
 
     func updateBrowserAudioPreview(_ state: AudioPreviewController.State) {
@@ -1188,17 +1254,23 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let warning = t.plugin_errors > 0 ? " · Plug-in error: dry fallback" : (t.clipped_frames > 0 ? " · Перегрузка: уменьши уровни" : "")
             let latency=t.output_latency_frames>0 ? String(format:" · latency %.2f ms",Double(t.output_latency_frames)/48.0):""
             transportLabel.stringValue = String(format: "%@  %.1f / %.1f с%@%@", state, Double(t.frame) / 48000, Double(t.duration) / 48000, latency,warning)
-        } else { transportLabel.stringValue = hasAudio ? "Готово к воспроизведению · системный аудиовыход" : "Импортируй WAV, чтобы услышать проект" }
+        } else { transportLabel.stringValue = hasAudio ? "Готово к воспроизведению · системный аудиовыход" : "Импортируй WAV/AIFF, чтобы услышать проект" }
     }
     func beginBackgroundImport(_ intent: BackgroundImportIntent) {
         guard !isRecording else { return }
-        guard importJob == nil else { storageMessage("Импорт WAV уже выполняется. Его можно отменить в верхней панели."); return }
+        guard importJob == nil else { storageMessage("Импорт WAV/AIFF уже выполняется. Его можно отменить в верхней панели."); return }
         stopBrowserAudioPreview()
         finishEditing()
         let job: OpaquePointer?
         switch intent {
-        case let .track(path, name): job = daw_begin_import_wav(session, path.path, name, revision)
-        case let .take(path, name, trackID, startFrame): job = daw_begin_import_take_wav(session, trackID, path.path, name, startFrame, revision)
+        case let .track(path, name):
+            job = (path.pathExtension.lowercased() == "aif" || path.pathExtension.lowercased() == "aiff")
+                ? daw_begin_import_aiff(session, path.path, name, revision)
+                : daw_begin_import_wav(session, path.path, name, revision)
+        case let .take(path, name, trackID, startFrame):
+            job = (path.pathExtension.lowercased() == "aif" || path.pathExtension.lowercased() == "aiff")
+                ? daw_begin_import_take_aiff(session, trackID, path.path, name, startFrame, revision)
+                : daw_begin_import_take_wav(session, trackID, path.path, name, startFrame, revision)
         }
         guard let job else { _ = check(1); return }
         var startingStatus = daw_import_status(); startingStatus.struct_size = UInt32(MemoryLayout<daw_import_status>.size); startingStatus.version = UInt32(DAW_IMPORT_STATUS_VERSION); startingStatus.status = Int32(DAW_IMPORT_RUNNING); startingStatus.phase = Int32(DAW_IMPORT_PHASE_READING); startingStatus.base_revision = revision
@@ -1214,8 +1286,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func importWav() {
         guard !isRecording else { return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "PCM WAV mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне и автоматически конвертируется в 48 кГц; до 60 секунд."
+        let aif = UTType(filenameExtension: "aif") ?? .aiff
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav, .aiff, aif]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.message = "PCM WAV/AIFF mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне и автоматически конвертируется в 48 кГц; до 60 секунд."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         beginTrackImport(url)
     }
@@ -1300,9 +1373,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         selectedMixerID = nextSelection
         inspectorTrackID = nextSelection
         inspectorClipIndex = nil
+        midiClipIndex = nil; midiNotesCache = []
         refresh()
         if let nextSelection { updateMixerInspector(nextSelection) }
-        else { inspectorBrowser.channel = nil; inspectorBrowser.clip = nil }
+        else { inspectorBrowser.channel = nil; inspectorBrowser.clip = nil; inspectorBrowser.midi = nil }
         let deletionMessage = canceledTakeImport ? "Дорожка удалена · импорт дубля отменён · ⌘Z" : "Дорожка удалена · ⌘Z"
         setProjectMessage(deletionMessage)
         status.stringValue = deletionMessage
@@ -1313,7 +1387,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func selectTake(_ sender:NSPopUpButton){guard let id=trackIDs[sender.tag]else{return};selectedTakes[id]=sender.indexOfSelectedItem;refresh()}
     @objc func importTake(_ sender:NSButton){
         guard !isRecording,let id=trackIDs[sender.tag]else{return}
-        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери PCM WAV-дубль mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне, будет конвертирован в 48 кГц, сохранится внутри дорожки и не изменит текущий comp; до 60 секунд."
+        let aif = UTType(filenameExtension: "aif") ?? .aiff
+        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav, .aiff, aif];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери PCM WAV/AIFF-дубль mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне, будет конвертирован в 48 кГц, сохранится внутри дорожки и не изменит текущий comp; до 60 секунд."
         guard panel.runModal() == .OK,let url=panel.url else{return}
         let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));let start=rangeStart ?? currentTransportFrame() ?? 0
         beginBackgroundImport(.take(path: url, name: name, trackID: id, startFrame: start))
@@ -1401,6 +1476,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func stopAudio() { _ = check(daw_stop(session)); pollTransport() }
     func finishEditing() { if window.firstResponder is NSTextView { window.makeFirstResponder(nil) } }
     @objc func addTrack() { guard !isRecording else{return}; finishEditing(); if check(daw_add_track(session, "Дорожка \(trackIDs.count + 1)", revision)) { refresh() } }
+    @objc func addMidiTrack() {
+        guard !isRecording else{return}; finishEditing()
+        guard check(daw_add_track(session, "MIDI \(trackIDs.count + 1)", revision)) else { return }
+        refresh()
+        guard let newID = trackIDs.values.max() else { return }
+        var clip = daw_midi_clip(); clip.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size); clip.version = UInt32(DAW_MIDI_CLIP_VERSION)
+        clip.start = 0; clip.length = 480000; clip.lane = 0; clip.note_count = 0
+        guard check(daw_add_midi_clip(session, newID, &clip, nil, 0, revision)) else { return }
+        refresh()
+        selectedMixerID = newID
+        updateMixerInspector(newID)
+        status.stringValue = "MIDI-дорожка добавлена · клип на 10 с · ⌘Z отменяет"
+    }
     @objc func addBus() { guard !isRecording else{return};finishEditing();if check(daw_add_bus(session,"Bus \(orderedBuses.count + 1)",revision)){refresh()} }
     @objc func addMasterAU(_ sender:NSPopUpButton){guard !isRecording,sender.indexOfSelectedItem>0 else{return};let index=sender.indexOfSelectedItem-1;guard index<auCatalog.count else{return};let item=auCatalog[index];_=daw_stop(session);if check(daw_add_master_au(session,item.type,item.subtype,item.manufacturer,revision)){sender.selectItem(at:0);refresh();pollTransport()}else{sender.selectItem(at:0)}}
     @objc func scanInstalledAudioUnits(){guard auScanJob==nil else{return};let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_au_scan_helper").path;guard let job=daw_begin_installed_au_scan(helper,3000)else{storageMessage("Не удалось запустить изолированный AU scanner.");return};auScanJob=job;scanAUButton.isEnabled=false;scanAUButton.title="Сканирование…";auScanTimer=Timer.scheduledTimer(withTimeInterval:0.2,repeats:true){[weak self]_ in Task{@MainActor in self?.pollInstalledAudioUnits()}}}

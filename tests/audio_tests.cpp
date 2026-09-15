@@ -226,6 +226,49 @@ int main(){try{
     daw::Session limits;for(int i=0;i<8;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
     // Deterministic malformed-input smoke corpus; not a replacement for sustained fuzzing.
     std::mt19937 rng(7);for(int i=0;i<400;++i){auto mutation=bytes;for(int n=0;n<5;++n)mutation[rng()%44]=static_cast<unsigned char>(rng());try{daw::decodeWav(mutation);}catch(const std::exception&){} }
-    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers\n";
+    // MIDI plan: frame-exact offsets, off-before-on ordering, capacity carry,
+    // loop wrap with held-note cut-offs, and prepare()-integration.
+    {
+        std::vector<daw::MidiClip> clips;
+        clips.push_back({1000,2000,{{1000,500,60,2,100},{1200,4000,64,2,90}},0}); // on@2000 off@2500, on@2200 off@6200
+        daw::MidiTrackPlan plan; plan.build(clips);
+        std::array<daw::PreparedMidiEvent,16> buf{};
+        CHECK(plan.drain(1536,2048,buf.data(),16)==1 && buf[0].sampleOffset==464 && !buf[0].noteOff && buf[0].pitch==60 && buf[0].channel==2 && buf[0].velocity==100);
+        CHECK(plan.drain(2048,2560,buf.data(),16)==2 && buf[0].sampleOffset==152 && !buf[0].noteOff && buf[0].pitch==64 && buf[1].sampleOffset==452 && buf[1].noteOff && buf[1].pitch==60);
+        CHECK(plan.drain(2560,3072,buf.data(),16)==0);
+        plan.reset(1536); CHECK(plan.drain(1536,2048,buf.data(),16)==1);
+        // Equal-frame ordering: touching clips emit the off before the on.
+        std::vector<daw::MidiClip> touching;
+        touching.push_back({0,1000,{{0,1000,61,0,100}},0}); touching.push_back({1000,1000,{{0,500,62,0,100}},0});
+        daw::MidiTrackPlan pairPlan; pairPlan.build(touching);
+        CHECK(pairPlan.drain(0,2000,buf.data(),16)==4 && buf[0].sampleOffset==0 && !buf[0].noteOff && buf[1].noteOff && buf[1].pitch==61 && buf[2].sampleOffset==1000 && !buf[2].noteOff && buf[2].pitch==62 && buf[3].noteOff);
+        // Capacity overflow carries to following blocks, never loses events.
+        std::vector<daw::MidiClip> dense; std::vector<daw::MidiNote> ten;
+        for(int i=0;i<10;++i)ten.push_back({uint64_t(i*10),10,70,0,100});
+        dense.push_back({0,100000,ten,0});
+        daw::MidiTrackPlan flood; flood.build(dense);
+        std::array<daw::PreparedMidiEvent,8> small{};
+        uint32_t delivered=0, first=0;
+        for(uint64_t block=0;block<4000&&delivered<20;++block){
+            const auto n=flood.drain(block*1000,(block+1)*1000,small.data(),8);
+            if(delivered==8&&n>0)first=small[0].sampleOffset;
+            delivered+=n;}
+        CHECK(delivered==20 && first==0); // 8+8+4 across blocks; late events clamp to offset 0
+        // Loop wrap: held note is cut off at the new pass start and replays.
+        std::vector<daw::MidiClip> longNote; longNote.push_back({0,20000,{{100,8900,63,3,101}},0}); // off@9000 beyond loopEnd
+        daw::MidiTrackPlan looped; looped.build(longNote);
+        CHECK(looped.drain(0,512,buf.data(),16)==1 && !buf[0].noteOff); // on@100, now sounding
+        CHECK(looped.wrapCutOffs(buf.data(),16)==1 && buf[0].sampleOffset==0 && buf[0].noteOff && buf[0].pitch==63 && buf[0].channel==3 && buf[0].velocity==0);
+        looped.reset(0);
+        CHECK(looped.drain(0,512,buf.data(),16)==1 && !buf[0].noteOff && buf[0].sampleOffset==100); // replays next pass
+        CHECK(looped.drain(512,1024,buf.data(),16)==0); // off@9000 unreachable in loop: wrap owns the cut-off
+        // Renderer integration: audio+MIDI track prepares, plays, advances.
+        daw::Session midiSession; midiSession.import("T",clip,midiSession.state().revision);
+        midiSession.addMidiClip(1,daw::MidiClip{0,4800,{{0,2400,60,0,100}},0},midiSession.state().revision);
+        daw::Renderer midiRender; midiRender.prepare(midiSession.state()); midiRender.playing=true;
+        midiRender.render(seekLeft.data(),seekRight.data(),512);
+        CHECK(midiRender.position==512 && midiRender.pluginErrors.load()==0);
+    }
+    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

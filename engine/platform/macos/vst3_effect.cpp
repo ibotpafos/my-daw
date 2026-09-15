@@ -6,6 +6,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "public.sdk/source/common/memorystream.h"
@@ -13,6 +14,7 @@
 #include "public.sdk/source/vst/hosting/module.h"
 #include "public.sdk/source/vst/hosting/parameterchanges.h"
 #include "public.sdk/source/vst/utility/stringconvert.h"
+#include "base/funknown.h"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +37,50 @@ using namespace Steinberg::Vst;
 constexpr uint32_t kMaximumFrames = 4096;
 constexpr size_t kMaximumStateBytes = 8U * 1024U * 1024U;
 constexpr int32 kExpectedBuses = 1;
+
+// A bounded, allocation-free IEventList. The SDK's EventList implementation
+// lives in eventlist.cpp, which is deliberately not compiled into this target;
+// more importantly, a fixed array here gives the audio thread a container it
+// can never grow. The instance is a member of Vst3Effect, sized once at
+// prepare time; addEvent fails closed past capacity. Refcounting returns a
+// constant because the list is never passed out of the process call.
+class BoundedEventList final : public IEventList {
+public:
+  static constexpr int32 kCapacity = 512;
+
+  tresult PLUGIN_API queryInterface(const TUID iid, void **obj) override {
+    if (!obj) return kInvalidArgument;
+    if (FUnknownPrivate::iidEqual(iid, IEventList::iid) ||
+        FUnknownPrivate::iidEqual(iid, FUnknown::iid)) {
+      *obj = static_cast<IEventList *>(this);
+      return kResultOk;
+    }
+    *obj = nullptr;
+    return kNoInterface;
+  }
+  uint32 PLUGIN_API addRef() override { return 1; }
+  uint32 PLUGIN_API release() override { return 1; }
+
+  int32 PLUGIN_API addEvent(Event &event) override {
+    if (count_ >= kCapacity) return kResultFalse;
+    events_[count_] = event;
+    ++count_;
+    return kResultTrue;
+  }
+  int32 PLUGIN_API getEventCount() override { return count_; }
+  tresult PLUGIN_API getEvent(int32 index, Event &event) override {
+    if (index < 0 || static_cast<uint32_t>(index) >= count_) return kResultFalse;
+    event = events_[static_cast<uint32_t>(index)];
+    return kResultTrue;
+  }
+  void clear() noexcept { count_ = 0; }
+
+private:
+  // Event is a 72-byte POD union; 512 entries bound the worst-case lane at
+  // 36 KiB, resident for the life of the prepared effect.
+  Event events_[kCapacity]{};
+  uint32_t count_ = 0;
+};
 
 void require(tresult result, const char *operation) {
   if (result != kResultOk && result != kResultTrue)
@@ -199,9 +245,11 @@ public:
   }
 
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
-               std::span<const PreparedParameterEvent> parameterEvents) noexcept
+               std::span<const PreparedParameterEvent> parameterEvents,
+               std::span<const PreparedMidiEvent> midiEvents) noexcept
       override {
-    if (left == nullptr || right == nullptr || frames > maximum)
+    if (left == nullptr || right == nullptr || frames > maximum ||
+        midiEvents.size() > static_cast<size_t>(BoundedEventList::kCapacity))
       return false;
     std::copy_n(left, frames, inputLeft.data());
     std::copy_n(right, frames, inputRight.data());
@@ -251,7 +299,48 @@ public:
     }
     data.inputParameterChanges = parameterEvents.empty() ? nullptr : &changes;
     data.outputParameterChanges = nullptr;
-    data.inputEvents = nullptr;
+    // The MIDI lane is rebuilt from the caller's bounded span on every block;
+    // the list itself never allocates. Like automation, a malformed offset
+    // fails the block closed so notes can never be silently dropped.
+    inputEvents.clear();
+    for (const auto &event : midiEvents) {
+      if (event.sampleOffset >= frames || event.channel > 15 || event.pitch > 127 ||
+          event.velocity > 127) {
+        std::copy_n(inputLeft.data(), frames, left);
+        std::copy_n(inputRight.data(), frames, right);
+        return false;
+      }
+      Event vst{};
+      vst.busIndex = 0;
+      vst.flags = 0;
+      vst.sampleOffset = static_cast<int32>(event.sampleOffset);
+      vst.ppqPosition = 0.0;
+      if (event.noteOff) {
+        vst.type = Event::kNoteOffEvent;
+        vst.noteOff.channel = static_cast<int16>(event.channel);
+        vst.noteOff.pitch = static_cast<int16>(event.pitch);
+        vst.noteOff.tuning = 0.0f;
+        vst.noteOff.velocity = static_cast<float>(event.velocity) / 127.0f;
+        vst.noteOff.noteId = -1;
+      } else {
+        vst.type = Event::kNoteOnEvent;
+        vst.noteOn.channel = static_cast<int16>(event.channel);
+        vst.noteOn.pitch = static_cast<int16>(event.pitch);
+        vst.noteOn.tuning = 0.0f;
+        // VST3 note velocity is normalized; the MIDI byte 0..127 maps to
+        // 0.0..1.0 with 127 as full scale, and length 0 defers the release
+        // to the explicit note-off event that always follows.
+        vst.noteOn.velocity = static_cast<float>(event.velocity) / 127.0f;
+        vst.noteOn.length = 0;
+        vst.noteOn.noteId = -1;
+      }
+      if (inputEvents.addEvent(vst) != kResultTrue) {
+        std::copy_n(inputLeft.data(), frames, left);
+        std::copy_n(inputRight.data(), frames, right);
+        return false;
+      }
+    }
+    data.inputEvents = midiEvents.empty() ? nullptr : &inputEvents;
     data.outputEvents = nullptr;
     const auto result = processor()->process(data);
     if (result == kResultOk || result == kResultTrue)
@@ -382,6 +471,7 @@ private:
   FUnknownPtr<IConnectionPoint> componentConnection;
   FUnknownPtr<IConnectionPoint> controllerConnection;
   ParameterChanges changes;
+  BoundedEventList inputEvents;
   std::vector<float> inputLeft;
   std::vector<float> inputRight;
   uint32_t maximum = 0;

@@ -66,6 +66,10 @@ int main(int argc, char** argv){try{
     for(int i=0;i<1000 && !detached->status.load(std::memory_order_acquire);++i)std::this_thread::sleep_for(std::chrono::milliseconds(5));
     CHECK(detached->status.load(std::memory_order_acquire)==1);
     auto restored=daw::readDraft(recovery);CHECK(restored.revision==2 && restored.tracks[0].gain==-9);
+    // The worker publishes status before its permit is released in the job destructor;
+    // wait for the async release, then saturate deterministically.
+    for(int i=0;i<1000 && daw::backgroundJobsInFlight()!=0;++i)std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(daw::backgroundJobsInFlight()==0);
     std::vector<std::shared_ptr<daw::BackgroundJobPermit>> permits;
     for(uint32_t i=0;i<daw::backgroundJobLimit;++i){auto permit=daw::tryAcquireBackgroundJob();CHECK(permit);permits.push_back(std::move(permit));}
     CHECK(daw::backgroundJobsInFlight()==daw::backgroundJobLimit);
