@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <chrono>
+#include <thread>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("Failed: " #x); } while(false)
 template<class Fn> void rejects(Fn fn) { bool rejected=false; try { fn(); } catch (...) { rejected=true; } CHECK(rejected); }
@@ -29,6 +31,15 @@ static void writeFixtureWav(const std::filesystem::path& path,uint32_t sampleRat
         else put16(bytes,static_cast<uint16_t>((static_cast<int>(frame%64)-32)*768));
     }
     std::ofstream stream(path,std::ios::binary);CHECK(stream.good());stream.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));CHECK(stream.good());
+}
+static daw_import_status waitForImport(daw_import_job* job){
+    daw_import_status status{};status.struct_size=sizeof(status);
+    for(int attempt=0;attempt<5000;++attempt){
+        CHECK(daw_poll_import(job,&status)==0);
+        if(status.status!=DAW_IMPORT_RUNNING)return status;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    throw std::runtime_error("Timed out waiting for async import");
 }
 int main() { try {
     daw::Session s;
@@ -174,6 +185,46 @@ int main() { try {
 #else
     CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"unsupported non-Apple rate",rateSnapshot.revision)==1);
     rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);
+#endif
+#ifdef __APPLE__
+    // v36 keeps expensive decode/resampling off the owner thread. Begin is
+    // read-only; a ready job applies once against an explicit fresh revision.
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> asyncBridge(daw_create(),daw_destroy);CHECK(asyncBridge);
+    daw_snapshot asyncSnapshot{};asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==0&&asyncSnapshot.track_count==0);
+    daw_import_job* trackImport=daw_begin_import_wav(asyncBridge.get(),rate441Path.c_str(),"Async 44.1",asyncSnapshot.revision);CHECK(trackImport);
+    daw_import_status asyncStatus{};asyncStatus.struct_size=sizeof(asyncStatus);CHECK(daw_poll_import(trackImport,&asyncStatus)==0&&asyncStatus.base_revision==0);
+    asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==0&&asyncSnapshot.track_count==0);
+    asyncStatus=waitForImport(trackImport);CHECK(asyncStatus.status==DAW_IMPORT_READY&&asyncStatus.version==DAW_IMPORT_STATUS_VERSION&&asyncStatus.phase==DAW_IMPORT_PHASE_READY&&asyncStatus.progress==100&&asyncStatus.source_sample_rate==44100&&asyncStatus.source_channels==2&&asyncStatus.source_frames==441&&asyncStatus.output_frames==480);
+    CHECK(daw_add_track(asyncBridge.get(),"Edit while importing",asyncSnapshot.revision)==0);
+    asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==1&&asyncSnapshot.track_count==1);
+    CHECK(daw_apply_import(asyncBridge.get(),trackImport,0)==1);
+    asyncStatus=waitForImport(trackImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);
+    CHECK(daw_apply_import(asyncBridge.get(),trackImport,asyncSnapshot.revision)==0);
+    asyncStatus=waitForImport(trackImport);CHECK(asyncStatus.status==DAW_IMPORT_APPLIED&&asyncStatus.output_frames==480);
+    asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==2&&asyncSnapshot.track_count==2);
+    CHECK(daw_apply_import(asyncBridge.get(),trackImport,asyncSnapshot.revision)==1);daw_release_import(trackImport);
+    daw_track asyncTrack{};asyncTrack.struct_size=sizeof(asyncTrack);CHECK(daw_get_track(asyncBridge.get(),1,&asyncTrack)==0&&asyncTrack.audio_frames==480&&asyncTrack.take_count==1);
+    daw_import_job* takeImport=daw_begin_import_take_wav(asyncBridge.get(),asyncTrack.id,rate441Path.c_str(),"Async take",120,asyncSnapshot.revision);CHECK(takeImport);
+    asyncStatus=waitForImport(takeImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> wrongSession(daw_create(),daw_destroy);CHECK(wrongSession&&daw_apply_import(wrongSession.get(),takeImport,0)==1);
+    asyncStatus=waitForImport(takeImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);
+    CHECK(daw_apply_import(asyncBridge.get(),takeImport,asyncSnapshot.revision)==0);daw_release_import(takeImport);
+    asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==3);
+    asyncTrack={};asyncTrack.struct_size=sizeof(asyncTrack);CHECK(daw_get_track(asyncBridge.get(),1,&asyncTrack)==0&&asyncTrack.take_count==2);
+
+    // Failed and canceled jobs are terminal and cannot touch domain state.
+    daw_import_job* failedImport=daw_begin_import_wav(asyncBridge.get(),zeroRatePath.c_str(),"Bad async",asyncSnapshot.revision);CHECK(failedImport);
+    asyncStatus=waitForImport(failedImport);CHECK(asyncStatus.status==DAW_IMPORT_FAILED&&asyncStatus.error[0]);CHECK(daw_apply_import(asyncBridge.get(),failedImport,asyncSnapshot.revision)==1);daw_release_import(failedImport);
+    daw_import_job* canceledImport=daw_begin_import_wav(asyncBridge.get(),rate441Path.c_str(),"Canceled async",asyncSnapshot.revision);CHECK(canceledImport);daw_cancel_import(canceledImport);
+    asyncStatus=waitForImport(canceledImport);CHECK(asyncStatus.status==DAW_IMPORT_CANCELED);CHECK(daw_apply_import(asyncBridge.get(),canceledImport,asyncSnapshot.revision)==1);daw_release_import(canceledImport);
+    daw_snapshot unchangedAsync{};unchangedAsync.struct_size=sizeof(unchangedAsync);CHECK(daw_get_snapshot(asyncBridge.get(),&unchangedAsync)==0&&unchangedAsync.revision==3&&unchangedAsync.track_count==2);
+
+    // Opening a draft replaces the project epoch even when a source job is
+    // already ready. The opaque handle is also safe after session destruction.
+    daw_import_job* epochImport=daw_begin_import_wav(asyncBridge.get(),rate441Path.c_str(),"Old project",unchangedAsync.revision);CHECK(epochImport);asyncStatus=waitForImport(epochImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);
+    const auto epochDraft=(cleanup.path/"async-epoch.mydawdraft").string();daw::Session epochState;epochState.add("Replacement",0);daw::writeDraft(epochState.state(),epochDraft);CHECK(daw_open_draft(asyncBridge.get(),epochDraft.c_str())==0);
+    daw_snapshot epochSnapshot{};epochSnapshot.struct_size=sizeof(epochSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&epochSnapshot)==0&&epochSnapshot.revision==1&&epochSnapshot.track_count==1);CHECK(daw_apply_import(asyncBridge.get(),epochImport,epochSnapshot.revision)==1);asyncStatus=waitForImport(epochImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);daw_release_import(epochImport);
+    daw_session* destroyedSession=daw_create();CHECK(destroyedSession);daw_snapshot destroyedSnapshot{};destroyedSnapshot.struct_size=sizeof(destroyedSnapshot);CHECK(daw_get_snapshot(destroyedSession,&destroyedSnapshot)==0);daw_import_job* orphanImport=daw_begin_import_wav(destroyedSession,rate441Path.c_str(),"Orphan",destroyedSnapshot.revision);CHECK(orphanImport);daw_destroy(destroyedSession);daw_release_import(orphanImport);
 #endif
     daw::Session bounded; for(int i=0;i<256;++i) bounded.add("Track",bounded.state().revision);
     rejects([&]{bounded.add("Overflow",bounded.state().revision);});

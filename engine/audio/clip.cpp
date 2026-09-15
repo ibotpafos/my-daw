@@ -15,20 +15,52 @@ bool supportedRate(uint32_t rate) {
     return rate == 44100 || rate == 48000 || rate == 88200 || rate == 96000 || rate == 192000;
 }
 }
-Clip::Clip(std::vector<float> samples): samples_(std::move(samples)) {
+void checkImportCanceled(const ImportControl& control) {
+    if (control.cancel && control.cancel->load(std::memory_order_acquire)) throw ImportCanceled{};
+}
+void updateImportProgress(const ImportControl& control, uint64_t completed, uint64_t total) {
+    if (!control.progress) return;
+    if (total == 0) { control.progress->store(control.progressEnd, std::memory_order_release); return; }
+    const uint64_t span = control.progressEnd - control.progressBegin;
+    const uint64_t bounded = std::min(completed, total);
+    control.progress->store(static_cast<uint32_t>(control.progressBegin + bounded * span / total),
+                            std::memory_order_release);
+}
+void updateImportPhase(const ImportControl& control, uint8_t phase) {
+    if (control.setPhase) control.setPhase(control.phaseContext, phase);
+}
+Clip::Clip(std::vector<float> samples, const ImportControl& control): samples_(std::move(samples)) {
     if (samples_.empty() || samples_.size()%2 || samples_.size()>48000*60*2) throw Error("Audio clip must be 0–60 seconds, stereo 48 kHz");
-    for (float value : samples_) if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
+    for (size_t index=0;index<samples_.size();++index) {
+        if ((index&0x3fffU)==0) checkImportCanceled(control);
+        const float value=samples_[index]; if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
+    }
     for(size_t bin=0;bin<peaks_.size();++bin) {
         const size_t begin=bin*frames()/peaks_.size(), end=(bin+1)*frames()/peaks_.size();
-        for(size_t f=begin;f<end;++f) peaks_[bin]=std::max({peaks_[bin],std::abs(samples_[f*2]),std::abs(samples_[f*2+1])});
+        for(size_t f=begin;f<end;++f) {
+            if ((f&0x3fffU)==0) checkImportCanceled(control);
+            peaks_[bin]=std::max({peaks_[bin],std::abs(samples_[f*2]),std::abs(samples_[f*2+1])});
+        }
     }
 }
 std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
+    return decodeWav(b, {});
+}
+std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b, const ImportControl& control,
+                                      uint32_t* sourceRate, uint32_t* sourceChannels, uint64_t* sourceFrames) {
+    checkImportCanceled(control);
+    updateImportPhase(control, 2); // Decoding
+    ImportControl decoding = control;
+    decoding.progressEnd = control.progressBegin + (control.progressEnd - control.progressBegin) * 65 / 100;
+    ImportControl converting = control;
+    converting.progressBegin = decoding.progressEnd;
     if (b.size()<12 || !tag(b.data(),"RIFF") || !tag(b.data()+8,"WAVE")) throw Error("Expected a RIFF WAV file");
     size_t end=size_t(u32(b.data()+4))+8;
     if(end!=b.size()) throw Error("Truncated WAV or trailing data");
     std::span<const unsigned char> format, data;
+    size_t chunks=0;
     for(size_t p=12;p<end;) {
+        if ((chunks++&0x3ffU)==0) checkImportCanceled(decoding);
         if(end-p<8) throw Error("Truncated WAV chunk");
         size_t size=u32(b.data()+p+4), begin=p+8;
         if(size>end-begin) throw Error("WAV chunk exceeds file");
@@ -46,8 +78,12 @@ std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
     if(align!=channels*width || u32(format.data()+8)!=rate*align || data.size()%align) throw Error("Invalid WAV frame layout");
     size_t frames=data.size()/align;
     if(!frames || frames>uint64_t(rate)*60) throw Error("Import a WAV of at most 60 seconds");
+    if (sourceRate) *sourceRate = rate;
+    if (sourceChannels) *sourceChannels = channels;
+    if (sourceFrames) *sourceFrames = frames;
     std::vector<float> samples(frames*2);
     for(size_t f=0;f<frames;++f) for(unsigned ch=0;ch<2;++ch) {
+        if ((f & 0x3fffU) == 0) { checkImportCanceled(decoding); updateImportProgress(decoding, f, frames); }
         auto p=data.data()+f*align+(ch%channels)*width; float value;
         if(encoding==3) value=std::bit_cast<float>(u32(p));
         else if(bits==16) value=static_cast<float>(std::bit_cast<int16_t>(u16(p)))/32768.0f;
@@ -55,16 +91,39 @@ std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
         else value=static_cast<float>(std::bit_cast<int32_t>(u32(p)))/2147483648.0f;
         samples[f*2+ch]=value;
     }
-    for (float value : samples) if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
-    return std::make_shared<const Clip>(resampleStereoTo48k(samples, rate));
+    for (size_t index=0;index<samples.size();++index) {
+        if ((index&0x3fffU)==0) checkImportCanceled(decoding);
+        const float value=samples[index]; if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
+    }
+    checkImportCanceled(decoding);
+    updateImportProgress(decoding, frames, frames);
+    updateImportPhase(control, 3); // Converting (also the 48 kHz fast path)
+    return std::make_shared<const Clip>(resampleStereoTo48k(samples, rate, converting), converting);
 }
 std::shared_ptr<const Clip> readWav(const std::string& path) {
+    return readWav(path, {});
+}
+std::shared_ptr<const Clip> readWav(const std::string& path, const ImportControl& control,
+                                    uint32_t* sourceRate, uint32_t* sourceChannels, uint64_t* sourceFrames) {
     std::ifstream file(path,std::ios::binary|std::ios::ate);
     if(!file) throw Error("Cannot open WAV");
     auto size=file.tellg(); if(size<0 || size>32*1024*1024) throw Error("WAV exceeds 32 MiB import limit");
-    std::vector<unsigned char> bytes(static_cast<size_t>(size)); file.seekg(0);
-    if(!file.read(reinterpret_cast<char*>(bytes.data()),size)) throw Error("Cannot read complete WAV");
-    return decodeWav(bytes);
+    const size_t byteCount = static_cast<size_t>(size);
+    std::vector<unsigned char> bytes(byteCount); file.seekg(0);
+    updateImportPhase(control, 1); // Reading
+    ImportControl reading = control;
+    reading.progressEnd = control.progressBegin + (control.progressEnd - control.progressBegin) / 5;
+    ImportControl decoding = control;
+    decoding.progressBegin = reading.progressEnd;
+    constexpr size_t kReadBlock = 64 * 1024;
+    for (size_t offset = 0; offset < byteCount; offset += kReadBlock) {
+        checkImportCanceled(reading);
+        const auto count = static_cast<std::streamsize>(std::min(kReadBlock, byteCount - offset));
+        if(!file.read(reinterpret_cast<char*>(bytes.data() + offset), count)) throw Error("Cannot read complete WAV");
+        updateImportProgress(reading, offset + static_cast<size_t>(count), byteCount);
+    }
+    checkImportCanceled(reading);
+    return decodeWav(bytes, decoding, sourceRate, sourceChannels, sourceFrames);
 }
 std::vector<unsigned char> encodePCM(const Clip& clip) {
     std::vector<unsigned char> bytes(clip.samples().size()*4);

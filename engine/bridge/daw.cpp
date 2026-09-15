@@ -1,6 +1,7 @@
 #include "daw.h"
 #include "domain/session.hpp"
 #include "audio/output.hpp"
+#include "audio/import_job.hpp"
 #include "audio/input.hpp"
 #include "audio/duplex.hpp"
 #include "audio/recording.hpp"
@@ -61,11 +62,21 @@ struct daw_session {
     bool loopEnabled=false;
     int32_t transientOutputState=0;
     std::chrono::steady_clock::time_point lastProgress, recordProgress;
+    std::shared_ptr<uint8_t> lifetime=std::make_shared<uint8_t>(0);
+    uint64_t projectEpoch=1;
     char error[512] = {};
 };
 struct daw_save_job { std::shared_ptr<daw::SaveResult> result; };
 struct daw_export_job { std::shared_ptr<daw::ExportResult> result; };
 struct daw_dawproject_job { std::shared_ptr<daw::dawproject::ExportResult> result; };
+enum class ImportIntent : uint8_t { Track, Take };
+struct daw_import_job {
+    std::shared_ptr<daw::ImportJobResult> result;
+    std::weak_ptr<uint8_t> owner;
+    uint64_t projectEpoch=0,baseRevision=0,trackID=0,startFrame=0;
+    ImportIntent intent=ImportIntent::Track;
+    std::string name;
+};
 #ifdef __APPLE__
 struct daw_au_scan_job { std::future<daw::IsolatedAudioUnitScan> future; std::optional<daw::IsolatedAudioUnitScan> result; };
 struct daw_vst3_scan_job { std::future<daw::IsolatedVst3Scan> future; std::optional<daw::IsolatedVst3Scan> result; };
@@ -400,7 +411,7 @@ void writePlugin(daw_session* s,const daw::PluginInsert& plugin,daw_plugin* out)
 }
 extern "C" {
 daw_session* daw_create() { try { return new daw_session; } catch (...) { return nullptr; } }
-void daw_destroy(daw_session* s) { if(s)cancelPlaybackPreparation(s);delete s; }
+void daw_destroy(daw_session* s) { if(s){s->lifetime.reset();cancelPlaybackPreparation(s);}delete s; }
 int daw_get_snapshot(daw_session* s, daw_snapshot* out) { return guard(s, [&]{
     if (!out || out->struct_size != sizeof(daw_snapshot)) throw daw::Error("Snapshot ABI mismatch");
     out->revision=s->model.state().revision; out->track_count=static_cast<uint32_t>(s->model.state().tracks.size());
@@ -683,7 +694,72 @@ int daw_poll_dawproject_export(daw_dawproject_job* job,daw_dawproject_status* ou
 void daw_cancel_dawproject_export(daw_dawproject_job* job){if(job)job->result->cancel.store(true,std::memory_order_release);}
 void daw_release_dawproject_export(daw_dawproject_job* job){delete job;}
 int daw_save_draft(daw_session* s,const char* path) { return guard(s,[&]{daw::writeDraft(s->model.state(),required(path));}); }
-int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();s->model.replace(std::move(loaded));s->selectedFrame=0;}); }
+int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
+namespace {
+daw_import_job* beginImport(daw_session* s,const char* path,const char* name,uint64_t baseRevision,ImportIntent intent,uint64_t trackID,uint64_t startFrame) {
+    daw_import_job* job=nullptr;
+    guard(s,[&]{
+        if(s->model.state().revision!=baseRevision)throw daw::Error("Revision conflict: refresh the project");
+        auto handle=std::make_unique<daw_import_job>();
+        handle->owner=s->lifetime;handle->projectEpoch=s->projectEpoch;handle->baseRevision=baseRevision;
+        handle->intent=intent;handle->trackID=trackID;handle->startFrame=startFrame;handle->name=required(name);daw::validateName(handle->name);
+        if(intent==ImportIntent::Take){
+            const auto found=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& track){return track.id==trackID&&track.audio;});
+            if(found==s->model.state().tracks.end())throw daw::Error("Audio track not found");
+        }
+        handle->result=daw::startWavImport(required(path));
+        job=handle.release();
+    });
+    return job;
+}
+}
+daw_import_job* daw_begin_import_wav(daw_session* s,const char* path,const char* name,uint64_t baseRevision) {
+    return beginImport(s,path,name,baseRevision,ImportIntent::Track,0,0);
+}
+daw_import_job* daw_begin_import_take_wav(daw_session* s,uint64_t trackID,const char* path,const char* name,uint64_t startFrame,uint64_t baseRevision) {
+    return beginImport(s,path,name,baseRevision,ImportIntent::Take,trackID,startFrame);
+}
+int daw_poll_import(daw_import_job* job,daw_import_status* out) {
+    if(!job||!out||out->struct_size!=sizeof(daw_import_status))return 1;
+    try {
+        *out={};out->struct_size=sizeof(daw_import_status);out->version=DAW_IMPORT_STATUS_VERSION;
+        out->base_revision=job->baseRevision;
+        const auto status=job->result->status.load(std::memory_order_acquire);
+        const auto phase=job->result->phase.load(std::memory_order_acquire);
+        out->status=static_cast<int32_t>(status);
+        switch(phase){
+            case daw::ImportJobPhase::Reading:out->phase=DAW_IMPORT_PHASE_READING;break;
+            case daw::ImportJobPhase::Decoding:out->phase=DAW_IMPORT_PHASE_DECODING;break;
+            case daw::ImportJobPhase::Converting:out->phase=DAW_IMPORT_PHASE_CONVERTING;break;
+            case daw::ImportJobPhase::Ready:out->phase=DAW_IMPORT_PHASE_READY;break;
+        }
+        out->progress=job->result->progress.load(std::memory_order_acquire);
+        out->source_sample_rate=job->result->sourceSampleRate.load(std::memory_order_acquire);
+        out->source_channels=job->result->sourceChannels.load(std::memory_order_acquire);
+        out->source_frames=job->result->sourceFrames.load(std::memory_order_acquire);
+        out->output_frames=job->result->outputFrames.load(std::memory_order_acquire);
+        if(status==daw::ImportJobStatus::Failed)copyText(out->error,daw::importError(*job->result));
+        return 0;
+    } catch(...) { return 1; }
+}
+void daw_cancel_import(daw_import_job* job) { if(job&&job->result)daw::cancelImport(*job->result); }
+int daw_apply_import(daw_session* s,daw_import_job* job,uint64_t expectedRevision) { return guard(s,[&]{
+    if(!job||!job->result)throw daw::Error("Missing import job");
+    const auto owner=job->owner.lock();
+    if(!owner||owner.get()!=s->lifetime.get())throw daw::Error("Import job belongs to a different or closed session");
+    if(job->projectEpoch!=s->projectEpoch)throw daw::Error("Import job belongs to a replaced project");
+    std::lock_guard lock(job->result->publication);
+    if(job->result->status.load(std::memory_order_acquire)!=daw::ImportJobStatus::Ready)throw daw::Error("Import job is not ready");
+    if(s->model.state().revision!=expectedRevision)throw daw::Error("Revision conflict: refresh the project");
+    const auto clip=job->result->clip;
+    if(!clip)throw daw::Error("Ready import job has no audio");
+    if(job->intent==ImportIntent::Track)s->model.import(job->name,clip,expectedRevision);
+    else s->model.addTake(job->trackID,job->name,clip,job->startFrame,expectedRevision);
+    job->result->clip.reset();
+    job->result->status.store(daw::ImportJobStatus::Applied,std::memory_order_release);
+    resetTransport(s);
+}); }
+void daw_release_import(daw_import_job* job) { if(!job)return;daw_cancel_import(job);delete job; }
 int daw_import_wav(daw_session* s,const char* path,const char* name,uint64_t rev) { return guard(s,[&]{
     auto clip=daw::readWav(required(path)); s->model.import(required(name),std::move(clip),rev); resetTransport(s);
 }); }

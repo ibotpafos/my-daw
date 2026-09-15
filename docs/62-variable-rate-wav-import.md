@@ -7,7 +7,7 @@
 ## Поведение
 
 1. Пользователь выбирает WAV через toolbar, меню или Browser Add, либо выбирает WAV для нового take.
-2. До domain command parser проверяет RIFF/WAVE контейнер, PCM16/24/32 или IEEE float32, mono/stereo, разрешённую частоту, размер входного файла не более 32 MiB и исходную длительность не более 60 секунд.
+2. С [версии 1.36](63-background-wav-import.md) parser проверяет RIFF/WAVE контейнер, PCM16/24/32 или IEEE float32, mono/stereo, разрешённую частоту, размер входного файла не более 32 MiB и исходную длительность не более 60 секунд в отдельной cancellable job до domain command.
 3. Для 48 kHz decoded stereo float32 samples становятся Clip без преобразования. Для остальных разрешённых частот macOS adapter вызывает Apple `AudioConverter` вне realtime. Число проектных frames округляется к ближайшему значению; непустой source короче одного project frame сохраняется как один скопированный stereo frame, потому что системный converter может законно не выдать packet для такой длительности.
 4. Результат всегда stereo interleaved Float32 48 kHz. Только после успешной конвертации bridge выполняет существующую revision-aware import command; ошибка оставляет revision, Undo и проект без изменения.
 5. Storage записывает уже сконвертированный PCM. После save/open или перемещения исходного WAV клип не зависит от исходной частоты или пути файла.
@@ -33,7 +33,7 @@
 
 ## UI и ошибки
 
-Open panels для импортирования дорожки и take явно показывают: PCM WAV mono/stereo, 44,1 / 48 / 88,2 / 96 / 192 kHz, автоматическая конвертация к 48 kHz и лимит 60 секунд. Browser использует тот же engine path, поэтому не обладает скрытым расширенным списком codec или sample rates.
+Open panels для импортирования дорожки и take явно показывают: PCM WAV mono/stereo, 44,1 / 48 / 88,2 / 96 / 192 kHz, фоновую автоматическую конвертацию к 48 kHz и лимит 60 секунд. Browser использует тот же engine path, поэтому не обладает скрытым расширенным списком codec или sample rates.
 
 Некорректный контейнер, format, channel layout, частота, duration, размер, truncated data, non-finite float samples или ошибка converter показываются через существующую bridge error surface. Они не создают пустую дорожку, take или частично сохранённый PCM.
 

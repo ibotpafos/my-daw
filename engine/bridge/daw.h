@@ -18,6 +18,7 @@ typedef struct daw_export_job daw_export_job;
 typedef struct daw_dawproject_job daw_dawproject_job;
 typedef struct daw_au_scan_job daw_au_scan_job;
 typedef struct daw_vst3_scan_job daw_vst3_scan_job;
+typedef struct daw_import_job daw_import_job;
 typedef struct { uint32_t struct_size; int32_t status; uint64_t revision; char error[512]; } daw_save_status;
 /* Capture on session owner thread. Job is independent of session lifetime.
  * Poll status: 0 running, 1 successful, 2 failed. Destroy releases the handle;
@@ -153,6 +154,43 @@ typedef struct { uint32_t struct_size; uint32_t version; float left_peak; float 
 enum { DAW_OUTPUT_IDLE=0, DAW_OUTPUT_RUNNING=1, DAW_OUTPUT_STOPPED=2, DAW_OUTPUT_DEVICE_LOST=3, DAW_OUTPUT_STALLED=4, DAW_OUTPUT_CALLBACK_ERROR=5, DAW_OUTPUT_PREPARING=6, DAW_OUTPUT_PREPARATION_FAILED=7 };
 typedef struct { uint32_t struct_size; int32_t state; uint32_t device_id; uint64_t generation; uint64_t callbacks; uint64_t callback_errors; } daw_output_status;
 typedef struct { uint32_t struct_size; int32_t recording; int32_t overflowed; uint64_t frames; uint64_t callbacks; uint64_t target_track_id; int32_t loop_recording; uint32_t pass_count; } daw_recording;
+/* Background PCM-WAV import. A job owns only a source path plus immutable
+ * intent; it never retains a session. Poll and cancel are thread-safe while
+ * the caller retains the handle; release must be serialized with all handle
+ * uses and invalidates it. Apply must happen
+ * on the session's owner/control thread. status: 0=running, 1=ready,
+ * 2=failed, 3=canceled, 4=applied. phase: 0=none, 1=reading, 2=decoding,
+ * 3=converting, 4=ready.  base_revision is captured at begin; source fields
+ * describe the validated input, while output_frames describes fixed 48 kHz
+ * stereo project audio. All text is copied into caller storage. */
+enum { DAW_IMPORT_STATUS_VERSION = 1 };
+enum { DAW_IMPORT_RUNNING=0, DAW_IMPORT_READY=1, DAW_IMPORT_FAILED=2, DAW_IMPORT_CANCELED=3, DAW_IMPORT_APPLIED=4 };
+enum { DAW_IMPORT_PHASE_NONE=0, DAW_IMPORT_PHASE_READING=1, DAW_IMPORT_PHASE_DECODING=2, DAW_IMPORT_PHASE_CONVERTING=3, DAW_IMPORT_PHASE_READY=4 };
+typedef struct {
+    uint32_t struct_size;
+    uint32_t version;
+    int32_t status;
+    int32_t phase;
+    uint64_t base_revision;
+    uint32_t progress;
+    uint32_t source_sample_rate;
+    uint32_t source_channels;
+    uint64_t source_frames;
+    uint64_t output_frames;
+    char error[512];
+} daw_import_status;
+/* Begin validates arguments and captures the session identity, project epoch,
+ * and optimistic base revision without mutating the project. Apply performs
+ * exactly one model mutation only after the job is ready and all three guards
+ * still match. expected_revision is checked at apply time; base_revision is
+ * informational and a failed optimistic apply leaves a ready job retryable. */
+daw_import_job* daw_begin_import_wav(daw_session*,const char* path,const char* name,uint64_t base_revision);
+daw_import_job* daw_begin_import_take_wav(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t base_revision);
+int daw_poll_import(daw_import_job*,daw_import_status*);
+void daw_cancel_import(daw_import_job*);
+int daw_apply_import(daw_session*,daw_import_job*,uint64_t expected_revision);
+/* Release asks a running worker to cancel and returns immediately. */
+void daw_release_import(daw_import_job*);
 int daw_import_wav(daw_session*, const char* path, const char* name, uint64_t expected_revision);
 int daw_import_take_wav(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t expected_revision);
 int daw_get_take(daw_session*,uint64_t track_id,uint32_t take_index,daw_take*);

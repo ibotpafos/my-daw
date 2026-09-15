@@ -51,6 +51,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onScanVST3: (() -> Void)?
     var onPreview: ((InspectorBrowserItem?) -> Void)?
     var onStopPreview: (() -> Void)?
+    var isImportBusy = false { didSet { updateImportControls() } }
 
     private let tabs = NSSegmentedControl(labels: ["INSPECTOR", "BROWSER"], trackingMode: .selectOne, target: nil, action: nil)
     private let browserKind = NSSegmentedControl(labels: ["Audio", "Plug-ins"], trackingMode: .selectOne, target: nil, action: nil)
@@ -62,6 +63,9 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let tableScroll = NSScrollView()
     private let preview = NSButton(title: "Прослушать", target: nil, action: nil)
     private let stopPreview = NSButton(title: "Стоп", target: nil, action: nil)
+    private let addFolderButton = NSButton(title: "Add Folder", target: nil, action: nil)
+    private let importButton = NSButton(title: "Import", target: nil, action: nil)
+    private let addButton = NSButton(title: "Add", target: nil, action: nil)
     private let previewStatus = NSTextField(labelWithString: "Выберите аудиофайл для предпрослушивания.")
     private let volume = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
     private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
@@ -119,6 +123,9 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         table.addTableColumn(column); table.headerView = nil; table.dataSource = self; table.delegate = self; table.rowHeight = 32
         table.target = self; table.doubleAction = #selector(doubleClickBrowserItem)
         tableScroll.documentView = table; tableScroll.hasVerticalScroller = true; tableScroll.drawsBackground = false
+        for (button, action) in [(addFolderButton, #selector(addFolder)), (importButton, #selector(importItem)), (addButton, #selector(addItem))] {
+            button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.font = DAWDesignTokens.Typography.caption
+        }
         preview.target = self; preview.action = #selector(previewSelectedAudio); preview.bezelStyle = .texturedRounded; preview.font = DAWDesignTokens.Typography.caption
         stopPreview.target = self; stopPreview.action = #selector(stopAudioPreview); stopPreview.bezelStyle = .texturedRounded; stopPreview.font = DAWDesignTokens.Typography.caption
         previewStatus.font = DAWDesignTokens.Typography.caption; previewStatus.textColor = DAWDesignTokens.Color.secondaryText; previewStatus.lineBreakMode = .byTruncatingTail
@@ -157,22 +164,24 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor
         table.reloadData()
         updatePreviewControls()
+        updateImportControls()
     }
     private func showBrowser() {
         clearBody();body.isHidden=false;inspectorForm.isHidden=true; titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor
-        let commands = NSStackView(views: [button("Add Folder", #selector(addFolder)), button("Import", #selector(importItem)), button("Add", #selector(addItem))]); commands.spacing = 6
+        let commands = NSStackView(views: [addFolderButton, importButton, addButton]); commands.spacing = 6
         let scanners = NSStackView(views: [button("Scan AU", #selector(scanAU)), button("Scan VST3", #selector(scanVST3))]); scanners.spacing = 6
         let previewCommands = NSStackView(views: [preview, stopPreview]); previewCommands.spacing = 6
         body.addArrangedSubview(browserKind); body.addArrangedSubview(search); body.addArrangedSubview(commands); body.addArrangedSubview(previewCommands); body.addArrangedSubview(previewStatus); body.addArrangedSubview(scanners); body.addArrangedSubview(tableScroll)
         browserKind.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; search.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
         table.reloadData()
         updatePreviewControls()
+        updateImportControls()
     }
     private func button(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .texturedRounded; button.font = DAWDesignTokens.Typography.caption; return button }
 
     @objc private func changeTab() { if tabs.selectedSegment == InspectorBrowserTab.inspector.rawValue { reloadInspector() } else { showBrowser() } }
     @objc private func changeBrowserKind() { table.deselectAll(nil); reloadBrowser() }
-    @objc private func filterBrowser() { table.deselectAll(nil); table.reloadData(); updatePreviewControls() }
+    @objc private func filterBrowser() { table.deselectAll(nil); table.reloadData(); updatePreviewControls(); updateImportControls() }
     @objc private func changeChannel() { onChannelChange?(volume.doubleValue, pan.doubleValue) }
     @objc private func changeChannelName() { onChannelRename?(channelName.stringValue) }
     @objc private func changeMute() { onChannelMute?(mute.state == .on) }
@@ -237,6 +246,21 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         }
     }
 
+    private func updateImportControls() {
+        let isAudio = browserKind.selectedSegment == InspectorBrowserKind.audio.rawValue
+        let selected = selectedAudioItem
+        let name = selected?.title
+        addButton.isEnabled = !isAudio || (!isImportBusy && selected != nil)
+        importButton.isEnabled = !isImportBusy
+        addFolderButton.isEnabled = !isImportBusy
+        addButton.setAccessibilityLabel(name.map { isImportBusy ? "Добавить \($0): импорт уже выполняется" : "Добавить \($0) как дорожку" } ?? "Добавить выбранный элемент")
+        addButton.setAccessibilityHelp(isImportBusy ? "Новый импорт нельзя начать, пока не завершится или не будет отменён текущий WAV import." : "Добавляет выбранный WAV как новую дорожку через фоновый импорт.")
+        importButton.setAccessibilityLabel(isImportBusy ? "Импорт WAV: уже выполняется" : "Выбрать WAV для импорта")
+        importButton.setAccessibilityHelp(isImportBusy ? "Сначала заверши или отмени текущий импорт WAV." : "Открывает выбор одного WAV для фонового импорта.")
+        addFolderButton.setAccessibilityLabel(isImportBusy ? "Добавить папку: импорт уже выполняется" : "Добавить папку с WAV")
+        addFolderButton.setAccessibilityHelp(isImportBusy ? "Сначала заверши или отмени текущий импорт WAV." : "Добавляет одну выбранную папку в Audio Browser.")
+    }
+
     func updateAudioPreview(isPlaying: Bool, selectedID: UUID?, error: String?) {
         isAudioPreviewPlaying = isPlaying
         previewedAudioID = selectedID
@@ -253,5 +277,5 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = visibleItems[row]; let view = NSTableCellView(); let title = NSTextField(labelWithString: item.title); let detail = NSTextField(labelWithString: item.available ? item.detail : "MISSING · " + item.detail); title.font = .systemFont(ofSize: 12, weight: .medium); detail.font = .systemFont(ofSize: 10); detail.textColor = item.available ? .secondaryLabelColor : .systemRed; let stack = NSStackView(views: [title, detail]); stack.orientation = .vertical; stack.spacing = 1; stack.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(stack); NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 5), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -5), stack.centerYAnchor.constraint(equalTo: view.centerYAnchor)]); return view
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { let kind = InspectorBrowserKind(rawValue: browserKind.selectedSegment) ?? .audio; let row = table.selectedRow; let item = row >= 0 && row < visibleItems.count ? visibleItems[row] : nil; onBrowserSelect?(kind, item); updatePreviewControls() }
+    func tableViewSelectionDidChange(_ notification: Notification) { let kind = InspectorBrowserKind(rawValue: browserKind.selectedSegment) ?? .audio; let row = table.selectedRow; let item = row >= 0 && row < visibleItems.count ? visibleItems[row] : nil; onBrowserSelect?(kind, item); updatePreviewControls(); updateImportControls() }
 }

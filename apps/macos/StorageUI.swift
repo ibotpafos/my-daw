@@ -111,6 +111,121 @@ extension DraftApp {
         recoveryURL = recoveryRoot?.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).mydawdraft")
         recoveredRevision = nil; nextRecovery = Date().addingTimeInterval(5); recoveryError = nil
     }
+    func importPhaseText(_ phase: Int32) -> String {
+        switch phase {
+        case Int32(DAW_IMPORT_PHASE_READING): return "чтение файла"
+        case Int32(DAW_IMPORT_PHASE_DECODING): return "декодирование PCM"
+        case Int32(DAW_IMPORT_PHASE_CONVERTING): return "конвертация к 48 кГц"
+        case Int32(DAW_IMPORT_PHASE_READY): return "готово к добавлению"
+        default: return "подготовка"
+        }
+    }
+    func setImportMessage(_ text: String, duration: TimeInterval = 8) {
+        importMessage = text
+        importMessageUntil = Date().addingTimeInterval(duration)
+    }
+    func releaseImportJob(cancel: Bool) {
+        guard let job = importJob else { return }
+        if cancel { daw_cancel_import(job) }
+        daw_release_import(job)
+        importJob = nil; importIntent = nil; importSession = nil; importStatus = nil
+        inspectorBrowser.isImportBusy = false
+        cancelImportButton.isEnabled = false; cancelImportButton.isHidden = true
+        resolveImportButton.isEnabled = false; resolveImportButton.isHidden = true
+    }
+    func selectAppliedImport(_ intent: BackgroundImportIntent) {
+        refresh()
+        switch intent {
+        case .track:
+            if let track = mixerWorkspace.strips.first(where: { $0.kind == .track && !importExistingTrackIDs.contains($0.id) }) {
+                selectedMixerID = track.id; inspectorTrackID = track.id; inspectorClipIndex = 0; selectedClips[track.id] = 0
+                refresh()
+            }
+        case let .take(_, _, trackID, _):
+            var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+            if daw_get_snapshot(session, &snapshot) == 0 {
+                for index in 0..<snapshot.track_count {
+                    var track = daw_track(); track.struct_size = UInt32(MemoryLayout<daw_track>.size)
+                    if daw_get_track(session, index, &track) == 0, track.id == trackID, track.take_count > 0 {
+                        selectedTakes[trackID] = Int(track.take_count - 1)
+                        selectedMixerID = trackID; inspectorTrackID = trackID; inspectorClipIndex = 0
+                        refresh()
+                        break
+                    }
+                }
+            }
+        }
+        importExistingTrackIDs.removeAll()
+    }
+    func applyReadyImport(explicitly: Bool) {
+        guard let job = importJob, let intent = importIntent else { return }
+        guard importSession == session else {
+            releaseImportJob(cancel: true)
+            setImportMessage("Импорт отменён: проект уже сменился")
+            updateStorageStatus()
+            return
+        }
+        guard explicitly || revision == importBaseRevision else {
+            resolveImportButton.title = "＋ WAV"
+            resolveImportButton.toolTip = "Добавить готовый WAV в текущую ревизию проекта"
+            resolveImportButton.setAccessibilityLabel("Добавить готовый WAV в текущую ревизию проекта")
+            resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
+            setImportMessage("WAV готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
+            updateStorageStatus()
+            return
+        }
+        guard check(daw_apply_import(session, job, revision)) else {
+            setImportMessage("Не удалось добавить готовый WAV. Можно повторить или отменить импорт.", duration: .infinity)
+            resolveImportButton.title = "Повторить"
+            resolveImportButton.toolTip = "Повторить добавление готового WAV"
+            resolveImportButton.setAccessibilityLabel("Повторить добавление готового WAV")
+            resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
+            updateStorageStatus()
+            return
+        }
+        releaseImportJob(cancel: false)
+        setImportMessage("WAV добавлен в проект")
+        selectAppliedImport(intent)
+        updateStorageStatus()
+    }
+    @objc func resolveReadyImport() { applyReadyImport(explicitly: true) }
+    @objc func cancelImport() {
+        guard importJob != nil else { return }
+        cancelImportButton.isEnabled = false
+        setImportMessage("Отмена импорта WAV…", duration: .infinity)
+        if let job = importJob { daw_cancel_import(job) }
+        updateStorageStatus()
+    }
+    func pollImport() {
+        guard let job = importJob else { return }
+        var result = daw_import_status(); result.struct_size = UInt32(MemoryLayout<daw_import_status>.size); result.version = UInt32(DAW_IMPORT_STATUS_VERSION)
+        guard daw_poll_import(job, &result) == 0 else { return }
+        importStatus = result
+        switch result.status {
+        case Int32(DAW_IMPORT_RUNNING):
+            break
+        case Int32(DAW_IMPORT_READY):
+            if revision == result.base_revision && importSession == session { applyReadyImport(explicitly: false) }
+            else {
+                resolveImportButton.title = "＋ WAV"
+                resolveImportButton.toolTip = "Добавить готовый WAV в текущую ревизию проекта"
+                resolveImportButton.setAccessibilityLabel("Добавить готовый WAV в текущую ревизию проекта")
+                resolveImportButton.isHidden = false; resolveImportButton.isEnabled = true
+                setImportMessage("WAV готов. Проект изменился во время импорта — добавь его явно в текущую ревизию или отмени.", duration: .infinity)
+            }
+        case Int32(DAW_IMPORT_APPLIED):
+            // UI releases immediately after its own successful apply. This branch
+            // keeps the bridge contract safe if a future caller applies elsewhere.
+            releaseImportJob(cancel: false); setImportMessage("WAV добавлен в проект")
+        case Int32(DAW_IMPORT_CANCELED):
+            releaseImportJob(cancel: false); setImportMessage("Импорт WAV отменён")
+        case Int32(DAW_IMPORT_FAILED):
+            let error = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            releaseImportJob(cancel: false); setImportMessage("Ошибка импорта WAV: \(error.isEmpty ? "неизвестная ошибка" : error)")
+        default:
+            releaseImportJob(cancel: true); setImportMessage("Импорт WAV остановлен из-за неизвестного состояния")
+        }
+    }
     func beginSave(to url: URL, completion: (() -> Void)? = nil) {
         guard saveJob == nil else { storageMessage("Сохранение уже выполняется. Дождись завершения."); return }
         guard let job = daw_begin_save(session, url.path) else { _ = check(1); return }
@@ -220,6 +335,7 @@ extension DraftApp {
         requestLeave { [weak self] in
             guard let self, let fresh = daw_create() else { return }
             self.stopBrowserAudioPreview()
+            self.releaseImportJob(cancel: true)
             self.rotateRecovery(); daw_destroy(self.session); self.session = fresh
             self.currentURL = nil; self.savedRevision = 0; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
         }
@@ -231,6 +347,7 @@ extension DraftApp {
             panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
             guard panel.runModal() == .OK, let url = panel.url else { return }
             self.stopBrowserAudioPreview()
+            self.releaseImportJob(cancel: true)
             guard self.check(daw_open_draft(self.session, url.path)) else { return }
             var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
             guard self.check(daw_get_snapshot(self.session, &snapshot)) else { return }
@@ -238,6 +355,7 @@ extension DraftApp {
         }
     }
     func pollStorage() {
+        pollImport()
         if let job = exportJob {
             var result = daw_export_status(); result.struct_size = UInt32(MemoryLayout<daw_export_status>.size)
             if daw_poll_export(job, &result) == 0 && result.status != 0 {
@@ -312,7 +430,16 @@ extension DraftApp {
         updateStorageStatus()
     }
     func updateStorageStatus() {
-        if let job = exportJob {
+        if importJob != nil, let result = importStatus {
+            let percent = min(100, max(0, Int(result.progress)))
+            status.stringValue = "Импорт WAV: \(percent)% · \(importPhaseText(result.phase)) · можно продолжать работу"
+            status.setAccessibilityLabel("Статус импорта WAV")
+            status.setAccessibilityValue(status.stringValue)
+        } else if let importMessage, Date() < importMessageUntil {
+            status.stringValue = importMessage
+            status.setAccessibilityLabel("Статус импорта WAV")
+            status.setAccessibilityValue(status.stringValue)
+        } else if let job = exportJob {
             var result = daw_export_status(); result.struct_size = UInt32(MemoryLayout<daw_export_status>.size)
             if daw_poll_export(job, &result) == 0 {
                 let percent = result.total_frames == 0 ? 100 : Int((result.rendered_frames * 100) / result.total_frames)

@@ -18,6 +18,8 @@
 
 [1.35.0](62-variable-rate-wav-import.md) закрывает ограниченный import compatibility slice: macOS принимает mono/stereo PCM WAV 44,1 / 48 / 88,2 / 96 / 192 kHz и приводит их к каноническим 48 kHz до C++ domain/storage. Использован системный Apple AudioConverter за существующей границей импорта; 48 kHz остаётся direct fast path, проектный формат и realtime callback не меняются. CTest и macOS bundle QA описаны в отдельном документе; listening, physical device matrix и non-Apple resampler остаются отдельными gates.
 
+[1.36.0](63-background-wav-import.md) переносит bounded PCM WAV import с control/main thread в отдельную cancellable job: чтение, проверка, decode и resampling не блокируют editing или transport. Готовый immutable result применяется в один revision-aware commit; если проект изменился, UI не применяет его сам и предлагает явное добавление в актуальную ревизию. Новый/открытый проект и завершение приложения отменяют job до смены session. Это не streaming media engine, не proof качества resampling и не listening/physical gate.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.

@@ -24,7 +24,7 @@
 - До 64 MiB декодированного PCM в текущем проекте; история удерживает не более 128 MiB уникального PCM (старые snapshots отбрасываются).
 - WAV extensible, RF64, compressed WAV, MP3/FLAC и многоканальные файлы пока отклоняются с ошибкой. На non-Apple build частоты, отличные от 48 kHz, также отклоняются: system AudioConverter — macOS adapter, а не новая кроссплатформенная codec dependency.
 
-Это ограниченный полностью RAM-resident прототип. Здесь **нет** disk read-ahead, streaming, записи микрофона и больших сессий. Импорт и файловые операции пока выполняются на main thread; интерфейс может задерживаться на больших файлах или медленном диске. Audio callback не обращается к диску.
+Это ограниченный полностью RAM-resident прототип. Здесь **нет** disk read-ahead, streaming и больших сессий. Bounded PCM WAV import и import take выполняются отдельной cancelable worker job: чтение, parser, decode и resampling не удерживают control/main thread, а готовый immutable Clip применяет control thread одной revision-aware командой. Audio callback не обращается к диску. Save/export уже используют snapshots, но это не означает общий streaming файловый слой.
 
 ## Устройство вывода и RT-контракт
 
@@ -70,4 +70,4 @@ python3 scripts/make-audio-fixture.py
 
 ## Дальше
 
-Приоритет: фоновый import/storage, streaming/recovery и запись. Поддержка bounded PCM WAV variable-rate import реализована отдельно в [версии 1.35](62-variable-rate-wav-import.md). Не считать этот срез выполнением полноценного S0: B-005/B-006 реализованы только для ограниченного output/RAM playback, SP-01 full-duplex и запись не закрыты.
+Приоритет: streaming/recovery и запись. Bounded PCM WAV variable-rate import реализован в [версии 1.35](62-variable-rate-wav-import.md), а фоновая cancelable job и optimistic apply — в [версии 1.36](63-background-wav-import.md). Не считать эти срезы выполнением полноценного S0: B-005/B-006 реализованы только для ограниченного output/RAM playback, SP-01 full-duplex и запись не закрыты.

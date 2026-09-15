@@ -14,6 +14,13 @@ enum BrowserPluginTarget {
     case vst3(index: UInt32)
 }
 
+/// UI-owned intent only. The C import job owns the decoded immutable audio and
+/// never retains this session or an AppKit object.
+enum BackgroundImportIntent {
+    case track(path: URL, name: String)
+    case take(path: URL, name: String, trackID: UInt64, startFrame: UInt64)
+}
+
 @MainActor
 final class DraftCanvas: NSView { override var isFlipped: Bool { true } }
 
@@ -59,6 +66,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var exportStarted = Date()
     var exportMessage: String?
     var exportMessageUntil = Date.distantPast
+    var importJob: OpaquePointer?
+    var importIntent: BackgroundImportIntent?
+    var importSession: OpaquePointer?
+    var importBaseRevision: UInt64 = 0
+    var importStatus: daw_import_status?
+    var importExistingTrackIDs = Set<UInt64>()
+    var importMessage: String?
+    var importMessageUntil = Date.distantPast
+    let cancelImportButton = NSButton(title: "Отменить импорт", target: nil, action: nil)
+    let resolveImportButton = NSButton(title: "", target: nil, action: nil)
     var auScanJob: OpaquePointer?
     var auScanTimer: Timer?
     var vst3ScanJob: OpaquePointer?
@@ -175,6 +192,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var armedTrackID:UInt64?
     var dirty: Bool { revision != savedRevision }
     var exportBusy: Bool { exportJob != nil || dawprojectJob != nil }
+    var importBusy: Bool { importJob != nil }
     let draftType = UTType(exportedAs: "dev.mydaw.draft", conformingTo: .data)
     let dawprojectType = UTType(filenameExtension: "dawproject") ?? .data
 
@@ -330,13 +348,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         automationModePopup.addItems(withTitles:["AUTO Read","AUTO Touch","AUTO Latch"]);automationModePopup.selectItem(at:0);automationModePopup.target=self;automationModePopup.action=#selector(changeAutomationMode(_:));automationModePopup.widthAnchor.constraint(equalToConstant:105).isActive=true
         automationArmPopup.addItem(withTitle:"ARM: none");automationArmPopup.target=self;automationArmPopup.action=#selector(changeAutomationArm(_:));automationArmPopup.widthAnchor.constraint(equalToConstant:170).isActive=true
         exportButton.title="WAV…";exportButton.toolTip="Экспортировать микс WAV";dawprojectButton.title="DAWproject…";cancelExportButton.title="Отмена";cancelExportButton.toolTip="Отменить экспорт"
+        cancelImportButton.title = "Отменить импорт"; cancelImportButton.toolTip = "Отменить фоновый импорт WAV"; cancelImportButton.setAccessibilityLabel("Отменить импорт WAV"); cancelImportButton.setAccessibilityHelp("Отменяет текущую фоновую загрузку WAV, не меняя проект")
+        resolveImportButton.toolTip = "Продолжить готовый импорт WAV"; resolveImportButton.setAccessibilityLabel("Продолжить готовый импорт WAV"); resolveImportButton.setAccessibilityHelp("Повторно запускает готовый импорт для текущей ревизии проекта")
         updateRecordButton(false); styleIconButton(playButton, icon: .play); styleIconButton(stopButton, icon: .stop); styleIconButton(loopButton, icon: .loop); styleIconButton(undoButton, icon: .undo); styleIconButton(redoButton, icon: .redo)
         styleIconButton(importButton, icon: .importAudio);styleIconButton(addTrackButton, icon: .addTrack);styleIconButton(addBusButton, icon: .addBus);styleIconButton(workflowButton, icon: .workflow)
         styleIconButton(rangeStartButton, icon: .rangeStart);styleIconButton(rangeEndButton, icon: .rangeEnd);styleIconButton(clearRangeButton, icon: .clearRange)
         let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
         let saveButton=button("Сохранить",#selector(saveDraft));styleIconButton(saveButton,icon:.saveProject)
         styleIconButton(exportButton,icon:.exportAudio);styleIconButton(dawprojectButton,icon:.exportProject);styleIconButton(cancelExportButton,icon:.cancel)
-        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
+        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
         rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         content.addArrangedSubview(toolbar);toolbar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         playButton.target = self; playButton.action = #selector(playAudio)
@@ -346,6 +366,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         exportButton.target = self; exportButton.action = #selector(exportMix)
         dawprojectButton.target = self; dawprojectButton.action = #selector(exportDawproject)
         cancelExportButton.target = self; cancelExportButton.action = #selector(cancelExport); cancelExportButton.isEnabled = false; cancelExportButton.isHidden = true
+        cancelImportButton.target = self; cancelImportButton.action = #selector(cancelImport); cancelImportButton.isEnabled = false; cancelImportButton.isHidden = true
+        resolveImportButton.target = self; resolveImportButton.action = #selector(resolveReadyImport); resolveImportButton.isEnabled = false; resolveImportButton.isHidden = true
         transportLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         transportLabel.textColor = DAWDesignTokens.Color.mint
         let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
@@ -591,7 +613,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func addBrowserItem(_ kind:InspectorBrowserKind,_ item:InspectorBrowserItem?) {
         guard !isRecording,let item else{return}
-        if kind == .audio {guard let url=browserAudioURLs[item.id] else{return};stopBrowserAudioPreview();finishEditing();let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));if check(daw_import_wav(session,url.path,name,revision)){refresh()};return}
+        if kind == .audio { guard let url = browserAudioURLs[item.id] else { return }; beginTrackImport(url); return }
         stopBrowserAudioPreview()
         guard item.available,let target=browserPluginTargets[item.id] else{return}
         let destination=selectedMixerID ?? 0;let owner:Int32
@@ -1148,33 +1170,45 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             transportLabel.stringValue = String(format: "%@  %.1f / %.1f с%@%@", state, Double(t.frame) / 48000, Double(t.duration) / 48000, latency,warning)
         } else { transportLabel.stringValue = hasAudio ? "Готово к воспроизведению · системный аудиовыход" : "Импортируй WAV, чтобы услышать проект" }
     }
-    @objc func importWav() {
+    func beginBackgroundImport(_ intent: BackgroundImportIntent) {
         guard !isRecording else { return }
+        guard importJob == nil else { storageMessage("Импорт WAV уже выполняется. Его можно отменить в верхней панели."); return }
         stopBrowserAudioPreview()
         finishEditing()
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "PCM WAV mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Автоматическая конвертация в 48 кГц; до 60 секунд."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
-        if check(daw_import_wav(session, url.path, name, revision)) {
-            refresh()
-            if let track = mixerWorkspace.strips.last(where: { $0.kind == .track }) {
-                selectedMixerID = track.id; inspectorTrackID = track.id; inspectorClipIndex = 0; selectedClips[track.id] = 0
-                refresh()
-            }
+        let job: OpaquePointer?
+        switch intent {
+        case let .track(path, name): job = daw_begin_import_wav(session, path.path, name, revision)
+        case let .take(path, name, trackID, startFrame): job = daw_begin_import_take_wav(session, trackID, path.path, name, startFrame, revision)
         }
+        guard let job else { _ = check(1); return }
+        var startingStatus = daw_import_status(); startingStatus.struct_size = UInt32(MemoryLayout<daw_import_status>.size); startingStatus.version = UInt32(DAW_IMPORT_STATUS_VERSION); startingStatus.status = Int32(DAW_IMPORT_RUNNING); startingStatus.phase = Int32(DAW_IMPORT_PHASE_READING); startingStatus.base_revision = revision
+        importJob = job; importIntent = intent; importSession = session; importBaseRevision = revision; importStatus = startingStatus; importExistingTrackIDs = Set(trackIDs.values); importMessage = nil; importMessageUntil = .distantPast
+        cancelImportButton.isHidden = false; cancelImportButton.isEnabled = true
+        resolveImportButton.isHidden = true; resolveImportButton.isEnabled = false
+        inspectorBrowser.isImportBusy = true
+        updateStorageStatus()
+    }
+    func beginTrackImport(_ url: URL) {
+        let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
+        beginBackgroundImport(.track(path: url, name: name))
+    }
+    @objc func importWav() {
+        guard !isRecording else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.message = "PCM WAV mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне и автоматически конвертируется в 48 кГц; до 60 секунд."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        beginTrackImport(url)
     }
     func performTrackAction(_ id:UInt64,_ action:Selector) {guard let index=trackIDs.first(where:{$0.value==id})?.key else{return};let sender=NSButton();sender.tag=index;_ = NSApp.sendAction(action,to:self,from:sender)}
     func deleteCurrentSelectedClip(){guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return};performTrackAction(id,#selector(deleteSelectedClip(_:)))}
     @objc func toggleArm(_ sender:NSButton){guard !isRecording,let id=trackIDs[sender.tag]else{return};armedTrackID=armedTrackID==id ? nil:id;refresh()}
     @objc func selectTake(_ sender:NSPopUpButton){guard let id=trackIDs[sender.tag]else{return};selectedTakes[id]=sender.indexOfSelectedItem;refresh()}
     @objc func importTake(_ sender:NSButton){
-        guard !isRecording,let id=trackIDs[sender.tag]else{return};finishEditing();stopAudio()
-        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери PCM WAV-дубль mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Он будет конвертирован в 48 кГц, сохранится внутри дорожки и не изменит текущий comp; до 60 секунд."
+        guard !isRecording,let id=trackIDs[sender.tag]else{return}
+        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери PCM WAV-дубль mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Импорт идёт в фоне, будет конвертирован в 48 кГц, сохранится внутри дорожки и не изменит текущий comp; до 60 секунд."
         guard panel.runModal() == .OK,let url=panel.url else{return}
         let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));let start=rangeStart ?? currentTransportFrame() ?? 0
-        var track=daw_track();track.struct_size=UInt32(MemoryLayout<daw_track>.size);guard check(daw_get_track(session,UInt32(sender.tag),&track))else{return}
-        if check(daw_import_take_wav(session,id,url.path,name,start,revision)){selectedTakes[id]=Int(track.take_count);refresh()}
+        beginBackgroundImport(.take(path: url, name: name, trackID: id, startFrame: start))
     }
     @objc func applyComp(_ sender:NSButton){guard !isRecording,let id=trackIDs[sender.tag],let start=rangeStart,let end=rangeEnd,end>start else{storageMessage("Сначала задай начало и конец диапазона для comp.");return};finishEditing();stopAudio();let take=selectedTakes[id] ?? 0;if check(daw_comp_range(session,id,UInt32(take),start,end,revision)){selectedClips[id]=0;refresh();pollTransport()}}
     func applyClipEdit(_ id: UInt64, _ clipIndex: Int, _ start: UInt64, _ offset: UInt64, _ length: UInt64) {
@@ -1349,7 +1383,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
-        transportTimer?.invalidate();auScanTimer?.invalidate();vst3ScanTimer?.invalidate(); stopBrowserAudioPreview(); cancelAutomationGesture(); cancelPluginParameterAutomation(); if let vst3ScanJob { daw_release_installed_vst3_scan(vst3ScanJob) }; rotateRecovery()
+        transportTimer?.invalidate();auScanTimer?.invalidate();vst3ScanTimer?.invalidate(); stopBrowserAudioPreview(); releaseImportJob(cancel: true); cancelAutomationGesture(); cancelPluginParameterAutomation(); if let vst3ScanJob { daw_release_installed_vst3_scan(vst3ScanJob) }; rotateRecovery()
         if let exportJob { daw_cancel_export(exportJob); daw_release_export(exportJob) }
         if let dawprojectJob { daw_cancel_dawproject_export(dawprojectJob); daw_release_dawproject_export(dawprojectJob) }
         daw_release_save(saveJob); daw_release_save(recoveryJob); daw_destroy(session); session = nil

@@ -10,9 +10,9 @@
 
 ## Media browser
 
-Audio browser перечисляет до 1000 WAV из папки, которую пользователь явно выбрал через системную панель. My DAW не сканирует `Documents`, домашнюю папку или весь диск автоматически и не сохраняет фоновый доступ к выбранной папке. Поиск фильтрует имя файла и имя родительской папки; Add импортирует выбранный WAV как новую дорожку через `daw_import_wav`.
+Audio browser перечисляет до 1000 WAV из папки, которую пользователь явно выбрал через системную панель. My DAW не сканирует `Documents`, домашнюю папку или весь диск автоматически и не сохраняет фоновый доступ к выбранной папке. Поиск фильтрует имя файла и имя родительской папки; Add начинает тот же `daw_begin_import_wav` job и добавляет выбранный WAV как новую дорожку после готовности.
 
-Текущий import contract: RIFF PCM WAV mono/stereo, PCM16/24/32 или float32, 44,1 / 48 / 88,2 / 96 / 192 kHz, до 60 секунд и 32 MiB. На macOS частота приводится к внутренним 48 kHz до domain command, поэтому Browser Add и toolbar import дают одинаковый результат; детали ограничений и проверок описаны в [версии 1.35](62-variable-rate-wav-import.md). [Версия 1.34](61-audio-browser-preview.md) добавила read-only WAV audition через AVFoundation; более богатые media metadata и persistent favorites по-прежнему требуют отдельного probe/catalog API.
+Текущий import contract: RIFF PCM WAV mono/stereo, PCM16/24/32 или float32, 44,1 / 48 / 88,2 / 96 / 192 kHz, до 60 секунд и 32 MiB. На macOS частота приводится к внутренним 48 kHz до domain command, поэтому Browser Add, toolbar import и import take дают одинаковый результат. Browser Add начинает тот же одиночный background job, останавливает только read-only preview и не останавливает DAW transport; status surface показывает фазу/прогресс, а верхняя панель даёт отдельную отмену. Если пользователь изменил проект до готовности, Browser result ожидает явного добавления в актуальную ревизию. Детали формата — в [версии 1.35](62-variable-rate-wav-import.md), job/UI contract — в [версии 1.36](63-background-wav-import.md). [Версия 1.34](61-audio-browser-preview.md) добавила read-only WAV audition через AVFoundation; более богатые media metadata и persistent favorites по-прежнему требуют отдельного probe/catalog API.
 
 ## Plug-in browser
 

@@ -19,12 +19,18 @@ _Static_assert(offsetof(daw_export_options, struct_size) == 0, "export options p
 _Static_assert(sizeof(daw_export_options) == 16, "export options ABI size");
 _Static_assert(offsetof(daw_export_tail_summary, struct_size) == 0, "export tail summary prefix");
 _Static_assert(sizeof(daw_export_tail_summary) == 20, "export tail summary ABI size");
+_Static_assert(DAW_IMPORT_STATUS_VERSION == 1, "import status ABI version");
+_Static_assert(DAW_IMPORT_RUNNING == 0 && DAW_IMPORT_READY == 1 && DAW_IMPORT_FAILED == 2 && DAW_IMPORT_CANCELED == 3 && DAW_IMPORT_APPLIED == 4, "import status ABI values");
+_Static_assert(DAW_IMPORT_PHASE_NONE == 0 && DAW_IMPORT_PHASE_READING == 1 && DAW_IMPORT_PHASE_DECODING == 2 && DAW_IMPORT_PHASE_CONVERTING == 3 && DAW_IMPORT_PHASE_READY == 4, "import phase ABI values");
+_Static_assert(offsetof(daw_import_status, struct_size) == 0, "import status prefix");
+_Static_assert(sizeof(daw_import_status) == 568, "import status ABI size");
 int main(void) {
     daw_session* session = daw_create();
     if (!session) return 1;
     daw_snapshot snapshot = {0}; snapshot.struct_size = sizeof(snapshot);
     daw_recording recording = {0}; recording.struct_size = sizeof(recording);
     daw_export_status export_status = {0}; export_status.struct_size = sizeof(export_status);
+    daw_import_status import_status = {0}; import_status.struct_size = sizeof(import_status);
     daw_output_status output_status = {0}; output_status.struct_size = sizeof(output_status);
     daw_bus bus = {0}; bus.struct_size = sizeof(bus);
     daw_send send = {0}; send.struct_size = sizeof(send);
