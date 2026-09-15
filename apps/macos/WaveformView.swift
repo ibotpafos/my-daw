@@ -68,14 +68,31 @@ final class WaveformView: NSView {
     private var hoveredIndex: Int?
     private var hoveredZone: HitZone = .none
     private var tracking: NSTrackingArea?
+    /// Drag-and-drop of audio files from Finder onto the lane: the controller
+    /// receives the file plus the drop-frame and returns whether it accepted it.
+    var onDropFile: ((URL, UInt64) -> Bool)?
+    private func audioFileURLs(_ sender: NSDraggingInfo) -> [URL] {
+        guard let listed=sender.draggingPasteboard.readObjects(forClasses:[NSURL.self],options:nil) as? [URL] else { return [] }
+        return listed.filter{ ["wav","aif","aiff","aifc"].contains($0.pathExtension.lowercased()) }
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { audioFileURLs(sender).isEmpty ? [] : .copy }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { !audioFileURLs(sender).isEmpty }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let url=audioFileURLs(sender).first else { return false }
+        let point=convert(sender.draggingLocation,from:nil)
+        let ratio=min(1.0,max(0.0,Double((point.x-lane.minX)/lane.width)))
+        return onDropFile?(url,UInt64(Double(projectFrames)*ratio)) ?? false
+    }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
         setAccessibilityRole(.slider)
         setAccessibilityLabel("Позиция на аудиоволне")
-        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, M — мьют клипа, L — луп клипа, Delete — удалить выбранный клип. Правая кнопка — меню клипа.")
+        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, M — мьют клипа, L — луп клипа, Delete — удалить выбранный клип. Правая кнопка — меню клипа. Перетаскивание WAV/AIFF из Finder — импорт клипа в дорожку по месту отпускания.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     private var lane: NSRect { NSRect(x: 14, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - 28), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }

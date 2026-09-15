@@ -27,3 +27,7 @@ UI автоматически применяет result лишь когда вс
 Code acceptance должен покрывать: nonblocking begin, progress/poll, cancellation, malformed/oversize input, ready/apply, failed optimistic apply без мутации, retry с текущей revision, take placement, session epoch rejection и release running job. macOS acceptance должен проверить status/action states и сохранение доступности editing/playback во время import.
 
 Этот документ не заявляет прослушивание converted audio, качество resampling на музыкальном материале, физическую latency, VoiceOver audit или общий media streaming. Они остаются отдельными gates.
+
+## Drop из Finder на дорожку (1.54.0)
+
+С 1.54.0 файл можно перетащить прямо на аудиоленту: WaveformView регистрирует `.fileURL`, принимает wav/aif/aiff/aifc, переводит точку отпускания в кадр таймлайна (снап к beat-grid на стороне контроллера) и зовёт тот же `beginBackgroundImport(.take)`, что и меню «Import take…». Движок, мост и фоновый job не изменились — drop это новый вход в существующий путь: прогресс, отмена и готовое применение идут через те же статусы. Если импорт уже идёт — честное сообщение вместо очереди; при записи drop игнорируется. Только первый файл из многосоставного draggable: импорт и так однопоточный job. Прослушивание и физический drag-гейты остаются открытыми.

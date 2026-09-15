@@ -1207,6 +1207,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onFadeEdit = { [weak self] clipIndex,fadeIn,fadeOut in self?.applyClipFades(trackID,clipIndex,fadeIn,fadeOut) }
                 wave.onSelect = { [weak self] clipIndex in self?.selectedClips[trackID]=clipIndex;self?.updateClipInspector(trackID,clipIndex) }
                 wave.onClipMenu = { [weak self] clipIndex in self?.clipContextMenu(trackID,clipIndex) }
+                wave.onDropFile = { [weak self] url, frame in self?.beginDropImport(url,trackID,frame) ?? false }
                 wave.onClipHotkey = { [weak self] key in self?.clipHotkey(trackID,key) }
                 wave.setAccessibilityLabel("Позиция на аудиоволне: \(name)")
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
@@ -1786,6 +1787,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func beginTrackImport(_ url: URL) {
         let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
         beginBackgroundImport(.track(path: url, name: name))
+    }
+    func beginDropImport(_ url: URL,_ trackID: UInt64,_ frame: UInt64) -> Bool {
+        guard !isRecording else { return false }
+        guard importJob == nil else { storageMessage("Импорт уже выполняется — дождись или отмени его."); return true }
+        let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
+        beginBackgroundImport(.take(path: url, name: name, trackID: trackID, startFrame: gridSnap(atFrame: Int64(frame)).anchor))
+        return true
     }
     @objc func importWav() {
         guard !isRecording else { return }
