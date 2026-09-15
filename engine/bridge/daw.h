@@ -73,7 +73,7 @@ void daw_cancel_dawproject_export(daw_dawproject_job*);
 void daw_release_dawproject_export(daw_dawproject_job*);
 typedef struct { uint32_t struct_size; uint64_t revision; uint32_t track_count; int32_t can_undo; int32_t can_redo; double master_gain_db; uint32_t bus_count; uint32_t master_insert_count; } daw_snapshot;
 typedef struct { uint32_t struct_size; uint64_t id; double gain_db; char name[481]; uint64_t audio_frames; uint32_t clip_count; double pan; int32_t muted; int32_t solo; uint32_t take_count; uint64_t output_bus_id; uint32_t send_count; uint32_t color; } daw_track;
-typedef struct { uint32_t struct_size; uint64_t start; uint64_t source_offset; uint64_t length; uint64_t fade_in; uint64_t fade_out; uint32_t take_index; uint32_t color; double gain_db; } daw_clip;
+typedef struct { uint32_t struct_size; uint64_t start; uint64_t source_offset; uint64_t length; uint64_t fade_in; uint64_t fade_out; uint32_t take_index; uint32_t color; double gain_db; uint32_t muted; uint32_t looped; } daw_clip;
 typedef struct { uint32_t struct_size; uint32_t index; uint64_t start; uint64_t frames; char name[481]; } daw_take;
 typedef struct { uint32_t struct_size; uint64_t id; double gain_db; double pan; int32_t muted; uint64_t output_bus_id; char name[481]; } daw_bus;
 typedef struct { uint32_t struct_size; uint64_t bus_id; double gain_db; int32_t pre_fader; } daw_send;
@@ -227,6 +227,12 @@ int daw_set_track_color(daw_session*,uint64_t track_id,uint32_t color,uint64_t e
 int daw_duplicate_track(daw_session*,uint64_t track_id,uint64_t* out_new_id,uint64_t expected_revision);
 int daw_set_clip_color(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t color,uint64_t expected_revision);
 int daw_set_clip_gain(daw_session*,uint64_t track_id,uint32_t clip_index,double gain_db,uint64_t expected_revision);
+/* Clip playback state (schema v20): mute drops the region's voice from the
+ * render plan entirely; loop lets a region outlive its slice, wrapping reads
+ * inside [source_offset, source frames). Revision-checked; identical values
+ * are silent no-ops. Un-looping a region longer than its slice rejects. */
+int daw_set_clip_muted(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t muted,uint64_t expected_revision);
+int daw_set_clip_looped(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t looped,uint64_t expected_revision);
 int daw_seek_frame(daw_session*, uint64_t frame);
 /* Loop is ephemeral transport state over a half-open [start,end) frame range.
  * Changing it stops playback. Pass enabled=0 to clear; start/end are ignored. */

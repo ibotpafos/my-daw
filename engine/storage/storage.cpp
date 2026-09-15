@@ -65,11 +65,11 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
     if(observer) observer(1);
     {
         auto db = open(":memory:", SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
-        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=19; BEGIN IMMEDIATE;"
+        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=20; BEGIN IMMEDIATE;"
             "CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, next_id INTEGER NOT NULL, master_gain REAL NOT NULL);"
             "CREATE TABLE tracks(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pcm BLOB, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), solo INTEGER NOT NULL CHECK(solo IN(0,1)), base_start INTEGER NOT NULL, output_bus INTEGER NOT NULL, color INTEGER);"
             "CREATE TABLE takes(track_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, take_start INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(track_id,position));"
-            "CREATE TABLE regions(track_id INTEGER NOT NULL, position INTEGER NOT NULL, clip_start INTEGER NOT NULL, source_offset INTEGER NOT NULL, clip_length INTEGER NOT NULL, fade_in INTEGER NOT NULL, fade_out INTEGER NOT NULL, take_index INTEGER NOT NULL, gain REAL NOT NULL, color INTEGER NOT NULL, PRIMARY KEY(track_id,position));"
+            "CREATE TABLE regions(track_id INTEGER NOT NULL, position INTEGER NOT NULL, clip_start INTEGER NOT NULL, source_offset INTEGER NOT NULL, clip_length INTEGER NOT NULL, fade_in INTEGER NOT NULL, fade_out INTEGER NOT NULL, take_index INTEGER NOT NULL, gain REAL NOT NULL, color INTEGER NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), looped INTEGER NOT NULL CHECK(looped IN(0,1)), PRIMARY KEY(track_id,position));"
             "CREATE TABLE buses(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), output_bus INTEGER NOT NULL);"
             "CREATE TABLE sends(track_id INTEGER NOT NULL, position INTEGER NOT NULL, bus_id INTEGER NOT NULL, gain REAL NOT NULL, pre_fader INTEGER NOT NULL CHECK(pre_fader IN(0,1)), PRIMARY KEY(track_id,position));"
             "CREATE TABLE track_volume_automation(track_id INTEGER NOT NULL, position INTEGER NOT NULL, frame INTEGER NOT NULL, gain REAL NOT NULL, PRIMARY KEY(track_id,position), UNIQUE(track_id,frame));"
@@ -88,7 +88,7 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
         sqlite3_bind_int64(meta.get(), 2, static_cast<int64_t>(state.nextID));sqlite3_bind_double(meta.get(),3,state.masterGain); done(meta.get());
         auto row = prepare(db.get(), "INSERT INTO tracks VALUES(?,?,?,?,?,?,?,?,?,?,?)");
         auto takeRow=prepare(db.get(),"INSERT INTO takes VALUES(?,?,?,?,?)");
-        auto regionRow = prepare(db.get(), "INSERT INTO regions VALUES(?,?,?,?,?,?,?,?,?,?)");
+        auto regionRow = prepare(db.get(), "INSERT INTO regions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
         int position = 0;
         for (const auto& t : state.tracks) {
             sqlite3_reset(row.get()); sqlite3_clear_bindings(row.get());
@@ -103,7 +103,7 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
                 const auto& region=t.regions[clipPosition]; sqlite3_reset(regionRow.get()); sqlite3_clear_bindings(regionRow.get());
                 sqlite3_bind_int64(regionRow.get(),1,static_cast<int64_t>(t.id)); sqlite3_bind_int64(regionRow.get(),2,static_cast<int64_t>(clipPosition));
                 sqlite3_bind_int64(regionRow.get(),3,static_cast<int64_t>(region.start)); sqlite3_bind_int64(regionRow.get(),4,static_cast<int64_t>(region.sourceOffset)); sqlite3_bind_int64(regionRow.get(),5,static_cast<int64_t>(region.length));
-                sqlite3_bind_int64(regionRow.get(),6,static_cast<int64_t>(region.fadeIn)); sqlite3_bind_int64(regionRow.get(),7,static_cast<int64_t>(region.fadeOut));sqlite3_bind_int64(regionRow.get(),8,region.take);sqlite3_bind_double(regionRow.get(),9,region.gain);sqlite3_bind_int64(regionRow.get(),10,static_cast<int64_t>(region.color)); done(regionRow.get());
+                sqlite3_bind_int64(regionRow.get(),6,static_cast<int64_t>(region.fadeIn)); sqlite3_bind_int64(regionRow.get(),7,static_cast<int64_t>(region.fadeOut));sqlite3_bind_int64(regionRow.get(),8,region.take);sqlite3_bind_double(regionRow.get(),9,region.gain);sqlite3_bind_int64(regionRow.get(),10,static_cast<int64_t>(region.color));sqlite3_bind_int(regionRow.get(),11,region.muted);sqlite3_bind_int(regionRow.get(),12,region.looped); done(regionRow.get());
             }
         }
         auto busRow=prepare(db.get(),"INSERT INTO buses VALUES(?,?,?,?,?,?,?)");
@@ -166,7 +166,7 @@ State readDraft(const std::string& path) {
     auto version = prepare(db.get(), "PRAGMA user_version");
     if (sqlite3_step(version.get()) != SQLITE_ROW) throw Error("Missing draft version");
     auto formatVersion=integer(version.get(),0);
-    if(formatVersion<1 || formatVersion>19) throw Error("Unsupported draft version");
+    if(formatVersion<1 || formatVersion>20) throw Error("Unsupported draft version");
     auto integrity = prepare(db.get(), "PRAGMA quick_check");
     if (sqlite3_step(integrity.get()) != SQLITE_ROW || string(integrity.get(), 0) != "ok") throw Error("Damaged draft database");
     auto meta = prepare(db.get(),formatVersion>=7?"SELECT singleton,revision,next_id,master_gain FROM metadata":"SELECT singleton,revision,next_id,0 FROM metadata");
@@ -207,12 +207,12 @@ State readDraft(const std::string& path) {
     if (rc != SQLITE_DONE) throw Error("Cannot read draft tracks");
     if(formatVersion>=8){auto takes=prepare(db.get(),"SELECT track_id,position,name,take_start,pcm FROM takes ORDER BY track_id,position");while((rc=sqlite3_step(takes.get()))==SQLITE_ROW){const auto trackID=static_cast<uint64_t>(integer(takes.get(),0));auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& t){return t.id==trackID;});if(track==state.tracks.end()||integer(takes.get(),1)!=static_cast<int64_t>(track->takes.size())||sqlite3_column_type(takes.get(),4)!=SQLITE_BLOB)throw Error("Invalid draft take order");const auto size=static_cast<size_t>(sqlite3_column_bytes(takes.get(),4));audioBytes+=size;if(audioBytes>64*1024*1024)throw Error("Draft audio exceeds memory limit");const auto bytes=static_cast<const unsigned char*>(sqlite3_column_blob(takes.get(),4));if(!bytes)throw Error("Missing take PCM data");track->takes.push_back({string(takes.get(),2),static_cast<uint64_t>(integer(takes.get(),3)),decodePCM({bytes,size})});}if(rc!=SQLITE_DONE)throw Error("Cannot read draft takes");}
     if(formatVersion>=4) {
-        auto regions=prepare(db.get(),formatVersion==4 ? "SELECT track_id,position,clip_start,source_offset,clip_length,0,0,0 FROM regions ORDER BY track_id,position" : (formatVersion<8?"SELECT track_id,position,clip_start,source_offset,clip_length,fade_in,fade_out,0 FROM regions ORDER BY track_id,position":"SELECT track_id,position,clip_start,source_offset,clip_length,fade_in,fade_out,take_index,gain,color FROM regions ORDER BY track_id,position"));
+        auto regions=prepare(db.get(),formatVersion==4 ? "SELECT track_id,position,clip_start,source_offset,clip_length,0,0,0 FROM regions ORDER BY track_id,position" : (formatVersion<8?"SELECT track_id,position,clip_start,source_offset,clip_length,fade_in,fade_out,0 FROM regions ORDER BY track_id,position":(formatVersion>=20?"SELECT track_id,position,clip_start,source_offset,clip_length,fade_in,fade_out,take_index,gain,color,muted,looped FROM regions ORDER BY track_id,position":"SELECT track_id,position,clip_start,source_offset,clip_length,fade_in,fade_out,take_index,gain,color FROM regions ORDER BY track_id,position")));
         while((rc=sqlite3_step(regions.get()))==SQLITE_ROW) {
             const auto trackID=static_cast<uint64_t>(integer(regions.get(),0));
             auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& t){return t.id==trackID;});
             if(track==state.tracks.end() || integer(regions.get(),1)!=static_cast<int64_t>(track->regions.size())) throw Error("Invalid draft clip order");
-            track->regions.push_back({static_cast<uint64_t>(integer(regions.get(),2)),static_cast<uint64_t>(integer(regions.get(),3)),static_cast<uint64_t>(integer(regions.get(),4)),static_cast<uint64_t>(integer(regions.get(),5)),static_cast<uint64_t>(integer(regions.get(),6)),static_cast<uint32_t>(integer(regions.get(),7)),formatVersion>=19?sqlite3_column_double(regions.get(),8):0.0,formatVersion>=19?static_cast<uint32_t>(integer(regions.get(),9)):0u});
+            track->regions.push_back({static_cast<uint64_t>(integer(regions.get(),2)),static_cast<uint64_t>(integer(regions.get(),3)),static_cast<uint64_t>(integer(regions.get(),4)),static_cast<uint64_t>(integer(regions.get(),5)),static_cast<uint64_t>(integer(regions.get(),6)),static_cast<uint32_t>(integer(regions.get(),7)),formatVersion>=19?sqlite3_column_double(regions.get(),8):0.0,formatVersion>=19?static_cast<uint32_t>(integer(regions.get(),9)):0u,formatVersion>=20&&sqlite3_column_int(regions.get(),10)!=0,formatVersion>=20&&sqlite3_column_int(regions.get(),11)!=0});
         }
         if(rc!=SQLITE_DONE) throw Error("Cannot read draft clips");
     }

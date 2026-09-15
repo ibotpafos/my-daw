@@ -1107,7 +1107,7 @@ int daw_get_take_waveform(daw_session* s,uint64_t id,uint32_t index,float* peaks
 int daw_comp_range(daw_session* s,uint64_t id,uint32_t take,uint64_t start,uint64_t end,uint64_t rev){return guard(s,[&]{if(end<=start)throw daw::Error("Comp end must follow start");s->model.compRange(id,take,start,end-start,rev);resetTransport(s);});}
 int daw_get_clip(daw_session* s,uint64_t id,uint32_t index,daw_clip* out) { return guard(s,[&]{
     if(!out || out->struct_size!=sizeof(daw_clip)) throw daw::Error("Clip ABI mismatch");
-    for(const auto& t:s->model.state().tracks) if(t.id==id) { if(index>=t.regions.size()) throw daw::Error("Clip index out of range"); const auto& r=t.regions[index]; *out={sizeof(daw_clip),r.start,r.sourceOffset,r.length,r.fadeIn,r.fadeOut,r.take,r.color,r.gain}; return; }
+    for(const auto& t:s->model.state().tracks) if(t.id==id) { if(index>=t.regions.size()) throw daw::Error("Clip index out of range"); const auto& r=t.regions[index]; *out={sizeof(daw_clip),r.start,r.sourceOffset,r.length,r.fadeIn,r.fadeOut,r.take,r.color,r.gain,r.muted,r.looped}; return; }
     throw daw::Error("Track not found");
 }); }
 int daw_edit_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t start,uint64_t offset,uint64_t length,uint64_t rev) {
@@ -1127,6 +1127,8 @@ int daw_set_track_color(daw_session* s,uint64_t id,uint32_t color,uint64_t rev){
 int daw_duplicate_track(daw_session* s,uint64_t id,uint64_t* out_new_id,uint64_t rev){return guard(s,[&]{if(!out_new_id)throw daw::Error("Missing duplicate track id output");*out_new_id=s->model.duplicateTrack(id,rev);cancelStalePlaybackPreparation(s);});}
 int daw_set_clip_color(daw_session* s,uint64_t id,uint32_t index,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setClipColor(id,index,color,rev);cancelStalePlaybackPreparation(s);});}
 int daw_set_clip_gain(daw_session* s,uint64_t id,uint32_t index,double gain_db,uint64_t rev){return guard(s,[&]{if(!std::isfinite(gain_db))throw daw::Error("Clip gain must be finite");s->model.setClipGain(id,index,gain_db,rev);resetTransport(s);});}
+int daw_set_clip_muted(daw_session* s,uint64_t id,uint32_t index,uint32_t muted,uint64_t rev){return guard(s,[&]{if(muted>1)throw daw::Error("Clip mute flag must be 0 or 1");s->model.setClipMuted(id,index,muted!=0,rev);resetTransport(s);});}
+int daw_set_clip_looped(daw_session* s,uint64_t id,uint32_t index,uint32_t looped,uint64_t rev){return guard(s,[&]{if(looped>1)throw daw::Error("Clip loop flag must be 0 or 1");s->model.setClipLooped(id,index,looped!=0,rev);resetTransport(s);});}
 int daw_seek_frame(daw_session* s,uint64_t frame) { return guard(s,[&]{
     if(recordingActive(s))throw daw::Error("Stop recording before seeking");
     if(frame>duration(s)) throw daw::Error("Position exceeds project duration");

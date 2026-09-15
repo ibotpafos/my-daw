@@ -240,6 +240,16 @@ int main(void) {
     if (daw_move_midi_clip_to_track(session, 3, 1, 3, 9602400, r + 2) == 0) result |= 1; /* lands on the pasted clip */
     if (daw_undo(session, r + 2) != 0) result |= 1;
     if (daw_get_midi_clip_count(session, 2, &clip_now) != 0 || clip_now != 2) result |= 1;
+    /* Clip playback state (v20) on revision r+3: this session carries no audio
+     * regions, so mute/loop ride the honest rejection paths — and the widened
+     * daw_clip struct still passes the ABI gate. */
+    daw_clip probe = {0}; probe.struct_size = sizeof(probe);
+    if (daw_get_clip(session, 2, 0, &probe) == 0) result |= 1;                        /* no audio regions */
+    if (probe.muted != 0 || probe.looped != 0) result |= 1;                          /* untouched fields */
+    if (daw_set_clip_muted(session, 2, 0, 2, r + 3) == 0) result |= 1;                /* flag must be 0 or 1 */
+    if (daw_set_clip_muted(session, 2, 0, 1, r + 3) == 0) result |= 1;                /* clip not found */
+    if (daw_set_clip_looped(session, 4, 0, 1, r + 3) == 0) result |= 1;
+    if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

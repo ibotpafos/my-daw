@@ -8,7 +8,7 @@
 #include <vector>
 namespace daw {
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
-struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool operator==(const Region&) const = default; };
+struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; bool operator==(const Region&) const = default; };
 struct Take { std::string name; uint64_t start=0; std::shared_ptr<const Clip> audio; bool operator==(const Take&) const = default; };
 struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operator==(const Send&) const = default; };
 // Ordered timeline points for the track fader. Frames are project frames at
@@ -226,6 +226,12 @@ public:
     // the target value is already identical, one snapshot-based undo entry.
     void setClipColor(uint64_t id, uint32_t clipIndex, uint32_t color, uint64_t expected);
     void setClipGain(uint64_t id, uint32_t clipIndex, double gainDb, uint64_t expected);
+    // Playback state (v20): mute drops the region's voice from the render plan;
+    // loop lets a region outlive its slice and wraps reads inside
+    // [sourceOffset, sourceFrames). Un-looping a region longer than its slice
+    // honestly rejects through validate().
+    void setClipMuted(uint64_t id, uint32_t clipIndex, bool muted, uint64_t expected);
+    void setClipLooped(uint64_t id, uint32_t clipIndex, bool looped, uint64_t expected);
     void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
     void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
     void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);

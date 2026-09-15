@@ -140,6 +140,42 @@ int main(){try{
         CHECK(s.state().tracks[0].midiClips.size()==1&&s.state().tracks[1].midiClips.size()==1);
     }
 
+    // ---- Playback state (v20): clip mute + loop; split/edit carry every field ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));  // 2s stereo
+        s.importAt("State",clip,0,0);                                      // track 1, region [0,96000), rev 1
+        s.setClipMuted(1,0,true,1);                                        // rev 2
+        CHECK(s.state().tracks[0].regions[0].muted==true);
+        s.setClipMuted(1,0,true,2);                                        // identical: silent no-op
+        CHECK(s.state().revision==2);
+        rejectsMessage("Audio clip not found",[&]{s.setClipMuted(1,9,false,2);});
+        s.setClipLooped(1,0,true,2);                                       // rev 3
+        CHECK(s.state().tracks[0].regions[0].looped==true);
+        s.editClip(1,0,0,0,96000+48000,3);                                 // rev 4 — 3s from a 2s slice, legal only because looped
+        CHECK(s.state().tracks[0].regions[0].length==144000);
+        rejectsMessage("Invalid clip bounds (timeline limit: 10 minutes)",[&]{s.setClipLooped(1,0,false,4);});
+        CHECK(s.state().revision==4);
+        rejectsMessage("Unloop the clip before splitting",[&]{s.splitClip(1,0,48000,4);});
+        s.setClipLooped(1,0,true,4);                                       // identical: silent no-op
+        CHECK(s.state().revision==4);
+        // Shrink back into the slice, then unloop: field-carry regressions follow.
+        s.editClip(1,0,0,0,96000,4);                                      // rev 5
+        s.setClipLooped(1,0,false,5);                                     // rev 6
+        s.setClipGain(1,0,-4.0,6);                                        // rev 7
+        const uint64_t afterGain=s.state().revision;
+        CHECK(s.state().tracks[0].regions[0].length==96000&&std::abs(s.state().tracks[0].regions[0].gain+4.0)<1e-9);
+        s.setClipColor(1,0,0xFEEDABu,afterGain);                           // rev +1
+        s.splitClip(1,0,48000,s.state().revision);                         // rev +2
+        { const auto& t=s.state().tracks[0];
+          CHECK(t.regions.size()==2);
+          CHECK(t.regions[0].gain==t.regions[1].gain&&t.regions[0].color==0xFEEDABu&&t.regions[1].color==0xFEEDABu);
+          CHECK(t.regions[1].sourceOffset==48000&&t.regions[1].start==48000); }
+        s.editClip(1,0,0,0,40000,s.state().revision);                       // trim left half, rev +1
+        CHECK(s.state().tracks[0].regions[0].color==0xFEEDABu&&std::abs(s.state().tracks[0].regions[0].gain+4.0)<1e-9);
+        // Mute round-trips through undo back to audible
+        { const uint64_t now=s.state().revision; s.undo(now); }
+    }
+
     // ---- MIDI clip: color, transpose (clamped), quantize ----
     {   Session s; s.add("MIDI",0);                                     // track 1, rev 1
         MidiClip mc; mc.track=0; mc.start=0; mc.length=48000*8;
@@ -182,6 +218,8 @@ int main(){try{
         s.setTrackColor(1,0x112233u,1);                            // rev 2
         s.setClipColor(1,0,0x445566u,2);                          // rev 3
         s.setClipGain(1,0,-9.0,3);                              // rev 4
+        s.setClipMuted(1,0,true,4);                              // rev 5
+        s.setClipLooped(1,0,true,5);                             // rev 6
         const auto path=dir/"cliptrack-roundtrip.mydawdraft";
         writeDraft(s.state(),path.string());
         const auto loaded=readDraft(path.string());
@@ -190,14 +228,16 @@ int main(){try{
         CHECK(loaded.tracks[0].regions.size()==1);
         CHECK(loaded.tracks[0].regions[0].color==0x445566u);
         CHECK(std::abs(loaded.tracks[0].regions[0].gain-(-9.0))<1e-9);
+        CHECK(loaded.tracks[0].regions[0].muted==true);
+        CHECK(loaded.tracks[0].regions[0].looped==true);
         auto db=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(db,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==19);
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==20);
         sqlite3_finalize(version);
         sqlite3_close(db);
     }
 
-    std::cout << "PASS: clip/track editing: track mute/solo/color/gain + duplicateTrack, per-region clip color + gain (dB), cross-track clipboard copy/move for audio regions (take-source rule, last-clip and timeline-space guards) and MIDI clips (lane/notes/colour travel, overlap via validate), MIDI clip color/transpose(clamped)/quantize, all revision-checked with silent no-ops and snapshot undo/redo, and schema v19 round trip persisting track/region color and per-region gain" << std::endl;
+    std::cout << "PASS: clip/track editing: track mute/solo/color/gain + duplicateTrack, per-region clip color + gain (dB), playback state (mute + loop with slice-wrap bounds), cross-track clipboard copy/move for audio regions (take-source rule, last-clip and timeline-space guards) and MIDI clips (lane/notes/colour travel, overlap via validate), MIDI clip color/transpose(clamped)/quantize, split/edit field-carry regressions, all revision-checked with silent no-ops and snapshot undo/redo, and schema v20 round trip persisting track/region color, per-region gain and mute/loop flags" << std::endl;
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}

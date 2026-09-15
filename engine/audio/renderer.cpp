@@ -433,11 +433,14 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
     if (track.audio) {
       nextActive.push_back(i);
       for (const auto &region : track.regions) {
+        if (region.muted) continue; // a muted region gets no voice at all
         const auto source =
             region.take == 0 ? track.audio : track.takes[region.take - 1].audio;
+        const uint64_t loopSpan =
+            region.looped ? source->frames() - region.sourceOffset : 0;
         nextVoices.push_back({i, source, region.start, region.sourceOffset,
                               region.length, region.fadeIn, region.fadeOut,
-                              gain(region.gain)});
+                              gain(region.gain), loopSpan});
         end = std::max(end, region.start + region.length);
       }
     } else if (!track.midiClips.empty() || !track.inserts.empty()) {
@@ -1030,7 +1033,8 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
       const auto t = timelineAt(cursor, f);
       for (const auto &voice : voices)
         if (t >= voice.start && t - voice.start < voice.length) {
-          const auto local = t - voice.start, source = voice.offset + local;
+          const auto local = t - voice.start;
+          const auto source = voice.offset + (voice.loopSpan ? local % voice.loopSpan : local);
           float envelope = 1;
           if (voice.fadeIn)
             envelope = std::min(envelope,

@@ -99,7 +99,9 @@ void validate(const State& state) {
             uint64_t previousEnd=0; bool first=true;size_t regionIndex=0;
             for(const auto& region:t.regions) {
                 const auto source=region.take==0?t.audio:(region.take<=t.takes.size()?t.takes[region.take-1].audio:nullptr);
-                if(!source||region.sourceOffset>=source->frames() || !region.length || region.length>source->frames()-region.sourceOffset
+                // Looped regions may outlive their slice: reads wrap inside
+                // [sourceOffset, frames); an unlooped one stays strictly inside.
+                if(!source||region.sourceOffset>=source->frames() || !region.length || (!region.looped&&region.length>source->frames()-region.sourceOffset)
                     || region.start>48000*600 || region.length>48000*600-region.start) throw Error("Invalid clip bounds (timeline limit: 10 minutes)");
                 if(region.fadeIn>region.length || region.fadeOut>region.length || region.fadeIn>region.length-region.fadeOut) throw Error("Clip fades exceed its duration");
                 if(!first && region.start<previousEnd) {
@@ -508,8 +510,9 @@ void Session::editClipFull(uint64_t id,uint32_t index,uint64_t start,uint64_t of
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
     auto& region=it->regions[index];
-    if(region==Region{start,offset,length,fadeIn,fadeOut,region.take}) return;
-    region={start,offset,length,fadeIn,fadeOut,region.take};
+    const auto carried=Region{start,offset,length,fadeIn,fadeOut,region.take,region.gain,region.color,region.muted,region.looped};
+    if(region==carried) return;
+    region=carried;
     std::stable_sort(it->regions.begin(),it->regions.end(),[](const auto& a,const auto& b){return a.start<b.start;});
     commit(std::move(next));
 }
@@ -519,9 +522,10 @@ void Session::splitClip(uint64_t id,uint32_t index,uint64_t frame,uint64_t expec
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
     const auto original=it->regions[index];
     if(frame<=original.start || frame>=original.start+original.length) throw Error("Split position must be inside the clip");
+    if(original.looped) throw Error("Unloop the clip before splitting");
     const auto left=frame-original.start;
-    it->regions[index]={original.start,original.sourceOffset,left,std::min(original.fadeIn,left),0,original.take};
-    it->regions.insert(it->regions.begin()+index+1,{frame,original.sourceOffset+left,original.length-left,0,std::min(original.fadeOut,original.length-left),original.take});
+    it->regions[index]={original.start,original.sourceOffset,left,std::min(original.fadeIn,left),0,original.take,original.gain,original.color,original.muted,original.looped};
+    it->regions.insert(it->regions.begin()+index+1,{frame,original.sourceOffset+left,original.length-left,0,std::min(original.fadeOut,original.length-left),original.take,original.gain,original.color,original.muted,original.looped});
     commit(std::move(next));
 }
 void Session::duplicateClip(uint64_t id,uint32_t index,uint64_t expected) {
@@ -693,6 +697,8 @@ void Session::splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uin
 }
 void Session::setClipColor(uint64_t id,uint32_t clipIndex,uint32_t color,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.color==color)return;region.color=color;commit(std::move(next));}
 void Session::setClipGain(uint64_t id,uint32_t clipIndex,double gainDb,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");if(!std::isfinite(gainDb)||gainDb<-60.0||gainDb>12.0)throw Error("Clip gain outside -60..12 dB");auto& region=it->regions[clipIndex];if(region.gain==gainDb)return;region.gain=gainDb;commit(std::move(next));}
+void Session::setClipMuted(uint64_t id,uint32_t clipIndex,bool muted,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.muted==muted)return;region.muted=muted;commit(std::move(next));}
+void Session::setClipLooped(uint64_t id,uint32_t clipIndex,bool looped,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.looped==looped)return;region.looped=looped;commit(std::move(next));}
 void Session::setMidiClipColor(uint64_t trackID,uint32_t index,uint32_t color,uint64_t expected){check(expected);State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];if(clip.color==color)return;clip.color=color;commit(std::move(next));}
 void Session::transposeMidiClip(uint64_t trackID,uint32_t index,int8_t semitones,uint64_t expected){check(expected);if(semitones==0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const int v=static_cast<int>(note.pitch)+semitones;const uint8_t p=v<0?0:(v>127?127:static_cast<uint8_t>(v));if(p!=note.pitch)changed=true;note.pitch=p;}if(!changed)return;commit(std::move(next));}
 void Session::quantizeMidiClip(uint64_t trackID,uint32_t index,double gridBeats,uint64_t expected){check(expected);if(gridBeats<=0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const double beats=next.beatsAtFrame(note.start);const double snapped=std::round(beats/gridBeats)*gridBeats;const uint64_t frame=next.frameAtBeats(snapped);if(frame!=note.start)changed=true;note.start=frame;}if(!changed)return;commit(std::move(next));}

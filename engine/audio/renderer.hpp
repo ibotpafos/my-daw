@@ -130,6 +130,8 @@ class Renderer {
     // Per-region clip gain, pre-converted to linear. An untouched region
     // carries 0 dB and therefore multiplies by exactly 1.0.
     float gain = 1.0f;
+    // Looped regions wrap reads inside [offset, offset+loopSpan); 0 is plain play.
+    uint64_t loopSpan = 0;
   };
   struct SendRoute {
     size_t track = 0, bus = 0;

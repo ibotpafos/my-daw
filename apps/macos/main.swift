@@ -1153,7 +1153,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let selectedTake=min(selectedTakes[track.id] ?? 0,max(0,Int(track.take_count)-1));selectedTakes[track.id]=selectedTake;takePopup.selectItem(at:selectedTake);takePopups[Int(index)]=takePopup
             let applyComp=button("В comp",#selector(applyComp(_:)));applyComp.tag=Int(index);applyComp.isEnabled=track.take_count>1
             var clips: [ClipGeometry] = []
-            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db)) } }
+            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db,muted:clip.muted != 0,looped:clip.looped != 0)) } }
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
             let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
@@ -1810,6 +1810,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let gain=NSMenuItem(title:"Громкость клипа…",action:#selector(editClipGain(_:)),keyEquivalent:""); gain.target=self; gain.representedObject=ClipActionPayload(trackID,clipIndex); menu.addItem(gain)
         menu.addItem(.separator())
         let copy=NSMenuItem(title:"Копировать клип (C)",action:#selector(copyClipFromMenu(_:)),keyEquivalent:""); copy.target=self; copy.representedObject=ClipActionPayload(trackID,clipIndex); menu.addItem(copy)
+        var state=daw_clip(); state.struct_size=UInt32(MemoryLayout<daw_clip>.size)
+        if check(daw_get_clip(session,trackID,UInt32(clipIndex),&state)) {
+            let mute=NSMenuItem(title:"Мьют клипа (M)",action:#selector(toggleClipMuteFromMenu(_:)),keyEquivalent:""); mute.target=self; mute.representedObject=ClipActionPayload(trackID,clipIndex); mute.state=state.muted != 0 ? .on:.off; menu.addItem(mute)
+            let loop=NSMenuItem(title:"Луп клипа (L)",action:#selector(toggleClipLoopFromMenu(_:)),keyEquivalent:""); loop.target=self; loop.representedObject=ClipActionPayload(trackID,clipIndex); loop.state=state.looped != 0 ? .on:.off; menu.addItem(loop)
+        }
         menu.addItem(trackSubmenu(title:"Копировать на дорожку",action:#selector(pasteClipToFromMenu(_:)),source:trackID,clipIndex:clipIndex))
         menu.addItem(trackSubmenu(title:"Перенести на дорожку",action:#selector(moveClipToFromMenu(_:)),source:trackID,clipIndex:clipIndex))
         menu.addItem(.separator())
@@ -1833,6 +1838,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return root
     }
     @objc func copyClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; clipClipboard=(p.trackID,p.clipIndex,false); storageMessage("Клип в буфере обмена — V в фокусе волны или «Вставить клип».") }
+    func toggleClipState(_ trackID:UInt64,_ clipIndex:Int,looped:Bool){
+        guard !isRecording else{return}
+        var state=daw_clip(); state.struct_size=UInt32(MemoryLayout<daw_clip>.size)
+        guard check(daw_get_clip(session,trackID,UInt32(clipIndex),&state)) else{return}
+        let next:UInt32 = looped ? (state.looped == 0 ? 1:0) : (state.muted == 0 ? 1:0)
+        let ok = looped ? check(daw_set_clip_looped(session,trackID,UInt32(clipIndex),next,revision)) : check(daw_set_clip_muted(session,trackID,UInt32(clipIndex),next,revision))
+        if ok {refresh(); pollTransport()}
+    }
+    @objc func toggleClipMuteFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; finishEditing(); stopAudio(); toggleClipState(p.trackID,p.clipIndex,looped:false) }
+    @objc func toggleClipLoopFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; finishEditing(); stopAudio(); toggleClipState(p.trackID,p.clipIndex,looped:true) }
     @objc func pasteClipToFromMenu(_ sender:NSMenuItem){
         guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}
         var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size)
@@ -1891,7 +1906,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func splitClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(splitClipAtCursor(_:))) }
     @objc func duplicateClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(duplicateSelectedClip(_:))) }
     @objc func deleteClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
-    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{clipClipboard=(trackID,index,false);storageMessage("Клип в буфере обмена — V на дорожке или «Вставить клип».")}; case "v": pasteClipboardTo(trackID,playheadFrame); default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
+    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{clipClipboard=(trackID,index,false);storageMessage("Клип в буфере обмена — V на дорожке или «Вставить клип».")}; case "v": pasteClipboardTo(trackID,playheadFrame); case "m": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:false)}; case "l": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:true)}; default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
     func commitTrackColor(_ id:UInt64,_ color:UInt32){ guard !isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_track_color(session,id,color,revision)){refresh(); pollTransport()} }
     @objc func pickTrackColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; commitTrackColor(p.trackID,p.color) }
     func showTrackPalette(_ id:UInt64){

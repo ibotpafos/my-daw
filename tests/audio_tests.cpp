@@ -150,6 +150,29 @@ int main(){try{
         std::vector<float> fadeLeft(200),fadeRight(200);fadeRenderer.render(fadeLeft.data(),fadeRight.data(),200);
         for(size_t i=0;i<200;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));const auto env=i<99?float(i)/99.0f:1.0f;CHECK(std::abs(fadeLeft[i]-0.5f*smoothed*env)<0.00002f);}
     }
+    // A muted region contributes no voice at all: pure silence in its window.
+    {   daw::Session muteState;muteState.import("M",constantClip,0);            // region [0,1000) frames
+        muteState.duplicateClip(1,0,1);                                          // rev 2: [1000,2000)
+        muteState.setClipMuted(1,1,true,2);                                      // rev 3: mute the copy
+        daw::Renderer muteRenderer;muteRenderer.prepare(muteState.state());muteRenderer.playing=true;
+        std::vector<float> muteLeft(1500),muteRight(1500);muteRenderer.render(muteLeft.data(),muteRight.data(),1500);
+        for(size_t i=0;i<300;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(muteLeft[i]-0.5f*smoothed)<0.00002f);}
+        { const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,1000.0f);CHECK(std::abs(muteLeft[999]-0.5f*smoothed)<0.00002f&&std::abs(muteLeft[998]-muteLeft[997])<0.01f); }
+        for(size_t i=1000;i<1500;++i)CHECK(muteLeft[i]==0.0f&&muteRight[i]==0.0f);
+        muteState.setClipMuted(1,0,true,3);                                      // rev 4: everything muted
+        rejects([&]{daw::Renderer dead;dead.prepare(muteState.state());});       // an all-muted project has nothing to play
+        muteState.undo(4);CHECK(!muteState.state().tracks[0].regions[0].muted&&muteState.state().tracks[0].regions[1].muted);
+    }
+    // A looped region reads [sourceOffset, frames) repeatedly: past the slice
+    // end the ramp restarts from zero instead of falling silent.
+    {   std::vector<float> ramp;for(size_t frame=0;frame<1000;++frame){ramp.push_back(float(frame)*0.001f);ramp.push_back(float(frame)*0.001f);}
+        auto rampClip=std::make_shared<const daw::Clip>(std::move(ramp));        // 1000 stereo frames, L==R
+        daw::Session loop;loop.import("L",rampClip,0);loop.setClipLooped(1,0,true,1);
+        loop.editClip(1,0,0,0,1500,2);CHECK(loop.state().tracks[0].regions[0].length==1500);
+        daw::Renderer loopRenderer;loopRenderer.prepare(loop.state());loopRenderer.playing=true;
+        std::vector<float> loopLeft(1500),loopRight(1500);loopRenderer.render(loopLeft.data(),loopRight.data(),1500);
+        for(size_t i=0;i<1500;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));const auto level=float(i<1000?i:i-1000)*0.001f;CHECK(std::abs(loopLeft[i]-level*smoothed)<0.00002f&&loopLeft[i]==loopRight[i]);}
+    }
     std::vector<float> mixA(6000),mixB(6000);for(size_t i=0;i<3000;++i){mixA[i*2]=0.4f;mixA[i*2+1]=0.2f;mixB[i*2]=0.1f;mixB[i*2+1]=0.3f;}
     daw::Session mixer;mixer.import("A",std::make_shared<const daw::Clip>(std::move(mixA)),0);mixer.import("B",std::make_shared<const daw::Clip>(std::move(mixB)),1);mixer.pan(1,-1,2);mixer.pan(2,1,3);mixer.masterGain(-6.020599913,4);
     auto mixedLast=[&]{daw::Renderer r;r.prepare(mixer.state());r.playing=true;std::vector<float> l(2048),rr(2048);r.render(l.data(),rr.data(),2048);return std::pair{l.back(),rr.back()};};
