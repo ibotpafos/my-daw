@@ -386,12 +386,43 @@ extension DraftApp {
             let panel = NSOpenPanel(); panel.allowedContentTypes = [self.draftType, .data]
             panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
             guard panel.runModal() == .OK, let url = panel.url else { return }
+            self.openDraftFile(url)
+        }
+    }
+    func openDraftFile(_ url: URL) {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             guard self.check(daw_open_draft(self.session, url.path)) else { return }
             var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
             guard self.check(daw_get_snapshot(self.session, &snapshot)) else { return }
             self.rotateRecovery(); self.currentURL = url; self.savedRevision = snapshot.revision; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
+    }
+    @objc func packageProject() {
+        guard !exportBusy else { storageMessage("Дождитесь окончания текущего фонового задания."); return }
+        if isRecording { finishRecording(); guard !isRecording else { return } }
+        finishEditing()
+        guard let draft = currentURL else { storageMessage("Сначала сохраните проект — архив упаковывает сохранённый файл."); return }
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = draft.deletingPathExtension().lastPathComponent + ".mydawzip"
+        panel.message = "Архив .mydawzip содержит черновик со всем аудио и манифест."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if check(daw_package_project(session, draft.path, url.path)) { storageMessage("Проект упакован: \(url.lastPathComponent)") }
+    }
+    @objc func openPackage() {
+        if isRecording { storageMessage("Сначала остановите запись."); return }
+        guard !exportBusy else { storageMessage("Дождитесь окончания текущего фонового задания."); return }
+        finishEditing()
+        requestLeave { [weak self] in
+            guard let self else { return }
+            let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip]
+            panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+            guard panel.runModal() == .OK, let zip = panel.url else { return }
+            var target = zip.deletingPathExtension().appendingPathExtension("mydawdraft")
+            var counter = 2
+            while FileManager.default.fileExists(atPath: target.path) { target = zip.deletingPathExtension().appendingPathExtension("mydawdraft-\(counter)"); counter += 1 }
+            guard self.check(daw_extract_package(self.session, zip.path, target.path)) else { return }
+            self.openDraftFile(target)
+            self.storageMessage("Проект извлечён из архива: \(target.lastPathComponent)")
         }
     }
     func pollStorage() {

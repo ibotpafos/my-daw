@@ -70,6 +70,11 @@ daw_export_job* daw_begin_stem_export(daw_session*,const char* directory,int32_t
  * above -70 LUFS. */
 typedef struct { uint32_t struct_size; double integrated_lufs; double true_peak_db; int32_t gated_silence; } daw_loudness_report;
 int daw_measure_wav(daw_session*,const char* path,daw_loudness_report* out);
+/* .mydawzip project archive: packs a saved draft file (self-contained
+ * SQLite + manifest) into one distributable ZIP, and extracts it back to a
+ * target draft path (the caller picks a non-colliding name). */
+int daw_package_project(daw_session*,const char* draft_path,const char* zip_path);
+int daw_extract_package(daw_session*,const char* zip_path,const char* target_draft_path);
 int daw_poll_export(daw_export_job*,daw_export_status*);
 void daw_cancel_export(daw_export_job*);
 void daw_release_export(daw_export_job*);

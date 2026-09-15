@@ -22,6 +22,7 @@
 #include "platform/macos/vst3_scan_cache.hpp"
 #endif
 #include "storage/save_job.hpp"
+#include "storage/project_package.hpp"
 #include "jobs/limiter.hpp"
 #include <atomic>
 #include <chrono>
@@ -1014,6 +1015,14 @@ int daw_measure_wav(daw_session* s,const char* path,daw_loudness_report* out){re
     const auto clip=daw::readWav(required(path));
     const auto report=daw::measureLoudness(*clip);
     out->integrated_lufs=report.integratedLufs;out->true_peak_db=report.truePeakDb;out->gated_silence=report.gatedSilence?1:0;
+});}
+int daw_package_project(daw_session* s,const char* draftPath,const char* zipPath){return guard(s,[&]{
+    std::string error;
+    if(!daw::writeProjectPackage(required(draftPath),required(zipPath),error))throw daw::Error(error);
+});}
+int daw_extract_package(daw_session* s,const char* zipPath,const char* targetDraftPath){return guard(s,[&]{
+    std::string error;
+    if(!daw::extractProjectPackage(required(zipPath),required(targetDraftPath),error))throw daw::Error(error);
 });}
 int daw_poll_export(daw_export_job* job,daw_export_status* out) {
     if(!job||!out||out->struct_size!=sizeof(daw_export_status))return 1;auto& result=*job->result;

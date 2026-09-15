@@ -280,6 +280,10 @@ int main(void) {
     if (daw_get_record_preroll(session, NULL) == 0) result |= 1;
     if (daw_set_record_preroll(session, 0) != 0) result |= 1;
     if (daw_get_record_preroll(session, &preroll) != 0 || preroll != 0) result |= 1;
+    /* Project package: absent drafts and NULL arguments reject. */
+    if (daw_package_project(session, "/nonexistent/mydaw.draft", "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
+    if (daw_package_project(session, NULL, "/tmp/mydaw-pkg-gate.zip") == 0) result |= 1;
+    if (daw_extract_package(session, "/tmp/mydaw-pkg-gate.zip", NULL) == 0) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

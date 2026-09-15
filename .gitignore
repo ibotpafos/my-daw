@@ -13,6 +13,8 @@ xcuserdata/
 *.caf
 *.dSYM/
 *.mydawdraft
+*.mydawzip
+*.mydawtmp
 *.log
 .env
 .env.*
