@@ -6,6 +6,8 @@
 
 [1.29.0](56-studio-pro-arrangement-first-layout.md) сделал arrangement главным рабочим пространством с одним верхним toolbar и нижним transport/status bar; Inspector и Mixer теперь появляются по режиму, а pinned track headers имеют ширину 195 pt. Physical/listening/vendor compatibility gates остаются отдельными; B-012 всё ещё требует vendor matrix, editors и VST3 isolation.
 
+[1.30.0](57-studio-pro-mixer-console.md) превратил нижний Mixer в полноценный горизонтальный console bank: узкие track/bus/master strips показывают Inserts, Sends, output, pan, рабочие channel controls, stereo meter/fader, automation и цветной footer. Полные routing/send/insert actions сохранены в раскрываемой панели «Детали канала». Physical/listening/vendor compatibility gates остаются отдельными; B-012 всё ещё требует vendor matrix, editors и VST3 isolation.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.
@@ -54,7 +56,7 @@ Spikes одноразовые или изолированные; их нельз
 | B-015 | P2 | B-014, B-010 | **Code scope готов:** selected Lead/Doubles, peak/RMS suggestions, preview и atomic apply; listening evidence ещё требуется |
 | B-016 | P2 | B-009, B-013 | **Code scope готов:** DAWproject 1.0 XML/ZIP, media/AU/VST3 state, routing, channel и plug-in parameter automation, loss report; import matrix ещё не прогонялась |
 | B-017 | P2 | B-012 | **Основной code scope готов:** pinned MIT SDK, isolated scan/cache, stereo master processing, parameters/state, latency/tail, dry fallback и DAWproject `.vstpreset`; vendor matrix, editors, sidechain и runtime isolation ещё нужны |
-| B-018 | P1 | B-008, B-011, B-013 | **Code scope и локальный visual/AX QA готовы:** Studio Pro-inspired arrangement-first workspace с одним top toolbar, bottom transport/status, 195-point pinned track headers и режимным Inspector/Mixer; shared zoom/ruler, synchronized vertical scroll, accessible track/bus/master strips, live stereo meters, editable channel/clip inspector, WAV/AU/VST3 browser, persisted dock layout, direct move/trim/fade и единая keyboard command boundary; физический пользовательский workflow и полный VoiceOver audit ещё нужны |
+| B-018 | P1 | B-008, B-011, B-013 | **Code scope и локальный visual/AX QA готовы:** Studio Pro-inspired arrangement-first workspace с одним top toolbar, bottom transport/status, 195-point pinned track headers и режимным Inspector/Mixer; полноразмерный horizontal console bank с Inserts/Sends/routing summaries, track/bus/master controls, live stereo meters/faders и раскрываемыми подробными channel actions; shared zoom/ruler, synchronized vertical scroll, editable channel/clip inspector, WAV/AU/VST3 browser, persisted dock layout, direct move/trim/fade и единая keyboard command boundary; физический пользовательский workflow и полный VoiceOver audit ещё нужны |
 
 ## Риски
 

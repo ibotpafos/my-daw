@@ -90,6 +90,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     weak var arrangementInspectorSplit: NSSplitView?
     weak var arrangementConsoleSplit: NSSplitView?
     weak var consoleView: NSView?
+    weak var consoleDetailsScroll: NSScrollView?
+    var consoleDetailsVisible = false
     var restoringWorkspaceLayout = false
     var workspaceLayoutReady = false
     let inspectorBrowser = InspectorBrowserView(frame: .zero)
@@ -233,6 +235,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let ratio: CGFloat = stored > 0.05 && stored < 0.5 ? stored : 0.16
         trackTimelineSplit.setPosition(min(260, max(195, trackTimelineSplit.bounds.width * ratio)), ofDividerAt: 0)
     }
+    @objc func toggleConsoleDetails(_ sender: NSButton) {
+        consoleDetailsVisible.toggle()
+        consoleDetailsScroll?.isHidden = !consoleDetailsVisible
+        sender.title = consoleDetailsVisible ? "Скрыть детали" : "Детали канала"
+        sender.setAccessibilityLabel(sender.title)
+        arrangementConsoleSplit?.adjustSubviews()
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
     func applyWorkspaceMode(_ mode: Int) {
         guard let arrangementInspectorSplit, let arrangementConsoleSplit else { return }
         restoringWorkspaceLayout = true
@@ -247,8 +257,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let height = arrangementConsoleSplit.bounds.height
         let modeKey = mode == 3 ? "mastering" : "mixing"
         let savedHeightRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementHeightRatio"))
-        let heightRatio: CGFloat = savedHeightRatio > 0.25 && savedHeightRatio < 0.75 ? savedHeightRatio : (mode == 3 ? 0.42 : 0.46)
-        let arrangementHeight = min(max(260, height - 190), max(260, height * heightRatio))
+        let heightRatio: CGFloat = savedHeightRatio > 0.25 && savedHeightRatio < 0.75 ? savedHeightRatio : 0.50
+        let arrangementHeight = min(max(220, height - 250), max(220, height * heightRatio))
         arrangementConsoleSplit.setPosition(arrangementHeight, ofDividerAt: 0)
         let savedArrangementRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementRatio"))
         let arrangementRatio: CGFloat = savedArrangementRatio > 0.5 && savedArrangementRatio < 0.9 ? savedArrangementRatio : (mode == 3 ? 0.70 : 0.73)
@@ -359,9 +369,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let trackTimelineSplit=NSSplitView();self.trackTimelineSplit=trackTimelineSplit;trackTimelineSplit.delegate=self;trackTimelineSplit.isVertical=true;trackTimelineSplit.dividerStyle = .thin;trackTimelineSplit.addArrangedSubview(headerScroll);trackTimelineSplit.addArrangedSubview(scroll)
         consoleRows.orientation = .vertical;consoleRows.alignment = .leading;consoleRows.spacing=6;consoleRows.translatesAutoresizingMaskIntoConstraints=false
         let consoleDocument=DraftCanvas();consoleDocument.translatesAutoresizingMaskIntoConstraints=false;consoleDocument.addSubview(consoleRows)
-        let consoleScroll=NSScrollView();consoleScroll.hasVerticalScroller=true;consoleScroll.drawsBackground=false;consoleScroll.documentView=consoleDocument
+        let consoleScroll=NSScrollView();self.consoleDetailsScroll=consoleScroll;consoleScroll.hasVerticalScroller=true;consoleScroll.drawsBackground=false;consoleScroll.documentView=consoleDocument;consoleScroll.isHidden=true
         NSLayoutConstraint.activate([consoleDocument.widthAnchor.constraint(equalTo:consoleScroll.contentView.widthAnchor),consoleRows.leadingAnchor.constraint(equalTo:consoleDocument.leadingAnchor),consoleRows.trailingAnchor.constraint(equalTo:consoleDocument.trailingAnchor),consoleRows.topAnchor.constraint(equalTo:consoleDocument.topAnchor),consoleRows.bottomAnchor.constraint(equalTo:consoleDocument.bottomAnchor)])
-        let console=NSStackView();self.consoleView=console;console.orientation = .vertical;console.alignment = .leading;console.spacing=5;let mixerHeading=label("MIXER",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold);console.addArrangedSubview(mixerHeading);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll);mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;mixerWorkspace.heightAnchor.constraint(equalToConstant:188).isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:92).isActive=true
+        let console=NSStackView();self.consoleView=console;console.orientation = .vertical;console.alignment = .leading;console.distribution = .fill;console.spacing=4
+        let mixerHeading=label("MIXER",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold)
+        let consoleDetailsButton=button("Детали канала",#selector(toggleConsoleDetails(_:)));consoleDetailsButton.setAccessibilityLabel("Детали канала")
+        let consoleHeader=NSStackView(views:[mixerHeading,flexibleSpace(),consoleDetailsButton]);consoleHeader.alignment = .centerY;consoleHeader.edgeInsets=NSEdgeInsets(top:3,left:8,bottom:2,right:8)
+        console.addArrangedSubview(consoleHeader);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll)
+        mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true
+        mixerWorkspace.heightAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:180).isActive=true
+        mixerWorkspace.setContentHuggingPriority(.defaultLow,for:.vertical);mixerWorkspace.setContentCompressionResistancePriority(.defaultLow,for:.vertical)
         inspectorBrowser.translatesAutoresizingMaskIntoConstraints=false
         inspectorBrowser.widthAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true
         inspectorBrowser.widthAnchor.constraint(lessThanOrEqualToConstant:380).isActive=true
@@ -401,7 +418,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         trackTimelineSplit.setPosition(headerWidth,ofDividerAt:0)
         let inspectorWidth=min(360,max(260,arrangementInspectorSplit.bounds.width*(1-ratio("workspace.arrangementRatio",0.75))))
         arrangementInspectorSplit.setPosition(max(420,arrangementInspectorSplit.bounds.width-inspectorWidth),ofDividerAt:0)
-        let arrangementHeight=min(max(280,arrangementConsoleSplit.bounds.height-210),max(280,arrangementConsoleSplit.bounds.height*ratio("workspace.arrangementHeightRatio",0.60)))
+        let arrangementHeight=min(max(220,arrangementConsoleSplit.bounds.height-250),max(220,arrangementConsoleSplit.bounds.height*ratio("workspace.arrangementHeightRatio",0.50)))
         arrangementConsoleSplit.setPosition(arrangementHeight,ofDividerAt:0)
         applyWorkspaceMode(workspaceMode.selectedSegment)
         workspaceLayoutReady = true
@@ -426,14 +443,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         if splitView === trackTimelineSplit{return 195}
         if splitView === arrangementInspectorSplit{return 420}
-        if splitView === arrangementConsoleSplit{return 260}
+        if splitView === arrangementConsoleSplit{return 220}
         return proposedMinimumPosition
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         if splitView === trackTimelineSplit{return min(260,splitView.bounds.width-420)}
         if splitView === arrangementInspectorSplit{return splitView.bounds.width-240}
-        if splitView === arrangementConsoleSplit{return splitView.bounds.height-190}
+        if splitView === arrangementConsoleSplit{return splitView.bounds.height-250}
         return proposedMaximumPosition
     }
     func installMenu() {
@@ -650,7 +667,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var automationCount:UInt32=0;guard check(daw_get_track_volume_automation_count(session,track.id,&automationCount))else{return};var automationPoints:[(frame:UInt64,gain:Double)]=[];for pointIndex in 0..<automationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_volume_automation_point(session,track.id,pointIndex,&point))else{return};automationPoints.append((point.frame,point.gain_db))};let automation=button(automationCount==0 ? "V AUTO":"V \(automationCount)",#selector(editTrackAutomation(_:)));automation.tag=Int(index);automation.contentTintColor=automationCount==0 ? .secondaryLabelColor:.systemCyan
             var panAutomationCount:UInt32=0;guard check(daw_get_track_pan_automation_count(session,track.id,&panAutomationCount))else{return};var panAutomationPoints:[(frame:UInt64,value:Double)]=[];for pointIndex in 0..<panAutomationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_pan_automation_point(session,track.id,pointIndex,&point))else{return};panAutomationPoints.append((point.frame,point.gain_db))};let panAutomation=button(panAutomationCount==0 ? "P AUTO":"P \(panAutomationCount)",#selector(editTrackPanAutomation(_:)));panAutomation.tag=Int(index);panAutomation.contentTintColor=panAutomationCount==0 ? .secondaryLabelColor:.systemPurple
             automationTargets.append((automationTrackVolume,track.id,"\(name) · Volume"));automationTargets.append((automationTrackPan,track.id,"\(name) · Pan"))
-            mixerKinds[track.id] = .track;mixerStrips.append(MixerStripModel(id:track.id,kind:.track,title:name,color:accent,volumeDb:track.gain_db,pan:track.pan,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_TRACK),ownerID:track.id),sends:mixerSendSummaries(trackID:track.id,count:track.send_count),isSelected:selectedMixerID == track.id,isArmed:armedTrackID == track.id,isMuted:track.muted != 0,isSolo:track.solo != 0,isAutomationRead:automationMode == 0))
+            let trackOutputName = orderedBuses.first(where: { $0.id == track.output_bus_id })?.name ?? "Main"
+            mixerKinds[track.id] = .track;mixerStrips.append(MixerStripModel(id:track.id,kind:.track,title:name,color:accent,volumeDb:track.gain_db,pan:track.pan,outputName:trackOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_TRACK),ownerID:track.id),sends:mixerSendSummaries(trackID:track.id,count:track.send_count),isSelected:selectedMixerID == track.id,isArmed:armedTrackID == track.id,isMuted:track.muted != 0,isSolo:track.solo != 0,isAutomationRead:automationMode == 0))
             remove.contentTintColor = .systemRed
             let output=routingPopup(selected:track.output_bus_id);output.target=self;output.action=#selector(changeOutput(_:));output.setAccessibilityLabel("Выход \(name)");outputTargets[ObjectIdentifier(output)]=(track.id,false)
             let addSend=NSPopUpButton();addSend.addItem(withTitle:"＋ Send…");addSend.lastItem?.representedObject=NSNumber(value:UInt64(0));for bus in orderedBuses{addSend.addItem(withTitle:bus.name);addSend.lastItem?.representedObject=NSNumber(value:bus.id)};addSend.target=self;addSend.action=#selector(addSend(_:));addSend.isEnabled = !orderedBuses.isEmpty;addSend.widthAnchor.constraint(equalToConstant:130).isActive=true;newSendTargets[ObjectIdentifier(addSend)]=track.id
@@ -739,13 +757,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let output=routingPopup(selected:bus.output_bus_id,excluding:bus.id);output.target=self;output.action=#selector(changeOutput(_:));outputTargets[ObjectIdentifier(output)]=(bus.id,true)
             busControlTargets[ObjectIdentifier(mute)]=bus.id;busControlTargets[ObjectIdentifier(gainSlider)]=bus.id;busControlTargets[ObjectIdentifier(panSlider)]=bus.id
             automationTargets.append((automationBusGain,bus.id,"\(name) · Volume"))
-            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0))
+            let busOutputName = orderedBuses.first(where: { $0.id == bus.output_bus_id })?.name ?? "Main"
+            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0))
             let row=NSStackView(views:[badge,mute,field,flexibleSpace(),label("VOL",size:10,color:.tertiaryLabelColor),gainSlider,gainValue,busAutomation,label("PAN",size:10,color:.tertiaryLabelColor),panSlider,panValue,label("OUT",size:10,color:.tertiaryLabelColor),output]);row.spacing=7;row.edgeInsets=NSEdgeInsets(top:7,left:10,bottom:7,right:10);row.wantsLayer=true;row.layer?.backgroundColor=NSColor(calibratedRed:0.16,green:0.10,blue:0.22,alpha:0.18).cgColor;row.layer?.cornerRadius=2
             let group=NSStackView();group.orientation = .vertical;group.alignment = .leading;group.spacing = 2;group.addArrangedSubview(row);row.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id,title:name);group.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             consoleRows.addArrangedSubview(group);group.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
-        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
+        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
         exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
         dawprojectButton.isEnabled = !exportBusy && !isRecording

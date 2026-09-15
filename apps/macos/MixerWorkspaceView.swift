@@ -28,6 +28,7 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
     var volumeDb: Double = 0
     var pan: Double = 0
     var meter = MixerMeterSnapshot()
+    var outputName: String = "Main"
     var inserts: [MixerInsertSummary] = []
     var sends: [MixerSendSummary] = []
     var isSelected = false
@@ -132,7 +133,13 @@ private final class MixerStripView: NSView {
     var onVolume: ((UInt64, Double) -> Void)?
     var onVolumeEnd: ((UInt64, Double) -> Void)?
     var onPan: ((UInt64, Double) -> Void)?
-    private let title=NSTextField(labelWithString: "")
+    private let title = NSTextField(labelWithString: "")
+    private let insertHeading = NSTextField(labelWithString: "INSERTS")
+    private let sendHeading = NSTextField(labelWithString: "SENDS")
+    private let routing = NSTextField(labelWithString: "")
+    private let automation = NSTextField(labelWithString: "")
+    private let value = NSTextField(labelWithString: "")
+    private let footer = NSTextField(labelWithString: "")
     private let meter=MixerMeterView()
     private let fader=MixerFaderView()
     private let pan=NSSlider(value:0,minValue:-1,maxValue:1,target:nil,action:nil)
@@ -141,25 +148,146 @@ private final class MixerStripView: NSView {
     init(model: MixerStripModel) { self.model=model; super.init(frame:.zero); setup(); refresh() }
     required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
     private func setup() {
-        wantsLayer = true; for button in [arm,mute,solo] { button.bezelStyle = .texturedRounded; button.setButtonType(.toggle); addSubview(button) }
-        arm.target = self;arm.action = #selector(toggleArm);mute.target = self;mute.action = #selector(toggleMute);solo.target = self;solo.action = #selector(toggleSolo)
-        pan.target = self;pan.action = #selector(changePan); title.alignment = .center;title.font = .systemFont(ofSize:11,weight:.semibold);inserts.font = .systemFont(ofSize:9);sends.font = .systemFont(ofSize:9);inserts.textColor = .secondaryLabelColor;sends.textColor = .secondaryLabelColor
-        [title,meter,fader,pan,inserts,sends].forEach(addSubview)
+        wantsLayer = true
+        for button in [arm, mute, solo] {
+            button.bezelStyle = .texturedRounded
+            button.setButtonType(.toggle)
+            button.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
+            addSubview(button)
+        }
+        arm.target = self; arm.action = #selector(toggleArm)
+        mute.target = self; mute.action = #selector(toggleMute)
+        solo.target = self; solo.action = #selector(toggleSolo)
+        pan.target = self; pan.action = #selector(changePan)
+
+        title.alignment = .center
+        title.font = .systemFont(ofSize: 10, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        footer.alignment = .center
+        footer.font = .monospacedSystemFont(ofSize: 9, weight: .bold)
+        footer.textColor = .white
+        footer.lineBreakMode = .byTruncatingTail
+        routing.alignment = .center
+        routing.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
+        routing.lineBreakMode = .byTruncatingTail
+        automation.alignment = .center
+        automation.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
+        value.alignment = .center
+        value.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+        for heading in [insertHeading, sendHeading] {
+            heading.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
+            heading.textColor = .tertiaryLabelColor
+        }
+        for detail in [inserts, sends] {
+            detail.font = .systemFont(ofSize: 8)
+            detail.textColor = .secondaryLabelColor
+            detail.lineBreakMode = .byTruncatingTail
+        }
+        [title, insertHeading, inserts, sendHeading, sends, routing, automation, value, meter, fader, pan, footer].forEach(addSubview)
         fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
     }
-    private func refresh() { title.stringValue=model.title;meter.snapshot=model.meter;fader.valueDb=model.volumeDb;pan.doubleValue=model.pan;arm.state=model.isArmed ? .on:.off;mute.state=model.isMuted ? .on:.off;solo.state=model.isSolo ? .on:.off;meter.setAccessibilityLabel("Пиковый уровень \(model.title)");fader.setAccessibilityLabel("Громкость \(model.title)");pan.setAccessibilityLabel("Панорама \(model.title)");arm.setAccessibilityLabel("Запись \(model.title)");mute.setAccessibilityLabel("Mute \(model.title)");solo.setAccessibilityLabel("Solo \(model.title)");inserts.stringValue=model.inserts.prefix(3).map { $0.bypassed ? "⊘ \($0.name)" : $0.name }.joined(separator:"\n");sends.stringValue=model.sends.prefix(2).map { "→ \($0.destination) \(String(format:"%.1f",$0.gainDb))" }.joined(separator:"\n");needsDisplay=true }
+    private func refresh() {
+        title.stringValue = model.title
+        footer.stringValue = model.title.uppercased()
+        meter.snapshot = model.meter
+        fader.valueDb = model.volumeDb
+        pan.doubleValue = model.pan
+        arm.state = model.isArmed ? .on : .off
+        mute.state = model.isMuted ? .on : .off
+        solo.state = model.isSolo ? .on : .off
+        routing.stringValue = model.kind == .master ? "OUTPUT  \(model.outputName)" : "OUT  \(model.outputName)"
+        automation.stringValue = model.isAutomationRead ? "AUTO: READ" : "AUTO: OFF"
+        value.stringValue = String(format: "%+.1f dB", model.volumeDb)
+        inserts.stringValue = model.inserts.prefix(4).map { $0.bypassed ? "⊘ \($0.name)" : "◉ \($0.name)" }.joined(separator: "\n")
+        sends.stringValue = model.sends.prefix(3).map {
+            "→ \($0.destination) \(String(format: "%+.0f", $0.gainDb)) \($0.preFader ? "PRE" : "POST")"
+        }.joined(separator: "\n")
+        meter.setAccessibilityLabel("Пиковый уровень \(model.title)")
+        fader.setAccessibilityLabel("Громкость \(model.title)")
+        pan.setAccessibilityLabel("Панорама \(model.title)")
+        arm.setAccessibilityLabel("Запись \(model.title)")
+        mute.setAccessibilityLabel("Mute \(model.title)")
+        solo.setAccessibilityLabel("Solo \(model.title)")
+        setAccessibilityLabel("Канал микшера \(model.title)")
+        title.toolTip = model.title
+        footer.toolTip = model.title
+        title.setAccessibilityLabel("Канал \(model.title)")
+        footer.setAccessibilityLabel("Канал \(model.title)")
+        let canArm = model.kind == .track
+        arm.isHidden = !canArm
+        arm.isEnabled = canArm
+        let canMute = model.kind != .master
+        mute.isHidden = !canMute
+        mute.isEnabled = canMute
+        let canSolo = model.kind == .track
+        solo.isHidden = !canSolo
+        solo.isEnabled = canSolo
+        let canPan = model.kind != .master
+        pan.isHidden = !canPan
+        pan.isEnabled = canPan
+        needsDisplay = true
+    }
     override var isFlipped: Bool { true }
     override func layout() {
-        let w=bounds.width,h=bounds.height
-        title.frame=NSRect(x:5,y:5,width:w-10,height:17)
-        arm.frame=NSRect(x:7,y:25,width:25,height:21);mute.frame=NSRect(x:34,y:25,width:25,height:21);solo.frame=NSRect(x:61,y:25,width:25,height:21)
-        let controlBottom:CGFloat=48;let panY=max(controlBottom+28,h-26);let faderHeight=max(24,panY-controlBottom-7)
-        meter.frame=NSRect(x:14,y:controlBottom,width:18,height:faderHeight);fader.frame=NSRect(x:42,y:controlBottom,width:28,height:faderHeight);pan.frame=NSRect(x:7,y:panY,width:w-14,height:18)
-        let showDetails=h>=235;inserts.isHidden = !showDetails;sends.isHidden = !showDetails
-        if showDetails { inserts.frame=NSRect(x:5,y:h-92,width:w-10,height:38);sends.frame=NSRect(x:5,y:h-50,width:w-10,height:36) }
+        let width = bounds.width
+        let height = bounds.height
+        let padding: CGFloat = 5
+        let footerHeight: CGFloat = 18
+        let showDetails = height >= 250
+        let detailHeight = showDetails ? min(212, max(122, height * 0.40)) : 0
+        let channelControlsY = showDetails ? detailHeight + 6 : 7
+        let meterTop = channelControlsY + 72
+        let meterBottom = max(meterTop + 26, height - footerHeight - 22)
+
+        insertHeading.isHidden = !showDetails
+        inserts.isHidden = !showDetails
+        sendHeading.isHidden = !showDetails
+        sends.isHidden = !showDetails
+        title.isHidden = showDetails
+
+        if showDetails {
+            insertHeading.frame = NSRect(x: padding, y: 6, width: width - 2 * padding, height: 13)
+            inserts.frame = NSRect(x: padding, y: 20, width: width - 2 * padding, height: max(24, detailHeight * 0.52 - 21))
+            let sendY = max(50, detailHeight * 0.52)
+            sendHeading.frame = NSRect(x: padding, y: sendY, width: width - 2 * padding, height: 13)
+            sends.frame = NSRect(x: padding, y: sendY + 14, width: width - 2 * padding, height: max(24, detailHeight - sendY - 15))
+        } else {
+            title.frame = NSRect(x: padding, y: 5, width: width - 2 * padding, height: 16)
+        }
+
+        routing.frame = NSRect(x: padding, y: channelControlsY, width: width - 2 * padding, height: 15)
+        if !pan.isHidden {
+            pan.frame = NSRect(x: padding, y: channelControlsY + 17, width: width - 2 * padding, height: 17)
+        }
+        let activeButtons: [NSButton] = [arm, mute, solo].filter { !$0.isHidden }
+        let buttonWidth = max(20, (width - padding * CGFloat(activeButtons.count + 1)) / CGFloat(max(1, activeButtons.count)))
+        for (index, button) in activeButtons.enumerated() {
+            button.frame = NSRect(x: padding + CGFloat(index) * (buttonWidth + padding), y: channelControlsY + 37, width: buttonWidth, height: 19)
+        }
+        value.frame = NSRect(x: padding, y: channelControlsY + 58, width: width - 2 * padding, height: 13)
+        let meterHeight = max(26, meterBottom - meterTop)
+        meter.frame = NSRect(x: padding + 9, y: meterTop, width: 12, height: meterHeight)
+        fader.frame = NSRect(x: padding + 28, y: meterTop, width: max(22, width - 42), height: meterHeight)
+        automation.frame = NSRect(x: padding, y: height - footerHeight - 19, width: width - 2 * padding, height: 14)
+        footer.frame = NSRect(x: 2, y: height - footerHeight, width: width - 4, height: footerHeight - 2)
     }
     override func mouseDown(with event:NSEvent) { onSelect?(model.id) }
-    override func draw(_ dirtyRect:NSRect) { let color=model.color ?? (model.kind == .master ? DAWDesignTokens.Color.warning : (model.kind == .bus ? DAWDesignTokens.Color.accent:DAWDesignTokens.Color.mint));(model.isSelected ? color.withAlphaComponent(0.18):DAWDesignTokens.Color.surface).setFill();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:DAWDesignTokens.Radius.card,yRadius:DAWDesignTokens.Radius.card).fill();color.withAlphaComponent(model.isSelected ? 0.85:0.24).setStroke();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:DAWDesignTokens.Radius.card,yRadius:DAWDesignTokens.Radius.card).stroke() }
+    override func draw(_ dirtyRect:NSRect) {
+        let color = model.color ?? (model.kind == .master ? DAWDesignTokens.Color.warning : (model.kind == .bus ? DAWDesignTokens.Color.accent : DAWDesignTokens.Color.mint))
+        let card = bounds.insetBy(dx: 1, dy: 1)
+        (model.isSelected ? color.withAlphaComponent(0.18) : DAWDesignTokens.Color.surface).setFill()
+        NSBezierPath(roundedRect: card, xRadius: DAWDesignTokens.Radius.card, yRadius: DAWDesignTokens.Radius.card).fill()
+        color.withAlphaComponent(model.isSelected ? 0.85 : 0.28).setStroke()
+        NSBezierPath(roundedRect: card, xRadius: DAWDesignTokens.Radius.card, yRadius: DAWDesignTokens.Radius.card).stroke()
+        color.withAlphaComponent(0.92).setFill()
+        NSRect(x: 2, y: max(2, bounds.height - 18), width: max(0, bounds.width - 4), height: 15).fill()
+        if model.kind == .master {
+            color.withAlphaComponent(0.95).setFill()
+            NSRect(x: 2, y: 2, width: 3, height: max(0, bounds.height - 22)).fill()
+        }
+        DAWDesignTokens.Color.canvas.withAlphaComponent(0.55).setStroke()
+        NSBezierPath(rect: NSRect(x: 4, y: 0, width: max(0, bounds.width - 8), height: 0.5)).stroke()
+    }
     @objc private func toggleArm(){onArm?(model.id,arm.state == .on)}
     @objc private func toggleMute(){onMute?(model.id,mute.state == .on)}
     @objc private func toggleSolo(){onSolo?(model.id,solo.state == .on)}
@@ -182,6 +310,40 @@ final class MixerWorkspaceView: NSScrollView {
     override init(frame: NSRect) { super.init(frame:frame); drawsBackground=false; hasHorizontalScroller=true; hasVerticalScroller=false; documentView=canvas }
     required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
     func updateMeters(_ snapshots:[UInt64:MixerMeterSnapshot]) { for(id,snapshot) in snapshots { stripViews[id]?.model.meter=snapshot } }
-    private func rebuild() { canvas.subviews.forEach { $0.removeFromSuperview() };stripViews.removeAll(); let width=max(bounds.width,CGFloat(strips.count)*112+14);canvas.frame=NSRect(x:0,y:0,width:width,height:max(150,bounds.height));for(index,model) in strips.enumerated(){let strip=MixerStripView(model:model);stripViews[model.id]=strip;strip.frame=NSRect(x:7+CGFloat(index)*112,y:0,width:104,height:canvas.bounds.height);strip.onSelect={ [weak self] in self?.onSelect?($0) };strip.onArm={ [weak self] in self?.onArm?($0,$1) };strip.onMute={ [weak self] in self?.onMute?($0,$1) };strip.onSolo={ [weak self] in self?.onSolo?($0,$1) };strip.onVolumeBegin={ [weak self] in self?.onVolumeGestureBegin?($0) };strip.onVolume={ [weak self] in self?.onVolume?($0,$1) };strip.onVolumeEnd={ [weak self] in self?.onVolumeGestureEnd?($0,$1) };strip.onPan={ [weak self] in self?.onPan?($0,$1) };canvas.addSubview(strip)} }
-    override func layout() { super.layout(); rebuild() }
+    private func rebuild() {
+        canvas.subviews.forEach { $0.removeFromSuperview() }
+        stripViews.removeAll()
+        for model in strips {
+            let strip = MixerStripView(model: model)
+            stripViews[model.id] = strip
+            strip.onSelect = { [weak self] in self?.onSelect?($0) }
+            strip.onArm = { [weak self] in self?.onArm?($0, $1) }
+            strip.onMute = { [weak self] in self?.onMute?($0, $1) }
+            strip.onSolo = { [weak self] in self?.onSolo?($0, $1) }
+            strip.onVolumeBegin = { [weak self] in self?.onVolumeGestureBegin?($0) }
+            strip.onVolume = { [weak self] in self?.onVolume?($0, $1) }
+            strip.onVolumeEnd = { [weak self] in self?.onVolumeGestureEnd?($0, $1) }
+            strip.onPan = { [weak self] in self?.onPan?($0, $1) }
+            canvas.addSubview(strip)
+        }
+        layoutStrips()
+    }
+    private func layoutStrips() {
+        let stripWidth: CGFloat = bounds.height >= 300 ? 92 : 84
+        let gap: CGFloat = 4
+        let canvasSize = NSSize(
+            width: max(bounds.width, CGFloat(strips.count) * (stripWidth + gap) + gap),
+            height: max(150, bounds.height)
+        )
+        if canvas.frame.size != canvasSize { canvas.frame.size = canvasSize }
+        for (index, model) in strips.enumerated() {
+            stripViews[model.id]?.frame = NSRect(
+                x: gap + CGFloat(index) * (stripWidth + gap),
+                y: 0,
+                width: stripWidth,
+                height: canvasSize.height
+            )
+        }
+    }
+    override func layout() { super.layout(); layoutStrips() }
 }
