@@ -7,6 +7,9 @@ struct MixerMeterSnapshot: Sendable, Equatable {
     var rightPeak: Float = 0
     var leftHold: Float = 0
     var rightHold: Float = 0
+    /// BS.1770 momentary/short-term LUFS, только для мастера; nil — нет живого рендерера.
+    var momentaryLufs: Float?
+    var shortTermLufs: Float?
 }
 
 struct MixerInsertSummary: Sendable, Equatable {
@@ -138,6 +141,7 @@ private final class MixerStripView: NSView {
     private let insertHeading = NSTextField(labelWithString: "INSERTS")
     private let sendHeading = NSTextField(labelWithString: "SENDS")
     private let routing = NSTextField(labelWithString: "")
+    private let loudness = NSTextField(labelWithString: "")
     private let automation = NSTextField(labelWithString: "")
     private let value = NSTextField(labelWithString: "")
     private let footer = NSTextField(labelWithString: "")
@@ -171,6 +175,11 @@ private final class MixerStripView: NSView {
         routing.alignment = .center
         routing.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
         routing.lineBreakMode = .byTruncatingTail
+        loudness.alignment = .center
+        loudness.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
+        loudness.textColor = DAWDesignTokens.Color.mint
+        loudness.lineBreakMode = .byTruncatingTail
+        loudness.isHidden = true
         automation.alignment = .center
         automation.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
         value.alignment = .center
@@ -184,7 +193,7 @@ private final class MixerStripView: NSView {
             detail.textColor = .secondaryLabelColor
             detail.lineBreakMode = .byTruncatingTail
         }
-        [title, insertHeading, inserts, sendHeading, sends, routing, automation, value, meter, fader, pan, footer].forEach(addSubview)
+        [title, insertHeading, inserts, sendHeading, sends, routing, loudness, automation, value, meter, fader, pan, footer].forEach(addSubview)
         fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
     }
     private func refresh() {
@@ -198,6 +207,11 @@ private final class MixerStripView: NSView {
         mute.state = model.isMuted ? .on : .off
         solo.state = model.isSolo ? .on : .off
         routing.stringValue = model.kind == .master ? "MAIN  \(model.outputName)" : "OUT  \(model.outputName)"
+        if model.kind == .master, let momentary = model.meter.momentaryLufs {
+            loudness.isHidden = false
+            loudness.stringValue = momentary < -99 ? "LUFS · тишина" : String(format: "M %.1f · S %.1f LUFS", momentary, model.meter.shortTermLufs ?? momentary)
+            loudness.setAccessibilityLabel("Громкость мастера: \(loudness.stringValue)")
+        } else { loudness.isHidden = true; loudness.stringValue = "" }
         automation.stringValue = model.isAutomationRead ? "AUTO: READ" : "AUTO: OFF"
         value.stringValue = String(format: "%+.1f dB", model.volumeDb)
         inserts.stringValue = model.inserts.isEmpty ? "—" : model.inserts.prefix(4).map { $0.bypassed ? "⊘ \($0.name)" : "◉ \($0.name)" }.joined(separator: "\n")
@@ -266,6 +280,7 @@ private final class MixerStripView: NSView {
         }
 
         routing.frame = NSRect(x: padding, y: channelControlsY, width: width - 2 * padding, height: 15)
+        loudness.frame = NSRect(x: padding, y: max(channelControlsY + 20, height - 34), width: width - 2 * padding, height: 11)
         if !pan.isHidden {
             pan.frame = NSRect(x: padding, y: channelControlsY + 17, width: width - 2 * padding, height: 17)
         }

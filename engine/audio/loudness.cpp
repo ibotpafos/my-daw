@@ -6,20 +6,52 @@
 
 namespace daw {
 namespace {
-struct Biquad {
-  double b0, b1, b2, a1, a2;
-  double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-  double process(double x) {
-    const double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-    x2 = x1; x1 = x; y2 = y1; y1 = y;
-    return y;
-  }
-};
 double lufsOf(double power) {
   return power > 0 ? -0.691 + 10.0 * std::log10(power)
                    : -std::numeric_limits<double>::infinity();
 }
 } // namespace
+
+void MasterLoudnessTracker::process(const float *left, const float *right,
+                                    uint32_t frames) noexcept {
+  for (uint32_t i = 0; i < frames; ++i) {
+    const double l = highpassL_.process(shelfL_.process(left[i]));
+    const double r = highpassR_.process(shelfR_.process(right[i]));
+    blockSum_ += l * l + r * r;
+    if (++sinceBlock_ < 4800)
+      continue;
+    blocks_[next_] = static_cast<float>(blockSum_ / 4800.0);
+    next_ = (next_ + 1) % 30;
+    if (filled_ < 30)
+      ++filled_;
+    blockSum_ = 0;
+    sinceBlock_ = 0;
+    double momentarySum = 0, shortSum = 0;
+    for (size_t k = 0; k < filled_; ++k) {
+      const size_t index = (next_ + 30 - filled_ + k) % 30;
+      shortSum += blocks_[index];
+      if (k + 4 >= filled_)
+        momentarySum += blocks_[index];
+    }
+    const size_t momentaryCount = filled_ < 4 ? filled_ : 4;
+    const double momentaryPower = momentaryCount ? momentarySum / static_cast<double>(momentaryCount) : 0.0;
+    const double shortPower = filled_ ? shortSum / static_cast<double>(filled_) : 0.0;
+    momentary_.store(momentaryPower > 1e-12 ? float(lufsOf(momentaryPower)) : -200.0f,
+                     std::memory_order_release);
+    short_.store(shortPower > 1e-12 ? float(lufsOf(shortPower)) : -200.0f,
+                 std::memory_order_release);
+  }
+}
+void MasterLoudnessTracker::reset() noexcept {
+  LoudnessBiquad shelf{1.53512485958697, -2.69169618940638,
+                       1.19839281085285, -1.69065929318241, 0.73248077421585};
+  shelfL_ = shelf; shelfR_ = shelf;
+  LoudnessBiquad highpass{1.0, -2.0, 1.0, -1.99004715666020, 0.99007225734356};
+  highpassL_ = highpass; highpassR_ = highpass;
+  blockSum_ = 0; sinceBlock_ = 0; filled_ = 0; next_ = 0;
+  momentary_.store(-200.0f, std::memory_order_release);
+  short_.store(-200.0f, std::memory_order_release);
+}
 
 LoudnessReport measureLoudness(const Clip &clip) {
   LoudnessReport report;
@@ -30,11 +62,11 @@ LoudnessReport measureLoudness(const Clip &clip) {
     return report;
   }
   // K-weighting: high shelf then RLB high-pass, per channel.
-  Biquad shelfL{1.53512485958697, -2.69169618940638, 1.19839281085285,
+  LoudnessBiquad shelfL{1.53512485958697, -2.69169618940638, 1.19839281085285,
                 -1.69065929318241, 0.73248077421585};
-  Biquad shelfR = shelfL;
-  Biquad highpassL{1.0, -2.0, 1.0, -1.99004715666020, 0.99007225734356};
-  Biquad highpassR = highpassL;
+  LoudnessBiquad shelfR = shelfL;
+  LoudnessBiquad highpassL{1.0, -2.0, 1.0, -1.99004715666020, 0.99007225734356};
+  LoudnessBiquad highpassR = highpassL;
   std::vector<double> prefix(frames + 1, 0.0);
   for (size_t i = 0; i < frames; ++i) {
     const double l = highpassL.process(shelfL.process(samples[i * 2]));

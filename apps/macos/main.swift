@@ -1058,13 +1058,17 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func pollMeters() {
         var snapshots: [UInt64: MixerMeterSnapshot] = [:]
+        var masterLoud=daw_master_loudness();masterLoud.struct_size=UInt32(MemoryLayout<daw_master_loudness>.size)
+        let liveLoudness: (Float,Float)? = daw_get_master_loudness(session,&masterLoud)==0 && masterLoud.live==1 ? (masterLoud.momentary_lufs,masterLoud.short_term_lufs):nil
         let activeIDs=Set(mixerWorkspace.strips.map(\.id));meterHolds=meterHolds.filter{activeIDs.contains($0.key)}
         for strip in mixerWorkspace.strips {
             let owner:Int32=strip.kind == .master ? Int32(DAW_INSERT_OWNER_MASTER):(strip.kind == .bus ? Int32(DAW_INSERT_OWNER_BUS):Int32(DAW_INSERT_OWNER_TRACK))
             var meter=daw_channel_meter();meter.struct_size=UInt32(MemoryLayout<daw_channel_meter>.size)
             guard daw_get_channel_meter(session,owner,strip.id,&meter) == 0 else{continue}
             let old=meterHolds[strip.id] ?? (left:Float(0),right:Float(0));let hold=(left:max(meter.left_peak,old.left*0.92),right:max(meter.right_peak,old.right*0.92));meterHolds[strip.id]=hold
-            snapshots[strip.id]=MixerMeterSnapshot(leftPeak:meter.left_peak,rightPeak:meter.right_peak,leftHold:hold.0,rightHold:hold.1)
+            var snapshot=MixerMeterSnapshot(leftPeak:meter.left_peak,rightPeak:meter.right_peak,leftHold:hold.0,rightHold:hold.1)
+            if strip.kind == .master { snapshot.momentaryLufs=liveLoudness?.0; snapshot.shortTermLufs=liveLoudness?.1 }
+            snapshots[strip.id]=snapshot
         }
         mixerWorkspace.updateMeters(snapshots)
     }

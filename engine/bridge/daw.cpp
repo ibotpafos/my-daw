@@ -1226,6 +1226,14 @@ int daw_get_channel_meter(daw_session* s,int32_t owner,uint64_t ownerID,daw_chan
     if(s->duplex&&s->duplex->renderer.playing.load())readChannelMeter(state,s->duplex->renderer,owner,ownerID,out->left_peak,out->right_peak);
     else if(s->output&&s->output->renderer.playing.load())readChannelMeter(state,s->output->renderer,owner,ownerID,out->left_peak,out->right_peak);
 });}
+int daw_get_master_loudness(daw_session* s,daw_master_loudness* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_master_loudness))throw daw::Error("Master loudness ABI mismatch");
+    *out={sizeof(daw_master_loudness),DAW_MASTER_LOUDNESS_VERSION,-200.0f,-200.0f,0};
+    const daw::Renderer* live=nullptr;
+    if(s->duplex&&s->duplex->renderer.playing.load())live=&s->duplex->renderer;
+    else if(s->output&&s->output->renderer.playing.load())live=&s->output->renderer;
+    if(live){float momentary=0,shortTerm=0;live->masterLoudness(momentary,shortTerm);out->momentary_lufs=momentary;out->short_term_lufs=shortTerm;out->live=1;}
+});}
 int daw_get_output_status(daw_session* s,daw_output_status* out){return guard(s,[&]{
     if(!out||out->struct_size!=sizeof(daw_output_status))throw daw::Error("Output status ABI mismatch");
     *out={sizeof(daw_output_status),s->transientOutputState,0,s->playbackGeneration,0,0};if(s->playbackPreparation)return;if(!s->output&&!s->duplex)return;const auto status=s->duplex?s->duplex->telemetry():s->output->telemetry();

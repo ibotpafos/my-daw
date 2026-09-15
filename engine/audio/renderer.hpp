@@ -1,5 +1,6 @@
 #pragma once
 #include "audio/effect.hpp"
+#include "audio/loudness.hpp"
 #include "domain/session.hpp"
 #include <algorithm>
 #include <array>
@@ -210,6 +211,8 @@ class Renderer {
   std::array<std::atomic<float>, 256> trackMeterLeft{}, trackMeterRight{};
   std::array<std::atomic<float>, 16> busMeterLeft{}, busMeterRight{};
   std::atomic<float> masterMeterLeft{0}, masterMeterRight{0};
+  // BS.1770-4 momentary/short-term master loudness, fed from the RT path.
+  MasterLoudnessTracker loudnessTracker;
   uint32_t preparedTrackCount = 0, preparedBusCount = 0;
   std::atomic<float> masterGain{1};
   float smoothMaster = 1;
@@ -289,6 +292,12 @@ public:
   bool trackMeter(size_t preparedIndex, float &left, float &right) const noexcept;
   bool busMeter(size_t preparedIndex, float &left, float &right) const noexcept;
   void masterMeter(float &left, float &right) const noexcept;
+  // Post-master-inserts loudness in LUFS; -200 = fully quiet or unmeasured.
+  // Updated on the audio thread at every 100 ms energy block boundary.
+  void masterLoudness(float &momentary, float &shortTerm) const noexcept {
+    momentary = loudnessTracker.momentaryLufs();
+    shortTerm = loudnessTracker.shortTermLufs();
+  }
   // Returns false only when this prepared graph has no record for insertID.
   // The returned fields are lock-free snapshots and do not mutate State.
   bool insertRuntimeStatus(uint64_t insertID,

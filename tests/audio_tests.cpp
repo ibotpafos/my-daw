@@ -455,6 +455,25 @@ int main(){try{
         CHECK(std::memcmp(bounceL.data(),quietL.data(),span*sizeof(float))==0&&
               std::memcmp(bounceR.data(),quietR.data(),span*sizeof(float))==0);
     }
+    // Realtime master loudness tracker: BS.1770-4 momentary/short-term windows
+    // fed by the render path, with silent sentinel and meter reset.
+    {   std::vector<float> meterTone; for(size_t i=0;i<48000*3;++i){const float v=std::sin(2.0f*3.14159265f*1000.0f*float(i)/48000.0f);meterTone.push_back(v);meterTone.push_back(v);}
+        auto toneClip=std::make_shared<const daw::Clip>(std::move(meterTone));
+        daw::Session toneSession;toneSession.import("Meter",toneClip,0);
+        daw::Renderer meterRenderer;meterRenderer.prepare(toneSession.state());meterRenderer.playing=true;
+        std::vector<float> meterL(19200),meterR(19200);float momentary=1,shortTerm=1;
+        for(int pass=0;pass<8;++pass){meterRenderer.render(meterL.data(),meterR.data(),19200);meterRenderer.masterLoudness(momentary,shortTerm);}
+        CHECK(std::abs(momentary-0.0f)<0.8f&&std::abs(shortTerm-0.0f)<0.8f);  // full-scale 1 kHz: -3.01 RMS + K-weighting ~= 0 LUFS
+        CHECK(meterRenderer.masterLatencyFrames()==0);
+        meterRenderer.resetMeters();meterRenderer.masterLoudness(momentary,shortTerm);
+        CHECK(momentary<-100.0f&&shortTerm<-100.0f);  // reset returns to the -200 sentinel
+        std::vector<float> dead(48000*3*2,0.0f);auto deadClip=std::make_shared<const daw::Clip>(std::move(dead));
+        daw::Session deadSession;deadSession.import("Silent",deadClip,0);
+        daw::Renderer quietRenderer;quietRenderer.prepare(deadSession.state());quietRenderer.playing=true;
+        for(int pass=0;pass<8;++pass)quietRenderer.render(meterL.data(),meterR.data(),19200);
+        quietRenderer.masterLoudness(momentary,shortTerm);
+        CHECK(momentary<-100.0f&&shortTerm<-100.0f);  // digital silence never leaves the sentinel
+    }
     std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap, instrument voice with release and loop cutoffs, metronome click/accent/tempo-map/export-suppress\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

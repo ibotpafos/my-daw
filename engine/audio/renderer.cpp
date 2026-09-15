@@ -863,6 +863,7 @@ void Renderer::clearMeters() noexcept {
     value.store(0.0f, std::memory_order_release);
   masterMeterLeft.store(0.0f, std::memory_order_release);
   masterMeterRight.store(0.0f, std::memory_order_release);
+  loudnessTracker.reset();
 }
 
 bool Renderer::trackMeter(size_t preparedIndex, float &left,
@@ -1223,6 +1224,9 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
     }
     if (!processChain(masterEffects, masterEffectAutomation, masterEffectIDs, outL, outR, count, processTime, cursor))
       pluginErrors.fetch_add(1, std::memory_order_relaxed);
+    // Loudness metering reads the final program output but not the click
+    // track: EBU practice meters program material, the metronome is monitor.
+    loudnessTracker.process(outL, outR, count);
     // The click track joins after master gain and master inserts: monitoring
     // only, never processed, summed to both channels at cursor-relative
     // positions (frame - blockStart). The offline export render suppresses it.

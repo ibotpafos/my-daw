@@ -261,6 +261,11 @@ int main(void) {
     if (daw_measure_wav(session, "/nonexistent/mydaw-tone.wav", &loudness) == 0) result |= 1;
     loudness.struct_size = sizeof(loudness) - 4;
     if (daw_measure_wav(session, "/tmp", &loudness) == 0) result |= 1;
+    /* Live master loudness: no running output means live=0 at the sentinel. */
+    daw_master_loudness meter = {0}; meter.struct_size = sizeof(meter);
+    if (daw_get_master_loudness(session, &meter) != 0 || meter.live != 0 || meter.momentary_lufs > -100.0f) result |= 1;
+    meter.struct_size = sizeof(meter) - 4;
+    if (daw_get_master_loudness(session, &meter) == 0) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

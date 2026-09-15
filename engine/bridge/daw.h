@@ -164,6 +164,12 @@ typedef struct { uint32_t struct_size; int32_t playing; uint64_t frame; uint64_t
  * owner uses DAW_INSERT_OWNER_*; master owner_id remains zero. */
 enum { DAW_CHANNEL_METER_VERSION = 1 };
 typedef struct { uint32_t struct_size; uint32_t version; float left_peak; float right_peak; } daw_channel_meter;
+/* Live BS.1770-4 master loudness while an output or duplex device is running:
+ * momentary (400 ms) and short-term (3 s) windows in LUFS, updated at 100 ms
+ * block boundaries by the audio thread. -200 means fully quiet or unmeasured;
+ * live is 0 when no renderer is playing and both values report -200. */
+enum { DAW_MASTER_LOUDNESS_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; float momentary_lufs; float short_term_lufs; int32_t live; } daw_master_loudness;
 /* state: 0 idle, 1 running, 2 stopped, 3 device lost/changed, 4 stalled, 5 callback buffer error. */
 /* Output states: 0 idle, 1 running, 2 stopped, 3 device lost, 4 stalled,
  * 5 callback error, 6 render graph preparing, 7 preparation failed. */
@@ -264,6 +270,7 @@ int daw_get_transport(daw_session*, daw_transport*);
 /* Reads live channel telemetry only. If no renderer is playing (including a
  * stopped session), both peaks are zero. It never changes project state. */
 int daw_get_channel_meter(daw_session*,int32_t owner,uint64_t owner_id,daw_channel_meter*);
+int daw_get_master_loudness(daw_session*,daw_master_loudness*);
 int daw_get_output_status(daw_session*, daw_output_status*);
 /* Recording is mono input duplicated to stereo, float32 at 48 kHz, at most 60 s.
  * An armed take with an enabled loop uses one AUHAL duplex callback and commits
