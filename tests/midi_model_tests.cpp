@@ -281,6 +281,6 @@ int main(){try{
         live.redo(4);                                                                         // rev 5
         CHECK(live.state().tracks[0].midiClips[0].notes==take);
     }
-    std::cout << "PASS: MIDI model: clips/notes validated, seven revision-checked commands (appendMidiNotes keeps capture order and never grows a clip), undo/redo and writeDraft/readDraft round trip at schema v17 with v15/v16 fallback, MidiRecorder takes and the batch fit predicate" << std::endl;
+    std::cout << "PASS: MIDI model: clips/notes validated, seven revision-checked commands (appendMidiNotes keeps capture order and never grows a clip), undo/redo and writeDraft/readDraft round trip at schema v18 with v15/v16/v17 fallback, MidiRecorder takes and the batch fit predicate" << std::endl;
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}

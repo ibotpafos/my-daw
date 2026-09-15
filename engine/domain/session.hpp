@@ -69,6 +69,13 @@ struct TimeSignaturePoint { uint64_t frame=0; uint8_t numerator=kDefaultTimeSign
 constexpr bool isTimeSignatureDenominator(uint8_t denominator) noexcept {
     return denominator!=0 && (denominator & (denominator-1))==0 && denominator<=32;
 }
+// Project markers (locators) name positions on the shared 48 kHz timeline.
+// The lane is ordered by frame, never duplicates a frame, and stays below
+// kMaxMidiFrame. Unlike the tempo and meter maps a marker lane is optional:
+// validate() accepts the empty vector, so a fresh project carries none. Names
+// reuse the shared track-name rule (validateName: strict UTF-8, 1-120 characters).
+constexpr size_t kMaxMarkersPerProject=256;
+struct Marker { uint64_t frame=0; std::string name; bool operator==(const Marker&) const = default; };
 struct PluginInsert { uint64_t id=0; uint32_t type=0, subtype=0, manufacturer=0; std::string name; bool bypassed=false; uint32_t latencyFrames=0; std::vector<uint8_t> state; std::vector<PluginParameterAutomationLane> parameterAutomation; PluginHostingMode hostingMode=PluginHostingMode::InProcess; bool operator==(const PluginInsert&) const = default; };
 bool isVst3PluginInsert(const PluginInsert& plugin) noexcept;
 struct Track { uint64_t id; std::string name; double gain; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
@@ -86,6 +93,10 @@ struct State {
     // have to model a "no tempo" case beyond their defensive defaults.
     std::vector<TempoPoint> tempo{{0,kDefaultTempoBpm}};
     std::vector<TimeSignaturePoint> timeSignatures{{0,kDefaultTimeSignatureNumerator,kDefaultTimeSignatureDenominator}};
+    // Optional locator lane; the empty vector is a valid default. Commands keep
+    // it sorted by frame, so readers and undo snapshots never see a gap or a
+    // duplicate position.
+    std::vector<Marker> markers;
     // Beat positions count whole quarter notes from frame 0 across the tempo
     // map: one beat spans 60/bpm seconds at the fixed 48 kHz project rate.
     // Conversion accumulates per-segment durations in long double and rounds
@@ -211,6 +222,14 @@ public:
     void removeTempo(uint64_t frame,uint64_t expected);
     void setTimeSignatureAt(uint64_t frame,uint8_t numerator,uint8_t denominator,uint64_t expected);
     void removeTimeSignature(uint64_t frame,uint64_t expected);
+    // Marker commands follow the tempo convention: expected revision, one
+    // snapshot-based undo entry per committed command, and a silent no-op when
+    // the name is already identical. A duplicate frame is rejected rather than
+    // upserted because a locator identifies a unique position. Frames never
+    // move: relocating a marker is a remove plus add pair in v0.
+    void addMarker(uint64_t frame,const std::string& name,uint64_t expected);
+    void removeMarker(uint64_t frame,uint64_t expected);
+    void renameMarker(uint64_t frame,const std::string& name,uint64_t expected);
     void addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip>,uint64_t start,uint64_t expected);
     void addTakes(uint64_t id,std::vector<Take> takes,uint64_t expected);
     void compRange(uint64_t id,uint32_t take,uint64_t start,uint64_t length,uint64_t expected);

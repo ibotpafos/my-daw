@@ -65,7 +65,7 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
     if(observer) observer(1);
     {
         auto db = open(":memory:", SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
-        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=17; BEGIN IMMEDIATE;"
+        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=18; BEGIN IMMEDIATE;"
             "CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, next_id INTEGER NOT NULL, master_gain REAL NOT NULL);"
             "CREATE TABLE tracks(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pcm BLOB, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), solo INTEGER NOT NULL CHECK(solo IN(0,1)), base_start INTEGER NOT NULL, output_bus INTEGER NOT NULL);"
             "CREATE TABLE takes(track_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, take_start INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(track_id,position));"
@@ -81,7 +81,8 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
             "CREATE TABLE midi_clips(track_id INTEGER NOT NULL, position INTEGER NOT NULL, start INTEGER NOT NULL, length INTEGER NOT NULL, lane INTEGER NOT NULL, PRIMARY KEY(track_id,position));"
             "CREATE TABLE midi_notes(track_id INTEGER NOT NULL, clip_position INTEGER NOT NULL, position INTEGER NOT NULL, start INTEGER NOT NULL, length INTEGER NOT NULL, pitch INTEGER NOT NULL, channel INTEGER NOT NULL, velocity INTEGER NOT NULL, PRIMARY KEY(track_id,clip_position,position));"
             "CREATE TABLE tempo_points(frame INTEGER PRIMARY KEY, bpm REAL NOT NULL);"
-            "CREATE TABLE time_signature_points(frame INTEGER PRIMARY KEY, numerator INTEGER NOT NULL, denominator INTEGER NOT NULL);");
+            "CREATE TABLE time_signature_points(frame INTEGER PRIMARY KEY, numerator INTEGER NOT NULL, denominator INTEGER NOT NULL);"
+            "CREATE TABLE markers(frame INTEGER PRIMARY KEY, name TEXT NOT NULL);");
         auto meta = prepare(db.get(), "INSERT INTO metadata VALUES(1,?,?,?)");
         sqlite3_bind_int64(meta.get(), 1, static_cast<int64_t>(state.revision));
         sqlite3_bind_int64(meta.get(), 2, static_cast<int64_t>(state.nextID));sqlite3_bind_double(meta.get(),3,state.masterGain); done(meta.get());
@@ -132,6 +133,8 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
         for(const auto& point:state.tempo){sqlite3_reset(tempoRow.get());sqlite3_clear_bindings(tempoRow.get());sqlite3_bind_int64(tempoRow.get(),1,static_cast<int64_t>(point.frame));sqlite3_bind_double(tempoRow.get(),2,point.bpm);done(tempoRow.get());}
         auto timeSignatureRow=prepare(db.get(),"INSERT INTO time_signature_points VALUES(?,?,?)");
         for(const auto& point:state.timeSignatures){sqlite3_reset(timeSignatureRow.get());sqlite3_clear_bindings(timeSignatureRow.get());sqlite3_bind_int64(timeSignatureRow.get(),1,static_cast<int64_t>(point.frame));sqlite3_bind_int64(timeSignatureRow.get(),2,point.numerator);sqlite3_bind_int64(timeSignatureRow.get(),3,point.denominator);done(timeSignatureRow.get());}
+        auto markerRow=prepare(db.get(),"INSERT INTO markers VALUES(?,?)");
+        for(const auto& marker:state.markers){sqlite3_reset(markerRow.get());sqlite3_clear_bindings(markerRow.get());sqlite3_bind_int64(markerRow.get(),1,static_cast<int64_t>(marker.frame));if(sqlite3_bind_text(markerRow.get(),2,marker.name.data(),static_cast<int>(marker.name.size()),SQLITE_TRANSIENT)!=SQLITE_OK)throw Error("Cannot bind marker name");done(markerRow.get());}
         sql(db.get(), "COMMIT");
         sqlite3_int64 size=0;
         std::unique_ptr<unsigned char,decltype(&sqlite3_free)> image(sqlite3_serialize(db.get(),"main",&size,0),sqlite3_free);
@@ -163,7 +166,7 @@ State readDraft(const std::string& path) {
     auto version = prepare(db.get(), "PRAGMA user_version");
     if (sqlite3_step(version.get()) != SQLITE_ROW) throw Error("Missing draft version");
     auto formatVersion=integer(version.get(),0);
-    if(formatVersion<1 || formatVersion>17) throw Error("Unsupported draft version");
+    if(formatVersion<1 || formatVersion>18) throw Error("Unsupported draft version");
     auto integrity = prepare(db.get(), "PRAGMA quick_check");
     if (sqlite3_step(integrity.get()) != SQLITE_ROW || string(integrity.get(), 0) != "ok") throw Error("Damaged draft database");
     auto meta = prepare(db.get(),formatVersion>=7?"SELECT singleton,revision,next_id,master_gain FROM metadata":"SELECT singleton,revision,next_id,0 FROM metadata");
@@ -289,6 +292,20 @@ State readDraft(const std::string& path) {
             state.timeSignatures.push_back({static_cast<uint64_t>(integer(timeSignatures.get(),0)),static_cast<uint8_t>(numerator),static_cast<uint8_t>(denominator)});
         }
         if(rc!=SQLITE_DONE)throw Error("Cannot read draft time signature points");
+    }
+    if(formatVersion>=18){
+        // v18 files own the marker lane. Unlike tempo, zero markers is the
+        // legal default, so pre-v18 drafts simply keep the empty vector. The
+        // frame primary key plus ORDER BY make storage order irrelevant; the
+        // reader only bounds the row count here and leaves ranges, name
+        // encoding and duplicates (after a dropped primary key) to validate().
+        state.markers.clear();
+        auto markers=prepare(db.get(),"SELECT frame,name FROM markers ORDER BY frame");
+        while((rc=sqlite3_step(markers.get()))==SQLITE_ROW){
+            if(state.markers.size()>=kMaxMarkersPerProject)throw Error("Too many markers");
+            state.markers.push_back({static_cast<uint64_t>(integer(markers.get(),0)),string(markers.get(),1)});
+        }
+        if(rc!=SQLITE_DONE)throw Error("Cannot read draft markers");
     }
     validate(state); return state;
 }

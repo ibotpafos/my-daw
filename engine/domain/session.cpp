@@ -162,6 +162,18 @@ void validate(const State& state) {
             signaturePrevious=point.frame;signatureFirst=false;
         }
     }
+    // Marker locators share the project frame rules but not the anchor: an
+    // empty lane is legal, so a fresh or pre-v18 project validates unchanged.
+    if(state.markers.size()>kMaxMarkersPerProject)throw Error("Too many markers");
+    {
+        uint64_t markerPrevious=0;bool markerFirst=true;
+        for(const auto& marker:state.markers){
+            if(marker.frame>=kMaxMidiFrame)throw Error("Marker exceeds the project timeline limit");
+            validateName(marker.name);
+            if(!markerFirst&&marker.frame<=markerPrevious)throw Error("Marker frames must be strictly ordered");
+            markerPrevious=marker.frame;markerFirst=false;
+        }
+    }
     if(audioCount>8||audioAssets>32 || audioBytes>64*1024*1024) throw Error("Prototype supports 8 audio tracks, 32 takes and 64 MiB decoded audio");
     if(state.buses.size()>16)throw Error("Project supports at most 16 buses");
     std::set<uint64_t> busIDs;
@@ -692,6 +704,39 @@ void Session::removeTimeSignature(uint64_t frame,uint64_t expected){
     if(point==next.timeSignatures.end()||point->frame!=frame)throw Error("Time signature point not found");
     if(point==next.timeSignatures.begin())throw Error("The first time signature point cannot be removed");
     next.timeSignatures.erase(point);commit(std::move(next));
+}
+namespace {
+// Marker lane lookup mirrors the tempo upsert helpers: on a sorted lane
+// lower_bound yields both the exact match and the sorted insertion slot.
+std::vector<Marker>::iterator markerLanePoint(State& state,uint64_t frame){
+    return std::lower_bound(state.markers.begin(),state.markers.end(),frame,[](const auto& marker,uint64_t target){return marker.frame<target;});
+}
+}
+void Session::addMarker(uint64_t frame,const std::string& name,uint64_t expected){
+    check(expected);
+    if(frame>=kMaxMidiFrame)throw Error("Marker exceeds the project timeline limit");
+    validateName(name);
+    State next=current;
+    const auto point=markerLanePoint(next,frame);
+    if(point!=next.markers.end()&&point->frame==frame)throw Error("A marker already exists at this position");
+    // Refuse the 257th locator before copying the whole State; validate()
+    // still owns the same cap for every other entry path into the lane.
+    if(next.markers.size()>=kMaxMarkersPerProject)throw Error("Too many markers");
+    next.markers.insert(point,{frame,name});commit(std::move(next));
+}
+void Session::removeMarker(uint64_t frame,uint64_t expected){
+    check(expected);State next=current;
+    const auto point=markerLanePoint(next,frame);
+    if(point==next.markers.end()||point->frame!=frame)throw Error("Marker not found");
+    next.markers.erase(point);commit(std::move(next));
+}
+void Session::renameMarker(uint64_t frame,const std::string& name,uint64_t expected){
+    check(expected);validateName(name);
+    State next=current;
+    const auto point=markerLanePoint(next,frame);
+    if(point==next.markers.end()||point->frame!=frame)throw Error("Marker not found");
+    if(point->name==name)return;
+    point->name=name;commit(std::move(next));
 }
 void Session::addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip> clip,uint64_t start,uint64_t expected){std::vector<Take> additions;additions.push_back({name,start,std::move(clip)});addTakes(id,std::move(additions),expected);}
 void Session::addTakes(uint64_t id,std::vector<Take> additions,uint64_t expected){check(expected);if(additions.empty())throw Error("No takes to add");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");if(additions.size()>15-it->takes.size())throw Error("Track supports at most 16 takes");for(auto& take:additions){validateName(take.name);if(!take.audio)throw Error("Missing take audio");it->takes.push_back(std::move(take));}commit(std::move(next));}
