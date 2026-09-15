@@ -1,4 +1,5 @@
 #include "platform/macos/vst3_effect.hpp"
+#include "platform/macos/vst3_runtime.hpp"
 
 #include "plugins/plugin_descriptor.hpp"
 
@@ -412,12 +413,16 @@ std::unique_ptr<PreparedEffect> prepareVst3Effect(const PluginInsert &plugin,
 std::vector<Vst3Parameter> vst3Parameters(const PluginInsert &plugin,
                                           uint32_t sampleRate,
                                           uint32_t maxFrames) {
+  if (plugin.hostingMode == PluginHostingMode::OutOfProcess)
+    return remoteVst3Parameters(plugin, sampleRate, maxFrames);
   auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
   return effect->parameters();
 }
 
 Vst3EffectSnapshot snapshotVst3Effect(const PluginInsert &plugin,
                                       uint32_t sampleRate, uint32_t maxFrames) {
+  if (plugin.hostingMode == PluginHostingMode::OutOfProcess)
+    return remoteSnapshotVst3Effect(plugin, sampleRate, maxFrames);
   auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
   return effect->snapshot();
 }
@@ -425,6 +430,8 @@ Vst3EffectSnapshot snapshotVst3Effect(const PluginInsert &plugin,
 Vst3EffectSnapshot setVst3Parameter(const PluginInsert &plugin,
                                     uint32_t parameterID, float normalizedValue,
                                     uint32_t sampleRate, uint32_t maxFrames) {
+  if (plugin.hostingMode == PluginHostingMode::OutOfProcess)
+    return remoteSetVst3Parameter(plugin, parameterID, normalizedValue, sampleRate, maxFrames);
   auto effect = std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
   effect->setParameter(parameterID, normalizedValue);
   return effect->snapshot();

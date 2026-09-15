@@ -22,6 +22,8 @@ constexpr uint32_t kMaximumFrames = 4096;
 // a runtime fault merely because it uses a smaller private cap.
 constexpr uint32_t kMaximumParameterEvents = static_cast<uint32_t>(kMaxProjectPluginParameterAutomationPoints);
 constexpr uint32_t kMaximumStateBytes = 16U * 1024U * 1024U;
+constexpr uint32_t kMaximumControlParameters = 4096;
+constexpr uint32_t kMaximumControlPayloadBytes = 8U * 1024U * 1024U;
 
 struct ParameterEvent {
   uint32_t parameterID = 0;
@@ -69,6 +71,35 @@ constexpr size_t mappingBytes(uint32_t stateBytes) { return sizeof(SharedMapping
 inline uint8_t *statePayload(SharedMapping *mapping) { return reinterpret_cast<uint8_t *>(mapping) + sizeof(SharedMapping); }
 inline const uint8_t *statePayload(const SharedMapping *mapping) { return reinterpret_cast<const uint8_t *>(mapping) + sizeof(SharedMapping); }
 
+constexpr uint32_t kControlMagic = 0x4d445643U; // MDVC
+constexpr uint32_t kControlVersion = 1;
+enum class ControlOperation : uint32_t { ListParameters = 1, Snapshot = 2, SetNormalized = 3 };
+// One-shot, control-thread-only mapping. The trailing layout is exactly
+// request MDVS, response MDVS, then response parameter bytes. The response
+// capacity is supplied by the host and validated by both participants.
+struct ControlMapping {
+  uint32_t magic = kControlMagic;
+  uint32_t version = kControlVersion;
+  uint32_t operation = 0;
+  std::atomic<uint32_t> completion{0}; // 0 pending, 1 success, 2 failure
+  uint32_t requestStateBytes = 0;
+  uint32_t responseStateBytes = 0;
+  uint32_t responsePayloadBytes = 0;
+  uint32_t responseCapacityBytes = 0;
+  uint32_t parameterID = 0;
+  float normalizedValue = 0;
+  uint32_t pluginLatencyFrames = 0;
+  uint32_t pluginTailFrames = 0;
+};
+static_assert(std::is_trivially_destructible_v<ControlMapping>);
+constexpr size_t controlMappingBytes(uint32_t requestStateBytes, uint32_t responseCapacityBytes) {
+  return sizeof(ControlMapping) + requestStateBytes + responseCapacityBytes;
+}
+inline uint8_t *controlRequestPayload(ControlMapping *mapping) { return reinterpret_cast<uint8_t *>(mapping) + sizeof(ControlMapping); }
+inline const uint8_t *controlRequestPayload(const ControlMapping *mapping) { return reinterpret_cast<const uint8_t *>(mapping) + sizeof(ControlMapping); }
+inline uint8_t *controlResponsePayload(ControlMapping *mapping) { return controlRequestPayload(mapping) + mapping->requestStateBytes; }
+inline const uint8_t *controlResponsePayload(const ControlMapping *mapping) { return controlRequestPayload(mapping) + mapping->requestStateBytes; }
+
 } // namespace daw::vst3runtime
 
 namespace daw {
@@ -78,4 +109,14 @@ void setVst3RuntimeHelperPathForTesting(std::string path);
 std::unique_ptr<PreparedEffect> prepareVst3OutOfProcessEffect(
     const PluginInsert &plugin, uint32_t sampleRate = 48000,
     uint32_t maxFrames = 4096);
+std::vector<Vst3Parameter> remoteVst3Parameters(const PluginInsert &,
+                                                 uint32_t sampleRate = 48000,
+                                                 uint32_t maxFrames = 4096);
+Vst3EffectSnapshot remoteSnapshotVst3Effect(const PluginInsert &,
+                                             uint32_t sampleRate = 48000,
+                                             uint32_t maxFrames = 4096);
+Vst3EffectSnapshot remoteSetVst3Parameter(const PluginInsert &, uint32_t parameterID,
+                                           float normalizedValue,
+                                           uint32_t sampleRate = 48000,
+                                           uint32_t maxFrames = 4096);
 } // namespace daw

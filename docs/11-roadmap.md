@@ -10,6 +10,8 @@
 
 [1.31.0](58-vst3-managed-runtime-isolation.md) добавил managed VST3 runtime isolation: один disposable helper на prepared OOP insert, fixed stereo float32 48 kHz pipeline до 4096 frames, PDC latency, parameter offsets, MDVS/fingerprint validation, volatile runtime status и one-fault delayed dry fallback. Срез проверен только с self-hosted fake helper; реальные vendor VST3, прослушивание, editor proxy и compatibility matrix остаются незакрытыми.
 
+[1.32.0](59-vst3-remote-parameter-editor.md) частично продолжил B-012: isolated VST3 использует one-shot control helper для generic `list`/`snapshot`/`set`, с MDVS+fingerprint revalidation, session metadata cache и одной revision на успешный set. Playback останавливается и готовится заново; UI использует тот же generic dialog с noncontinuous slider. Self-hosted fake-helper test покрывает success, malformed reply, crash, nonzero exit и timeout/reaping. Это не live audio worker и не vendor editor; реальные vendor VST3, compatibility matrix и listening остаются открытыми.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.
@@ -52,7 +54,7 @@ Spikes одноразовые или изолированные; их нельз
 | B-009 | P0 | B-006, B-004 | **Основной code scope готов:** offline WAV согласован с playback, PDC и bounded finite VST3 tail; listening proof ещё нужен |
 | B-010 | P1 | B-007, B-008 | **Реализация готова к physical gate:** take lanes, comp, playback loop и AUHAL loop recording; latency/recovery v2/physical proof ещё нужны |
 | B-011 | P1 | B-006 | **Native prototype готов:** buses/sends, DAG validation, realtime plan, UI и format v9; Tracktion parity переносится в B-012 |
-| B-012 | P1 | B-011, SP-05 | **Основной code scope готов:** AU/VST3 inserts на track/bus/master, scan/cache, parameters/state, missing fallback, routing parity, строгий AUv3 OOP runtime и managed VST3 runtime isolation; vendor editors и compatibility matrix реальных plug-ins ещё нужны |
+| B-012 | P1 | B-011, SP-05 | **Частично реализован editor proxy:** AU/VST3 inserts на track/bus/master, scan/cache, parameters/state, missing fallback, routing parity, строгий AUv3 OOP runtime, managed VST3 runtime isolation и isolated VST3 one-shot generic parameter control path; vendor editors и compatibility matrix реальных plug-ins ещё открыты |
 | B-013 | P1 | B-012 | **Основной code scope готов:** channel и plug-in Read/Touch/Latch gestures, durable sample-offset AU/VST3 parameter lanes, atomic Undo, graph PDC, latency-compensated audible playhead и finite VST3 tail; hardware presentation timestamp и infinite-tail policy ещё нужны |
 | B-014 | P1 | B-003 | **Prototype готов:** bundled manifest, typed preview и atomic one-revision commit через public C boundary |
 | B-015 | P2 | B-014, B-010 | **Code scope готов:** selected Lead/Doubles, peak/RMS suggestions, preview и atomic apply; listening evidence ещё требуется |

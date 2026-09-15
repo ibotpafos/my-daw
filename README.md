@@ -2,7 +2,7 @@
 
 Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
 
-**Состояние: аудиопрототип 1.31.0.** Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. AUv3 использует обязательный системный out-of-process path, а VST3 может работать через managed helper: отдельный процесс на подготовленный OOP insert, fixed 4096-frame stereo/48 kHz pipeline и явный runtime badge. Это проверенный fake-helper code scope, а не подтверждение совместимости реальных vendor plug-ins или пригодности для live recording. Локальный visual/AX QA mixer прошёл на отдельных QA drafts; listening acceptance, vendor/import compatibility matrix, VST3 vendor editors и hardware presentation latency ещё не приняты.
+**Состояние: аудиопрототип 1.32.0.** Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. AUv3 использует обязательный системный out-of-process path, а VST3 может работать через managed helper: отдельный процесс на подготовленный OOP insert, fixed 4096-frame stereo/48 kHz pipeline и явный runtime badge. Для isolated VST3 generic parameter editor теперь использует отдельный one-shot control helper: list/snapshot/set проходят с MDVS и fingerprint revalidation, а успешный set создаёт ровно одну revision и требует playback stop/reprepare. Новый control protocol проверен self-hosted fake helper, включая malformed reply, crash, nonzero exit и timeout/reaping. Реальная совместимость vendor plug-ins, vendor UI, listening acceptance и hardware presentation latency ещё не подтверждены.
 
 Собрать и запустить на Apple Silicon Mac:
 
@@ -42,6 +42,7 @@
 
 | Документ | Содержание |
 |---|---|
+| [59 VST3 remote parameter editor](docs/59-vst3-remote-parameter-editor.md) | One-shot control helper, generic editor для isolated VST3, revision/reprepare и границы проверки |
 | [58 VST3 managed runtime isolation](docs/58-vst3-managed-runtime-isolation.md) | Per-insert helper, fixed delayed IPC pipeline, runtime ABI/UI, dry fallback и границы проверки |
 | [57 Studio Pro mixer console](docs/57-studio-pro-mixer-console.md) | Полноразмерная нижняя консоль, узкие channel strips, routing summaries, details toggle и visual/AX QA |
 | [56 Arrangement-first Studio Pro layout](docs/56-studio-pro-arrangement-first-layout.md) | Один top toolbar, compact bottom transport, режимные Inspector/Mixer и visual/AX QA |

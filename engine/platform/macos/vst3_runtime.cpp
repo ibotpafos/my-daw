@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <fcntl.h>
 #include <libproc.h>
 #include <memory>
@@ -223,6 +224,117 @@ private:
   std::array<float, kPipelineLatencyFrames> dryLeft_{}, dryRight_{};
   std::array<float, kMaximumFrames> inputLeft_{}, inputRight_{};
 };
+
+struct ControlReply {
+  uint32_t latency = 0, tail = 0;
+  std::vector<uint8_t> state, parameters;
+};
+
+bool waitAndReap(pid_t child, std::chrono::milliseconds timeout, bool &timedOut, int &status) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  for (;;) {
+    const pid_t result = waitpid(child, &status, WNOHANG);
+    if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (result == -1) return false;
+    if (std::chrono::steady_clock::now() >= deadline) {
+      timedOut = true; (void)kill(child, SIGKILL); (void)waitpid(child, &status, 0); return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+ControlReply control(const PluginInsert &plugin, ControlOperation operation,
+                     uint32_t parameterID, float normalized, uint32_t sampleRate,
+                     uint32_t maxFrames) {
+  if (plugin.hostingMode != PluginHostingMode::OutOfProcess)
+    throw Error("Remote VST3 control requires Out-of-Process hosting mode");
+  if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames ||
+      plugin.state.size() > kMaximumStateBytes ||
+      (operation == ControlOperation::SetNormalized &&
+       (!std::isfinite(normalized) || normalized < 0 || normalized > 1)))
+    throw Error("Invalid remote VST3 control request");
+  const uint32_t requestBytes = static_cast<uint32_t>(plugin.state.size());
+  constexpr uint32_t responseCapacity = kMaximumStateBytes + kMaximumControlPayloadBytes;
+  const size_t bytes = controlMappingBytes(requestBytes, responseCapacity);
+  const std::string name = uniqueMappingName();
+  int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
+  if (fd < 0) throw Error("Create VST3 control shared memory failed: " + std::string(std::strerror(errno)));
+  ControlMapping *mapping = nullptr;
+  pid_t child = -1;
+  const auto cleanup = [&] {
+    if (child > 0) { (void)kill(child, SIGKILL); (void)waitpid(child, nullptr, 0); child = -1; }
+    if (mapping) { mapping->~ControlMapping(); (void)munmap(mapping, bytes); mapping = nullptr; }
+    closeFd(fd); (void)shm_unlink(name.c_str());
+  };
+  try {
+    if (ftruncate(fd, static_cast<off_t>(bytes)) != 0) throw Error("Size VST3 control shared memory failed");
+    mapping = static_cast<ControlMapping *>(mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    if (mapping == MAP_FAILED) { mapping = nullptr; throw Error("Map VST3 control shared memory failed"); }
+    new (mapping) ControlMapping();
+    mapping->operation = static_cast<uint32_t>(operation);
+    mapping->requestStateBytes = requestBytes;
+    mapping->responseCapacityBytes = responseCapacity;
+    mapping->parameterID = parameterID;
+    mapping->normalizedValue = normalized;
+    std::copy(plugin.state.begin(), plugin.state.end(), controlRequestPayload(mapping));
+    const std::string helper = helperPath();
+    std::array<char *, 4> argv{const_cast<char *>(helper.c_str()), const_cast<char *>("--control-shared-memory"), const_cast<char *>(name.c_str()), nullptr};
+    const int spawn = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+    if (spawn != 0) throw Error("Start VST3 control helper failed: " + std::string(std::strerror(spawn)));
+    bool timedOut = false; int exitStatus = 0;
+    const bool exitedSuccessfully = waitAndReap(child, std::chrono::seconds(5), timedOut, exitStatus); child = -1;
+    const uint32_t completion = mapping->completion.load(std::memory_order_acquire);
+    if (timedOut || !exitedSuccessfully || completion != 1)
+      throw Error(timedOut ? "VST3 control helper timed out" : "VST3 control helper failed (exit=" + std::to_string(exitStatus) + ", completion=" + std::to_string(completion) + ")");
+    const uint64_t responseTotal = static_cast<uint64_t>(mapping->responseStateBytes) + mapping->responsePayloadBytes;
+    if (mapping->responseStateBytes > kMaximumStateBytes ||
+        mapping->responsePayloadBytes > kMaximumControlPayloadBytes ||
+        responseTotal > mapping->responseCapacityBytes)
+      throw Error("Invalid VST3 control helper reply");
+    if ((operation == ControlOperation::ListParameters && mapping->responseStateBytes != 0) ||
+        (operation != ControlOperation::ListParameters && mapping->responseStateBytes == 0) ||
+        mapping->responsePayloadBytes == 0)
+      throw Error("Invalid VST3 control response shape");
+    ControlReply reply; reply.latency = mapping->pluginLatencyFrames; reply.tail = mapping->pluginTailFrames;
+    const uint8_t *payload = controlResponsePayload(mapping);
+    reply.state.assign(payload, payload + mapping->responseStateBytes);
+    reply.parameters.assign(payload + mapping->responseStateBytes,
+                            payload + responseTotal);
+    cleanup(); return reply;
+  } catch (...) { cleanup(); throw; }
+}
+
+uint16_t read16(const std::vector<uint8_t> &bytes, size_t &cursor) {
+  if (cursor + 2 > bytes.size()) throw Error("Malformed VST3 control parameter reply");
+  const auto value = static_cast<uint16_t>(bytes[cursor]) | (static_cast<uint16_t>(bytes[cursor + 1]) << 8); cursor += 2; return value;
+}
+uint32_t read32(const std::vector<uint8_t> &bytes, size_t &cursor) {
+  if (cursor + 4 > bytes.size()) throw Error("Malformed VST3 control parameter reply");
+  uint32_t value = 0; for (unsigned shift = 0; shift < 32; shift += 8) value |= static_cast<uint32_t>(bytes[cursor++]) << shift; return value;
+}
+float readFloat(const std::vector<uint8_t> &bytes, size_t &cursor) {
+  const uint32_t raw = read32(bytes, cursor); float value = 0; std::memcpy(&value, &raw, sizeof(value));
+  if (!std::isfinite(value) || value < 0 || value > 1) throw Error("Invalid VST3 control normalized value"); return value;
+}
+std::vector<Vst3Parameter> decodeParameters(const std::vector<uint8_t> &bytes) {
+  size_t cursor = 0; const uint32_t count = read32(bytes, cursor);
+  if (count > kMaximumControlParameters) throw Error("VST3 control parameter count exceeds limit");
+  std::vector<Vst3Parameter> output; output.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    Vst3Parameter parameter{}; parameter.id = read32(bytes, cursor);
+    parameter.stepCount = static_cast<int32_t>(read32(bytes, cursor)); parameter.flags = read32(bytes, cursor);
+    parameter.normalizedValue = readFloat(bytes, cursor); parameter.defaultNormalizedValue = readFloat(bytes, cursor);
+    const uint16_t title = read16(bytes, cursor), shortTitle = read16(bytes, cursor), units = read16(bytes, cursor);
+    const size_t stringBytes = static_cast<size_t>(title) + shortTitle + units;
+    if (title > 512 || shortTitle > 512 || units > 512 || cursor + stringBytes > bytes.size()) throw Error("VST3 control parameter text exceeds limit");
+    parameter.title.assign(reinterpret_cast<const char *>(bytes.data() + cursor), title); cursor += title;
+    parameter.shortTitle.assign(reinterpret_cast<const char *>(bytes.data() + cursor), shortTitle); cursor += shortTitle;
+    parameter.units.assign(reinterpret_cast<const char *>(bytes.data() + cursor), units); cursor += units;
+    output.push_back(std::move(parameter));
+  }
+  if (cursor != bytes.size()) throw Error("Trailing VST3 control parameter data");
+  return output;
+}
 } // namespace
 
 void setVst3RuntimeHelperPathForTesting(std::string path) { testHelperPath() = std::move(path); }
@@ -231,6 +343,18 @@ std::unique_ptr<PreparedEffect> prepareVst3OutOfProcessEffect(const PluginInsert
                                                                uint32_t sampleRate,
                                                                uint32_t maxFrames) {
   return std::make_unique<RemoteVst3Effect>(plugin, sampleRate, maxFrames);
+}
+
+std::vector<Vst3Parameter> remoteVst3Parameters(const PluginInsert &plugin, uint32_t sampleRate, uint32_t maxFrames) {
+  return decodeParameters(control(plugin, ControlOperation::ListParameters, 0, 0, sampleRate, maxFrames).parameters);
+}
+Vst3EffectSnapshot remoteSnapshotVst3Effect(const PluginInsert &plugin, uint32_t sampleRate, uint32_t maxFrames) {
+  auto reply = control(plugin, ControlOperation::Snapshot, 0, 0, sampleRate, maxFrames);
+  return {reply.latency, reply.tail, std::move(reply.state), decodeParameters(reply.parameters)};
+}
+Vst3EffectSnapshot remoteSetVst3Parameter(const PluginInsert &plugin, uint32_t parameterID, float normalizedValue, uint32_t sampleRate, uint32_t maxFrames) {
+  auto reply = control(plugin, ControlOperation::SetNormalized, parameterID, normalizedValue, sampleRate, maxFrames);
+  return {reply.latency, reply.tail, std::move(reply.state), decodeParameters(reply.parameters)};
 }
 
 } // namespace daw
