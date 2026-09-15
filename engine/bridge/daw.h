@@ -64,6 +64,12 @@ daw_export_job* daw_begin_export_range_with_options(daw_session*,const char* pat
  * directory ("NN - name.wav"). Silent (user-muted or empty) tracks produce no
  * file; progress aggregates across stems and cancel lands between files. */
 daw_export_job* daw_begin_stem_export(daw_session*,const char* directory,int32_t format,const daw_export_options*);
+/* BS.1770-4 loudness/true-peak measurement of a finished WAV on disk:
+ * K-weighted integrated loudness with the standard gates, and dBTP from 4x
+ * oversampled interpolation. gated_silence marks files that never rise
+ * above -70 LUFS. */
+typedef struct { uint32_t struct_size; double integrated_lufs; double true_peak_db; int32_t gated_silence; } daw_loudness_report;
+int daw_measure_wav(daw_session*,const char* path,daw_loudness_report* out);
 int daw_poll_export(daw_export_job*,daw_export_status*);
 void daw_cancel_export(daw_export_job*);
 void daw_release_export(daw_export_job*);

@@ -6,6 +6,7 @@
 #include "audio/duplex.hpp"
 #include "audio/recording.hpp"
 #include "audio/export.hpp"
+#include "audio/loudness.hpp"
 #include "audio/effect.hpp"
 #include "audio/plugin_parameters.hpp"
 #include "audio/analysis.hpp"
@@ -1002,6 +1003,12 @@ daw_export_job* daw_begin_stem_export(daw_session* s,const char* directory,int32
         auto handle=std::make_unique<daw_export_job>();handle->result=daw::startStemExport(s->model.state(),required(directory),exportFormat(format),exportOptions(options));job=handle.release();
     });return job;
 }
+int daw_measure_wav(daw_session* s,const char* path,daw_loudness_report* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_loudness_report))throw daw::Error("Loudness report ABI mismatch");
+    const auto clip=daw::readWav(required(path));
+    const auto report=daw::measureLoudness(*clip);
+    out->integrated_lufs=report.integratedLufs;out->true_peak_db=report.truePeakDb;out->gated_silence=report.gatedSilence?1:0;
+});}
 int daw_poll_export(daw_export_job* job,daw_export_status* out) {
     if(!job||!out||out->struct_size!=sizeof(daw_export_status))return 1;auto& result=*job->result;
     out->status=result.status.load(std::memory_order_acquire);out->revision=result.revision;out->rendered_frames=result.renderedFrames.load(std::memory_order_acquire);out->total_frames=result.totalFrames;

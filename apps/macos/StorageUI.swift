@@ -402,7 +402,18 @@ extension DraftApp {
                 daw_release_export(job); exportJob = nil
                 cancelExportButton.isEnabled = false; recordButton.isEnabled = true
                 if result.status == 1 {
-                    exportMessage = "Экспорт готов: \(exportURL?.lastPathComponent ?? "WAV") · снимок ревизии \(result.revision)"
+                    var message = "Экспорт готов: \(exportURL?.lastPathComponent ?? "WAV") · снимок ревизии \(result.revision)"
+                    if let url = exportURL {
+                        if url.pathExtension.lowercased() == "wav" {
+                            var report = daw_loudness_report(); report.struct_size = UInt32(MemoryLayout<daw_loudness_report>.size)
+                            if daw_measure_wav(session, url.path, &report) == 0 {
+                                message += report.gated_silence != 0 ? " · тише -70 LUFS" : String(format: " · %.1f LUFS · %.1f dBTP", report.integrated_lufs, report.true_peak_db)
+                            }
+                        } else if ((try? FileManager.default.contentsOfDirectory(atPath: url.path))?.contains(where: { $0.hasSuffix(".wav") }) ?? false) {
+                            message += " · стемы в папке"
+                        }
+                    }
+                    exportMessage = message
                 } else if result.status == 3 {
                     exportMessage = "Экспорт отменён · готовый файл не заменён"
                 } else {

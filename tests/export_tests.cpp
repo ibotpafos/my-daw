@@ -1,4 +1,5 @@
 #include "audio/export.hpp"
+#include "audio/loudness.hpp"
 #include "audio/renderer.hpp"
 #include "daw.h"
 #include <chrono>
@@ -93,6 +94,33 @@ int main(){try{
         for(size_t i=700;i<1000;++i){const auto sum=(stemA->samples()[i]+stemB->samples()[i])*float(master);CHECK(std::abs(mix->samples()[i]-sum)<0.01f);}  // fader smoothers converge: tail agrees with the sum of stems
         daw::Session quiet;quiet.import("Q",pad,0);quiet.mute(1,true,1);
         rejects([&]{daw::writeStems(quiet.state(),stemRoot.string(),daw::WavFormat::Float32);});
+    }
+    // Loudness meter: ITU-R BS.1770 reference behaviour and true-peak physics.
+    {   std::vector<float> sine; for(size_t i=0;i<48000;++i){const float v=std::sin(2.0f*3.14159265f*1000.0f*float(i)/48000.0f);sine.push_back(v);sine.push_back(v);}
+        auto sineClip=std::make_shared<const daw::Clip>(std::move(sine));
+        const auto tone=daw::measureLoudness(*sineClip);
+        CHECK(!tone.gatedSilence&&tone.integratedLufs>-0.7&&tone.integratedLufs<0.7);  // full-scale 1 kHz: -3.01 RMS + K-weighting (+0.7 at 1 kHz) ≈ 0 LUFS
+        CHECK(tone.truePeakDb>-0.6&&tone.truePeakDb<0.15);
+        std::vector<float> soft; for(size_t i=0;i<48000;++i){const float v=0.1f*std::sin(2.0f*3.14159265f*1000.0f*float(i)/48000.0f);soft.push_back(v);soft.push_back(v);}
+        auto softClip=std::make_shared<const daw::Clip>(std::move(soft));
+        const auto quietTone=daw::measureLoudness(*softClip); CHECK(std::abs(quietTone.integratedLufs-(tone.integratedLufs-20.0))<0.2);  // amplitude scaling moves LUFS 1:1
+        std::vector<float> square; for(size_t i=0;i<48000;++i){const float v=(i/480)%2?1.0f:-1.0f;square.push_back(v);square.push_back(v);}
+        auto squareClip=std::make_shared<const daw::Clip>(std::move(square));
+        const auto edge=daw::measureLoudness(*squareClip);
+        CHECK(edge.truePeakDb>0.2&&edge.truePeakDb<2.5&&edge.integratedLufs>-2.0&&edge.integratedLufs<2.0);  // Gibbs overshoot above 0 dBFS
+        std::vector<float> nothing(96000,0.0f); auto nothingClip=std::make_shared<const daw::Clip>(std::move(nothing));
+        const auto silence=daw::measureLoudness(*nothingClip); CHECK(silence.gatedSilence&&silence.truePeakDb<-300.0);
+    }
+    // Bridge loudness: finished WAV on disk, ABI gate, unreadable files.
+    {   std::vector<float> toneSamples; for(size_t i=0;i<24000;++i){const float v=0.8f*std::sin(2.0f*3.14159265f*997.0f*float(i)/48000.0f);toneSamples.push_back(v);toneSamples.push_back(v);}
+        auto toneClip=std::make_shared<const daw::Clip>(std::move(toneSamples));daw::Session level;level.import("T",toneClip,0);
+        auto reportPath=(root/"tone.wav").string();daw::writeWav(level.state(),reportPath,daw::WavFormat::Float32);
+        auto meterSession=daw_create();CHECK(meterSession);
+        daw_loudness_report report={};report.struct_size=sizeof(report);
+        CHECK(daw_measure_wav(meterSession,reportPath.c_str(),&report)==0&&!report.gated_silence&&report.integrated_lufs>-8&&report.integrated_lufs<2&&report.true_peak_db<0.15&&report.true_peak_db>-3);
+        report.struct_size=sizeof(report)-4;CHECK(daw_measure_wav(meterSession,reportPath.c_str(),&report)!=0);report.struct_size=sizeof(report);
+        CHECK(daw_measure_wav(meterSession,(root/"missing-tone.wav").string().c_str(),&report)!=0);
+        daw_destroy(meterSession);
     }
     const auto inspected=daw::inspectExportTail(session.state(),{daw::ExportTailMode::ManualLimit,48000});
     CHECK(inspected.finiteTailFrames==0&&!inspected.infiniteTailDetected&&inspected.selectedTailFrames==0);

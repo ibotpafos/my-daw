@@ -256,6 +256,11 @@ int main(void) {
     if (daw_nudge_clips(session, 2, group, 2, 4800, r + 3) == 0) result |= 1;
     if (daw_delete_clips(session, 2, NULL, 1, r + 3) == 0) result |= 1;
     if (daw_delete_clips(session, 2, NULL, 0, r + 3) != 0) result |= 1;
+    /* Loudness report: unreadable files reject and the ABI gate holds. */
+    daw_loudness_report loudness = {0}; loudness.struct_size = sizeof(loudness);
+    if (daw_measure_wav(session, "/nonexistent/mydaw-tone.wav", &loudness) == 0) result |= 1;
+    loudness.struct_size = sizeof(loudness) - 4;
+    if (daw_measure_wav(session, "/tmp", &loudness) == 0) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
