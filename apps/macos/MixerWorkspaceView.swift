@@ -41,6 +41,18 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
 final class MixerMeterView: NSView {
     var snapshot = MixerMeterSnapshot() { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.levelIndicator)
+        setAccessibilityHelp("Пиковый стереоуровень канала")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func accessibilityValue() -> Any? {
+        let peak = max(snapshot.leftPeak, snapshot.rightPeak)
+        guard peak > 0 else { return "−∞ dBFS" }
+        return String(format: "%.1f dBFS", 20 * log10(Double(peak)))
+    }
     override func draw(_ dirtyRect: NSRect) {
         DAWDesignTokens.Color.canvas.withAlphaComponent(0.86).setFill(); bounds.fill()
         let channels = [snapshot.leftPeak, snapshot.rightPeak]
@@ -66,6 +78,29 @@ final class MixerFaderView: NSView {
     private var dragging = false
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.slider)
+        setAccessibilityHelp("Стрелки вверх и вниз изменяют уровень на 0,5 dB")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func accessibilityValue() -> Any? { String(format: "%+.1f dB", valueDb) }
+    override func accessibilityPerformIncrement() -> Bool { nudge(0.5); return true }
+    override func accessibilityPerformDecrement() -> Bool { nudge(-0.5); return true }
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 125: nudge(-0.5)
+        case 126: nudge(0.5)
+        default: super.keyDown(with: event)
+        }
+    }
+    private func nudge(_ delta: Double) {
+        let next = min(24, max(-120, valueDb + delta))
+        guard next != valueDb else { return }
+        onBegin?(); valueDb = next; onChange?(next); onEnd?(next)
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
     private func value(at point: NSPoint) -> Double {
         let fraction = min(1, max(0, 1 - Double(point.y / max(1, bounds.height))))
         return -120 + fraction * 144
@@ -112,7 +147,7 @@ private final class MixerStripView: NSView {
         [title,meter,fader,pan,inserts,sends].forEach(addSubview)
         fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
     }
-    private func refresh() { title.stringValue=model.title;meter.snapshot=model.meter;fader.valueDb=model.volumeDb;pan.doubleValue=model.pan;arm.state=model.isArmed ? .on:.off;mute.state=model.isMuted ? .on:.off;solo.state=model.isSolo ? .on:.off;inserts.stringValue=model.inserts.prefix(3).map { $0.bypassed ? "⊘ \($0.name)" : $0.name }.joined(separator:"\n");sends.stringValue=model.sends.prefix(2).map { "→ \($0.destination) \(String(format:"%.1f",$0.gainDb))" }.joined(separator:"\n");needsDisplay=true }
+    private func refresh() { title.stringValue=model.title;meter.snapshot=model.meter;fader.valueDb=model.volumeDb;pan.doubleValue=model.pan;arm.state=model.isArmed ? .on:.off;mute.state=model.isMuted ? .on:.off;solo.state=model.isSolo ? .on:.off;meter.setAccessibilityLabel("Пиковый уровень \(model.title)");fader.setAccessibilityLabel("Громкость \(model.title)");pan.setAccessibilityLabel("Панорама \(model.title)");arm.setAccessibilityLabel("Запись \(model.title)");mute.setAccessibilityLabel("Mute \(model.title)");solo.setAccessibilityLabel("Solo \(model.title)");inserts.stringValue=model.inserts.prefix(3).map { $0.bypassed ? "⊘ \($0.name)" : $0.name }.joined(separator:"\n");sends.stringValue=model.sends.prefix(2).map { "→ \($0.destination) \(String(format:"%.1f",$0.gainDb))" }.joined(separator:"\n");needsDisplay=true }
     override var isFlipped: Bool { true }
     override func layout() {
         let w=bounds.width,h=bounds.height

@@ -2,7 +2,7 @@
 
 Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
 
-**Состояние: аудиопрототип 1.27.0.** Рабочее окно использует единую Studio Pro-inspired дизайн-систему: тёмные semantic tokens, SF Symbols, плотные track rows, адаптивный mixer и режимы Создание/Запись/Сведение/Мастеринг с реальными пропорциями workspace. Импортированный клип автоматически выбирается и сразу открывается в Inspector. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
+**Состояние: аудиопрототип 1.28.0.** Рабочее окно использует единую Studio Pro-inspired дизайн-систему: тёмные semantic tokens, SF Symbols, плотные track rows, адаптивный mixer и режимы Создание/Запись/Сведение/Мастеринг с реальными пропорциями workspace. Импортированный клип автоматически выбирается и сразу открывается в Inspector. Channel strips публикуют отдельные accessibility роли для stereo meter, volume fader и pan; fader поддерживает VoiceOver increment/decrement и клавиши вверх/вниз. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
 
 Собрать и запустить на Apple Silicon Mac:
 
@@ -43,6 +43,7 @@ open 'build/My DAW.app'
 
 | Документ | Содержание |
 |---|---|
+| [55 Accessible mixer controls](docs/55-accessible-mixer-controls.md) | AX roles/labels/value, keyboard и VoiceOver increment/decrement для channel strips |
 | [54 Design system and workspace modes](docs/54-design-system-workspace-modes.md) | Semantic UI kit, functional workspace modes, compact lanes/mixer и результаты визуального QA |
 | [53 Async AUv3 hosting](docs/53-async-auv3-hosting.md) | Bounded render-graph prepare, strict system OOP verification, cancel/stale transport и UI state |
 | [52 UI QA and hosting policy](docs/52-ui-qa-hosting-policy.md) | Реальный layout QA, format v15 и явная per-insert hosting policy |
