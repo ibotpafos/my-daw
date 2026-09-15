@@ -176,6 +176,35 @@ int main(){try{
         { const uint64_t now=s.state().revision; s.undo(now); }
     }
 
+    // ---- Multi-selection group commands: deleteClips + nudgeClips, one revision ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));  // 2s stereo
+        s.importAt("Group",clip,0,0);                                                       // rev 1: [0,96000)
+        s.duplicateClip(1,0,s.state().revision);                                            // [96000,192000)
+        s.duplicateClip(1,0,s.state().revision);                                            // [192000,288000)
+        CHECK(s.state().tracks[0].regions.size()==3);
+        const auto starts=[&]{std::vector<uint64_t> v;for(const auto&r:s.state().tracks[0].regions)v.push_back(r.start);return v;};
+        rejectsMessage("Audio clip not found",[&]{s.deleteClips(1,{0u,7u},s.state().revision);});   // partial index poisons the batch
+        CHECK(starts()==std::vector<uint64_t>({0,96000,192000}));
+        rejectsMessage("No timeline space for the clip",[&]{s.nudgeClips(1,{0u},-5000,s.state().revision);});
+        s.nudgeClips(1,{0u},0,s.state().revision);                                          // zero delta: silent no-op
+        CHECK(s.state().revision==3);
+        rejectsMessage("Clip overlap requires a matching crossfade",[&]{s.nudgeClips(1,{1u,2u},-48000,s.state().revision);});
+        CHECK(s.state().revision==3);                                                        // rejected batch spent nothing
+        s.nudgeClips(1,{2u},48000,s.state().revision);                                       // rev 4: [0,96000,240000)
+        CHECK(starts()==std::vector<uint64_t>({0,96000,240000}));
+        s.nudgeClips(1,{0u},400000,s.state().revision);                                      // rev 5: reorder through the group
+        CHECK(starts()==std::vector<uint64_t>({96000,240000,400000}));
+        rejectsMessage("No timeline space for the clip",[&]{s.nudgeClips(1,{2u},int64_t(48000ull*600),s.state().revision);});
+        s.deleteClips(1,{0u,0u,1u},s.state().revision);                                      // rev 6: unique-merge deletes two
+        CHECK(s.state().tracks[0].regions.size()==1&&starts()==std::vector<uint64_t>({400000}));
+        rejectsMessage("Audio track must contain 1\u2013256 clips",[&]{s.deleteClips(1,{0u},s.state().revision);});  // validate keeps the track non-empty
+        { const uint64_t cur=s.state().revision; s.undo(cur);                                // rev 7 -> back to three clips
+          CHECK(s.state().tracks[0].regions.size()==3&&starts()==std::vector<uint64_t>({96000,240000,400000}));
+          s.redo(s.state().revision);                                                        // rev 8 -> group delete again
+          CHECK(s.state().tracks[0].regions.size()==1); }
+    }
+
     // ---- MIDI clip: color, transpose (clamped), quantize ----
     {   Session s; s.add("MIDI",0);                                     // track 1, rev 1
         MidiClip mc; mc.track=0; mc.start=0; mc.length=48000*8;

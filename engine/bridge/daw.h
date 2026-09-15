@@ -237,6 +237,11 @@ int daw_set_clip_gain(daw_session*,uint64_t track_id,uint32_t clip_index,double 
  * are silent no-ops. Un-looping a region longer than its slice rejects. */
 int daw_set_clip_muted(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t muted,uint64_t expected_revision);
 int daw_set_clip_looped(daw_session*,uint64_t track_id,uint32_t clip_index,uint32_t looped,uint64_t expected_revision);
+/* Group operations on one track's multi-selection: the whole group commits in
+ * a single revision. Indices must name existing clip positions on the track;
+ * nudge translates together and re-sorts, validate() owns the aftermath. */
+int daw_delete_clips(daw_session*,uint64_t track_id,const uint32_t* clip_indices,uint32_t index_count,uint64_t expected_revision);
+int daw_nudge_clips(daw_session*,uint64_t track_id,const uint32_t* clip_indices,uint32_t index_count,int64_t delta_frames,uint64_t expected_revision);
 int daw_seek_frame(daw_session*, uint64_t frame);
 /* Loop is ephemeral transport state over a half-open [start,end) frame range.
  * Changing it stops playback. Pass enabled=0 to clear; start/end are ignored. */

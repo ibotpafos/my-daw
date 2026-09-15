@@ -355,6 +355,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var trackNames: [UInt64: String] = [:]
     /// Собственный буфер обмена клипами: (дорожка-источник, индекс клипа, MIDI ли).
     var clipClipboard: (trackID: UInt64, index: Int, isMidi: Bool)?
+    var laneViews: [UInt64: WaveformView] = [:]
+    var clipSelection: [UInt64: [Int]] = [:]
     var orderedBuses: [(id: UInt64, name: String)] = []
     var outputTargets: [ObjectIdentifier: (id: UInt64, isBus: Bool)] = [:]
     var busControlTargets: [ObjectIdentifier: UInt64] = [:]
@@ -1106,6 +1108,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         for view in consoleRows.arrangedSubviews { consoleRows.removeArrangedSubview(view); view.removeFromSuperview() }
         mixerKinds.removeAll()
         trackNames.removeAll()
+        laneViews.removeAll()
         var mixerStrips:[MixerStripModel]=[]
         trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();insertRuntimeBadges.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; hasMidiContent = false; waveforms.removeAll()
         for busIndex in 0..<snapshot.bus_count {var bus=daw_bus();bus.struct_size=UInt32(MemoryLayout<daw_bus>.size);guard check(daw_get_bus(session,busIndex,&bus))else{return};let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};orderedBuses.append((bus.id,name))}
@@ -1199,13 +1202,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.panAutomationPoints=panAutomationPoints
                 wave.snapFrames = gridFrames; wave.snapGrid = { [weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0) }; wave.rangeStart = rangeStart; wave.rangeEnd = rangeEnd;wave.loopEnabled=loopEnabled
                 wave.selectedIndex=min(selectedClips[track.id] ?? 0,max(0,clips.count-1)); selectedClips[track.id]=wave.selectedIndex
+                var group=(clipSelection[track.id] ?? []).filter{$0<clips.count}; if group.isEmpty{group=[wave.selectedIndex]}; group=Array(Set(group)).sorted(); clipSelection[track.id]=group; wave.selectedIndices=group
                 wave.projectFrames = min(48000 * 600, max(48000 * 12, transport.duration + 48000 * 2))
                 wave.playableFrames = transport.duration; wave.playhead = transport.frame
                 wave.onEditBegin = { [weak self] in self?.stopAudio() }
                 let trackID = track.id
                 wave.onEdit = { [weak self] clipIndex,start,offset,length in self?.applyClipEdit(trackID,clipIndex,start,offset,length) }
                 wave.onFadeEdit = { [weak self] clipIndex,fadeIn,fadeOut in self?.applyClipFades(trackID,clipIndex,fadeIn,fadeOut) }
-                wave.onSelect = { [weak self] clipIndex in self?.selectedClips[trackID]=clipIndex;self?.updateClipInspector(trackID,clipIndex) }
+                wave.onSelect = { [weak self] clipIndex,additive in self?.clipTapped(trackID,clipIndex,additive:additive) }
+                wave.onNudge = { [weak self] direction in self?.nudgeClipGroup(trackID,direction) }
+                laneViews[trackID] = wave
                 wave.onClipMenu = { [weak self] clipIndex in self?.clipContextMenu(trackID,clipIndex) }
                 wave.onDropFile = { [weak self] url, frame in self?.beginDropImport(url,trackID,frame) ?? false }
                 wave.onClipHotkey = { [weak self] key in self?.clipHotkey(trackID,key) }
@@ -1811,6 +1817,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     final class ClipActionPayload { let trackID:UInt64; let clipIndex:Int; let color:UInt32; var targetTrack:UInt64 = 0; init(_ trackID:UInt64,_ clipIndex:Int,_ color:UInt32=0){self.trackID=trackID;self.clipIndex=clipIndex;self.color=color} }
     func clipContextMenu(_ trackID:UInt64,_ clipIndex:Int)->NSMenu {
         let menu=NSMenu(); menu.autoenablesItems=false
+        if let group=clipSelection[trackID],group.count>1 {
+            let del=NSMenuItem(title:"Удалить группу (\(group.count))",action:#selector(deleteClipGroupFromMenu(_:)),keyEquivalent:""); del.target=self; del.representedObject=ClipActionPayload(trackID,0); menu.addItem(del)
+            let nudgeLeft=NSMenuItem(title:"Сдвинуть группу назад (Option ←)",action:#selector(nudgeClipGroupLeft(_:)),keyEquivalent:""); nudgeLeft.target=self; nudgeLeft.representedObject=ClipActionPayload(trackID,0); menu.addItem(nudgeLeft)
+            let nudgeRight=NSMenuItem(title:"Сдвинуть группу вперёд (Option →)",action:#selector(nudgeClipGroupRight(_:)),keyEquivalent:""); nudgeRight.target=self; nudgeRight.representedObject=ClipActionPayload(trackID,0); menu.addItem(nudgeRight)
+            menu.addItem(.separator())
+        }
         let colorRoot=NSMenuItem(title:"Цвет клипа",action:nil,keyEquivalent:""); let colors=NSMenu(title:"Цвет клипа"); colors.autoenablesItems=false
         for (name,hex) in Self.colorPalette { let item=NSMenuItem(title:name,action:#selector(pickClipColor(_:)),keyEquivalent:""); item.target=self; item.representedObject=ClipActionPayload(trackID,clipIndex,hex); colors.addItem(item) }
         let reset=NSMenuItem(title:"Без цвета",action:#selector(pickClipColor(_:)),keyEquivalent:""); reset.target=self; reset.representedObject=ClipActionPayload(trackID,clipIndex,0)
@@ -1879,6 +1891,37 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func menuPasteClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; pasteClipboardTo(id,playheadFrame) }
     @objc func menuCopyClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track,let index=selectedClips[id] else{return}; clipClipboard=(id,index,false); storageMessage("Клип в буфере обмена.") }
+    @objc func deleteClipGroupFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
+    @objc func nudgeClipGroupLeft(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,-1) }
+    @objc func nudgeClipGroupRight(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,1) }
+    // MARK: мультиселект: Ctrl-клик тоггит группу, Option+стрелки сдвигают её на шаг сетки
+    func clipTapped(_ trackID:UInt64,_ index:Int,additive:Bool){
+        guard mixerKinds[trackID] != nil else{return}
+        var group=clipSelection[trackID] ?? selectedClips[trackID].map{[$0]} ?? []
+        if additive {
+            if let position=group.firstIndex(of:index) { if group.count>1 {group.remove(at:position)} } else { group.append(index) }
+        } else { group=[index] }
+        group=Array(Set(group)).sorted()
+        clipSelection[trackID]=group
+        let primary=group.contains(index) ? index:(group.first ?? 0)
+        selectedClips[trackID]=primary
+        laneViews[trackID]?.selectedIndices=group; laneViews[trackID]?.selectedIndex=primary
+        updateClipInspector(trackID,primary)
+    }
+    func groupIndices(_ trackID:UInt64)->[UInt32]{
+        let group=clipSelection[trackID] ?? selectedClips[trackID].map{[$0]} ?? []
+        return group.sorted().map{UInt32($0)}
+    }
+    func nudgeClipGroup(_ trackID:UInt64,_ direction:Int){
+        guard !isRecording else{return}
+        var indices=groupIndices(trackID); guard !indices.isEmpty else{return}
+        var meta=daw_clip(); meta.struct_size=UInt32(MemoryLayout<daw_clip>.size)
+        guard check(daw_get_clip(session,trackID,indices[0],&meta)) else{return}
+        let quantum=max(1,Int(gridSnap(atFrame:Int64(meta.start)).quantum))
+        let delta=Int64(direction)*Int64(quantum)
+        stopAudio()
+        if check(daw_nudge_clips(session,trackID,&indices,UInt32(indices.count),delta,revision)) { refresh(); pollTransport(); storageMessage(direction>0 ? "Группа клипов сдвинута вперёд на шаг сетки." : "Группа клипов сдвинута назад на шаг сетки.") }
+    }
     func showMidiMovePalette(_ id:UInt64){
         guard !isRecording,let clip=selectedMidiClip(id) else{return}
         let menu=NSMenu(); menu.autoenablesItems=false
@@ -2095,7 +2138,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if check(daw_split_clip(session,id,UInt32(index),transport.frame,revision)) { selectedClips[id]=index+1; refresh(); pollTransport() }
     }
     @objc func duplicateSelectedClip(_ sender:NSButton) { guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}; let index=selectedClips[id] ?? 0; var track=daw_track();track.struct_size=UInt32(MemoryLayout<daw_track>.size);guard check(daw_get_track(session,UInt32(sender.tag),&track)) else{return}; if check(daw_duplicate_clip(session,id,UInt32(index),revision)) { selectedClips[id]=Int(track.clip_count); refresh(); pollTransport() } }
-    @objc func deleteSelectedClip(_ sender:NSButton) { guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}; let index=selectedClips[id] ?? 0; if check(daw_delete_clip(session,id,UInt32(index),revision)) { selectedClips[id]=max(0,index-1); refresh(); pollTransport() } }
+    @objc func deleteSelectedClip(_ sender:NSButton) { guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}
+        var group=groupIndices(id)
+        if group.count>1 { if check(daw_delete_clips(session,id,&group,UInt32(group.count),revision)) { selectedClips[id]=0; clipSelection[id]=[0]; refresh(); pollTransport() } }
+        else { let index=selectedClips[id] ?? 0; if check(daw_delete_clip(session,id,UInt32(index),revision)) { selectedClips[id]=max(0,index-1); clipSelection.removeValue(forKey:id); refresh(); pollTransport() } } }
     @objc func toggleSelectedCrossfade(_ sender:NSButton) {
         guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}
         let index=selectedClips[id] ?? 0

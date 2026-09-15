@@ -1134,6 +1134,8 @@ int daw_set_clip_color(daw_session* s,uint64_t id,uint32_t index,uint32_t color,
 int daw_set_clip_gain(daw_session* s,uint64_t id,uint32_t index,double gain_db,uint64_t rev){return guard(s,[&]{if(!std::isfinite(gain_db))throw daw::Error("Clip gain must be finite");s->model.setClipGain(id,index,gain_db,rev);resetTransport(s);});}
 int daw_set_clip_muted(daw_session* s,uint64_t id,uint32_t index,uint32_t muted,uint64_t rev){return guard(s,[&]{if(muted>1)throw daw::Error("Clip mute flag must be 0 or 1");s->model.setClipMuted(id,index,muted!=0,rev);resetTransport(s);});}
 int daw_set_clip_looped(daw_session* s,uint64_t id,uint32_t index,uint32_t looped,uint64_t rev){return guard(s,[&]{if(looped>1)throw daw::Error("Clip loop flag must be 0 or 1");s->model.setClipLooped(id,index,looped!=0,rev);resetTransport(s);});}
+int daw_delete_clips(daw_session* s,uint64_t id,const uint32_t* indices,uint32_t count,uint64_t rev){return guard(s,[&]{if(count>0&&!indices)throw daw::Error("Clip indices required");s->model.deleteClips(id,count?std::vector<uint32_t>(indices,indices+count):std::vector<uint32_t>{},rev);resetTransport(s);});}
+int daw_nudge_clips(daw_session* s,uint64_t id,const uint32_t* indices,uint32_t count,int64_t delta,uint64_t rev){return guard(s,[&]{if(count>0&&!indices)throw daw::Error("Clip indices required");s->model.nudgeClips(id,count?std::vector<uint32_t>(indices,indices+count):std::vector<uint32_t>{},delta,rev);resetTransport(s);});}
 int daw_seek_frame(daw_session* s,uint64_t frame) { return guard(s,[&]{
     if(recordingActive(s))throw daw::Error("Stop recording before seeking");
     if(frame>duration(s)) throw daw::Error("Position exceeds project duration");

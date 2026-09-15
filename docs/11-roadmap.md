@@ -44,6 +44,8 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.55.0](76-clip-track-editing.md) — мультиселект клипов в дорожке: Ctrl-клик-группа, групповые delete и nudge на шаг сетки по одной ревизии (`deleteClips`/`nudgeClips`, мост с массивом индексов), плюс закрыт пропуск M/L-хоткеев из 1.52.0.
+
 [1.54.0](63-background-wav-import.md) — drag-and-drop из Finder: WAV/AIFF падает на аудиоленту как take в снапнутой позиции через существующий фоновый импорт (движок и мост не тронуты), один job — одно сообщение.
 
 [1.53.0](25-offline-export.md) — экспорт стемов по дорожкам: solo-синтез снапшота до мастера (гейн в единицу, мастер-цепочка мимо), «NN - имя.wav» с санитизацией, тихие дорожки пропускаются, отмена между файлами, `daw_begin_stem_export` и «Файл → Экспортировать стемы…».

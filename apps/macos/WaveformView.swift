@@ -38,6 +38,8 @@ final class WaveformView: NSView {
     var automationPoints: [(frame: UInt64, gain: Double)] = []
     var panAutomationPoints: [(frame: UInt64, value: Double)] = []
     var selectedIndex: Int = 0
+    /// Мультиселект: все индексы группы (primary остаётся selectedIndex).
+    var selectedIndices: [Int] = []
     var sourceFrames: UInt64 = 0
     var playableFrames: UInt64 = 0
     var snapFrames: UInt64 = 12000
@@ -58,7 +60,9 @@ final class WaveformView: NSView {
     var onClipMenu: ((Int) -> NSMenu?)?
     /// Горячие клавиши редактора клипов в фокусе волны: "s", "d", "delete".
     var onClipHotkey: ((String) -> Void)?
-    var onSelect: ((Int) -> Void)?
+    var onSelect: ((Int, Bool) -> Void)?
+    /// Option+стрелки: сдвинуть всю группу на шаг сетки (-1/ +1).
+    var onNudge: ((Int) -> Void)?
     private var gesture: (kind: Int, x: CGFloat, start: UInt64, offset: UInt64, length: UInt64, fadeIn: UInt64, fadeOut: UInt64)?
     var projectFrames: UInt64 = 0
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
@@ -92,7 +96,7 @@ final class WaveformView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.slider)
         setAccessibilityLabel("Позиция на аудиоволне")
-        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, M — мьют клипа, L — луп клипа, Delete — удалить выбранный клип. Правая кнопка — меню клипа. Перетаскивание WAV/AIFF из Finder — импорт клипа в дорожку по месту отпускания.")
+        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, M — мьют клипа, L — луп клипа, Delete — удалить выбранный клип или группу. Ctrl-клик добавляет и убирает клип из группы, Option+стрелки сдвигают группу на шаг сетки. Правая кнопка — меню клипа. Перетаскивание WAV/AIFF из Finder — импорт клипа в дорожку по месту отпускания.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     private var lane: NSRect { NSRect(x: 14, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - 28), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
@@ -142,7 +146,11 @@ final class WaveformView: NSView {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         guard !clips.isEmpty else { return }
-        if let hit = clips.indices.last(where: { hitZone(for: $0, at: point) != .none }) { selectedIndex=hit; onSelect?(hit); needsDisplay=true }
+        let additive = event.modifierFlags.contains(.control)
+        if let hit = clips.indices.last(where: { hitZone(for: $0, at: point) != .none }) {
+            if additive { onSelect?(hit, true); needsDisplay = true; return } // toggle остаётся контроллеру, жест не стартует
+            selectedIndex = hit; onSelect?(hit, false); needsDisplay = true
+        }
         let clip=clips[selectedIndex]
         let zone = hitZone(for: selectedIndex, at: point)
         var kind = 0
@@ -210,9 +218,12 @@ final class WaveformView: NSView {
             case "d": onClipHotkey?("d"); return
             case "c": onClipHotkey?("c"); return
             case "v": onClipHotkey?("v"); return
+            case "m": onClipHotkey?("m"); return
+            case "l": onClipHotkey?("l"); return
             default: break
             }
         }
+        if gesture == nil, event.modifierFlags.contains(.option), (event.keyCode == 123 || event.keyCode == 124), !clips.isEmpty { onNudge?(event.keyCode == 124 ? 1 : -1); return }
         switch event.keyCode {
         case 123: seek(playhead > 48000 ? playhead - 48000 : 0)
         case 124: seek(min(projectFrames, playhead + 48000))
@@ -225,7 +236,7 @@ final class WaveformView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let hit = clips.indices.last(where: { hitZone(for: $0, at: point) != .none }) else { return }
-        if hit != selectedIndex { selectedIndex = hit; onSelect?(hit); needsDisplay = true }
+        if hit != selectedIndex { selectedIndex = hit; onSelect?(hit,false); needsDisplay = true }
         guard let menu = onClipMenu?(hit) else { return }
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
@@ -266,7 +277,7 @@ final class WaveformView: NSView {
         }
         for (index,clip) in clips.enumerated() {
             let rect = clipRect(clip); let clipX=rect.minX; let clipWidth=rect.width
-            let selected = index == selectedIndex; let hovered = index == hoveredIndex
+            let selected = index == selectedIndex || selectedIndices.contains(index); let hovered = index == hoveredIndex
             let body = clip.color != 0 ? dawColorFromHex(clip.color) : trackAccent
             if selected { NSColor.systemMint.withAlphaComponent(0.10).setFill(); NSBezierPath(roundedRect: rect.insetBy(dx: -3, dy: -3), xRadius: 7, yRadius: 7).fill() }
             (selected ? body.withAlphaComponent(clip.muted ? 0.30 : 0.82) : body.withAlphaComponent(clip.muted ? (hovered ? 0.20 : 0.12) : (hovered ? 0.48 : 0.30))).setFill()

@@ -232,6 +232,12 @@ public:
     // honestly rejects through validate().
     void setClipMuted(uint64_t id, uint32_t clipIndex, bool muted, uint64_t expected);
     void setClipLooped(uint64_t id, uint32_t clipIndex, bool looped, uint64_t expected);
+    // Multi-selection group operations: one revision for the whole group.
+    // deleteClips sorts/uniques indices and keeps the track non-empty through
+    // validate(); nudgeClips translates selected regions together and re-sorts
+    // by start, so overlaps/crossfades stay validate()'s business.
+    void deleteClips(uint64_t id, std::vector<uint32_t> indices, uint64_t expected);
+    void nudgeClips(uint64_t id, std::vector<uint32_t> indices, int64_t deltaFrames, uint64_t expected);
     void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
     void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
     void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);

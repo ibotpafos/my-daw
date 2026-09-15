@@ -249,6 +249,13 @@ int main(void) {
     if (daw_set_clip_muted(session, 2, 0, 2, r + 3) == 0) result |= 1;                /* flag must be 0 or 1 */
     if (daw_set_clip_muted(session, 2, 0, 1, r + 3) == 0) result |= 1;                /* clip not found */
     if (daw_set_clip_looped(session, 4, 0, 1, r + 3) == 0) result |= 1;
+    /* Multi-select group ops: one bad index poisons the batch, rejects spend
+     * nothing, a missing array is refused and an empty group is a legal no-op. */
+    const uint32_t group[2] = {0, 7};
+    if (daw_delete_clips(session, 2, group, 2, r + 3) == 0) result |= 1;
+    if (daw_nudge_clips(session, 2, group, 2, 4800, r + 3) == 0) result |= 1;
+    if (daw_delete_clips(session, 2, NULL, 1, r + 3) == 0) result |= 1;
+    if (daw_delete_clips(session, 2, NULL, 0, r + 3) != 0) result |= 1;
     if (daw_undo(session, r + 3) != 0) result |= 1;                                   /* nothing spent a revision */
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
