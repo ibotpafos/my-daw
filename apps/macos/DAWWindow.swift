@@ -7,6 +7,7 @@ final class DAWWindow: NSWindow {
     var onPlayStop: (() -> Void)?
     var onRewind: (() -> Void)?
     var onDeleteSelectedClip: (() -> Void)?
+    var onDeleteSelectedTrack: (() -> Void)?
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onZoomReset: (() -> Void)?
@@ -29,6 +30,9 @@ final class DAWWindow: NSWindow {
             return super.performKeyEquivalent(with: event)
         }
         if super.performKeyEquivalent(with: event) {
+            return true
+        }
+        if handleTrackDeleteCommand(event) {
             return true
         }
         return handleZoomCommand(event)
@@ -84,6 +88,17 @@ final class DAWWindow: NSWindow {
         default:
             return false
         }
+    }
+
+    /// Keep the unmodified Delete key scoped to clips.  Command-Delete is a
+    /// distinct, explicitly reversible project command for the selected track.
+    private func handleTrackDeleteCommand(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers == [.command],
+              event.keyCode == 51 || event.keyCode == 117 else {
+            return false
+        }
+        return invoke(onDeleteSelectedTrack)
     }
 
     private func invoke(_ command: (() -> Void)?) -> Bool {

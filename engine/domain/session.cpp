@@ -225,6 +225,17 @@ void Session::add(const std::string& name, uint64_t expected) {
     check(expected); State next = current;
     next.tracks.push_back({next.nextID++, name, 0, {}, {},0,false,false,0,{},0,{},{},{},{}}); commit(std::move(next));
 }
+void Session::removeTrack(uint64_t id, uint64_t expected) {
+    check(expected);
+    State next=current;
+    const auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==id;});
+    if(track==next.tracks.end())throw Error("Track not found");
+    // Erasing the owning Track intentionally removes all track-scoped media,
+    // routing, sends, automation and inserts in the same commit. Buses and
+    // master state have no ownership edge back to a track and remain intact.
+    next.tracks.erase(track);
+    commit(std::move(next));
+}
 void Session::import(const std::string& name, std::shared_ptr<const Clip> clip, uint64_t expected) {
     importAt(name,std::move(clip),0,expected);
 }

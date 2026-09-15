@@ -20,6 +20,8 @@
 
 [1.36.0](63-background-wav-import.md) переносит bounded PCM WAV import с control/main thread в отдельную cancellable job: чтение, проверка, decode и resampling не блокируют editing или transport. Готовый immutable result применяется в один revision-aware commit; если проект изменился, UI не применяет его сам и предлагает явное добавление в актуальную ревизию. Новый/открытый проект и завершение приложения отменяют job до смены session. Это не streaming media engine, не proof качества resampling и не listening/physical gate.
 
+[1.37.0](64-delete-track-undo.md) добавляет базовое управление проектом: выбранная дорожка удаляется полностью одним revision-aware commit, а Undo/Redo возвращают или снова убирают тот же immutable snapshot. Удаление не меняет buses и master chain; после сохранения/открытия остаётся только surviving project state. Это не операция с корзиной, не media garbage collection и не proof слушательского или физического поведения.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.

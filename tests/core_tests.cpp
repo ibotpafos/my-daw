@@ -1,5 +1,6 @@
 #include "domain/session.hpp"
 #include "audio/export.hpp"
+#include "audio/renderer.hpp"
 #include "plugins/plugin_descriptor.hpp"
 #include "daw.h"
 #include <sqlite3.h>
@@ -55,6 +56,30 @@ int main() { try {
     CHECK(mix.state().revision==5&&mix.state().tracks[0].pan==-0.25&&mix.state().tracks[0].muted&&mix.state().tracks[0].solo&&mix.state().masterGain==-6);
     mix.pan(1,-0.25,5);CHECK(mix.state().revision==5);rejects([&]{mix.pan(1,1.01,5);});rejects([&]{mix.masterGain(std::numeric_limits<double>::infinity(),5);});
     mix.undo(5);CHECK(mix.state().masterGain==0);mix.redo(6);CHECK(mix.state().masterGain==-6);
+    // Deleting a track is one atomic snapshot mutation. Its complete owned
+    // strip disappears from the render graph, while Undo restores the exact
+    // immutable media-backed Track without consuming another ID.
+    daw::Session deletedTrack;
+    auto deleteClip=std::make_shared<daw::Clip>(std::vector<float>{0.5f,0.5f,0.25f,0.25f,-0.25f,-0.25f,-0.5f,-0.5f});
+    deletedTrack.import("Disposable audio",deleteClip,0);
+    deletedTrack.addBus("Disposable bus",1);
+    deletedTrack.addTake(1,"Alternate take",deleteClip,0,2);
+    deletedTrack.compRange(1,1,0,2,3);
+    deletedTrack.upsertSend(1,2,-9,true,4);
+    deletedTrack.upsertTrackVolumeAutomation(1,0,-3,5);
+    deletedTrack.upsertTrackPanAutomation(1,0,0.25,6);
+    deletedTrack.addTrackInsert(1,{0,1,2,3,"Disposable insert",false,0,{}},7);
+    deletedTrack.upsertPluginParameterAutomation(daw::PluginOwner::Track,1,3,42,"Cutoff",0,0.5,8);
+    auto silentClip=std::make_shared<daw::Clip>(std::vector<float>(8,0));
+    deletedTrack.import("Other strip",silentClip,9);
+    const auto deletedOriginal=deletedTrack.state().tracks[0];const auto retainedBus=deletedTrack.state().buses[0];const auto deletedNextID=deletedTrack.state().nextID;
+    daw::Renderer beforeDeleteRenderer;beforeDeleteRenderer.prepare(deletedTrack.state());beforeDeleteRenderer.playing.store(true);
+    std::array<float,4> renderedLeft{},renderedRight{};beforeDeleteRenderer.render(renderedLeft.data(),renderedRight.data(),4);CHECK(std::any_of(renderedLeft.begin(),renderedLeft.end(),[](float value){return value!=0;}));
+    deletedTrack.removeTrack(1,10);CHECK(deletedTrack.state().revision==11&&deletedTrack.state().tracks.size()==1&&deletedTrack.state().tracks[0].id==4&&deletedTrack.state().buses[0]==retainedBus&&deletedTrack.state().nextID==deletedNextID);
+    daw::Renderer deletedRenderer;deletedRenderer.prepare(deletedTrack.state());deletedRenderer.playing.store(true);renderedLeft.fill(1);renderedRight.fill(1);deletedRenderer.render(renderedLeft.data(),renderedRight.data(),4);CHECK(std::all_of(renderedLeft.begin(),renderedLeft.end(),[](float value){return value==0;})&&std::all_of(renderedRight.begin(),renderedRight.end(),[](float value){return value==0;}));
+    deletedTrack.undo(11);CHECK(deletedTrack.state().tracks.size()==2&&deletedTrack.state().tracks[0]==deletedOriginal&&deletedTrack.state().buses[0]==retainedBus&&deletedTrack.state().nextID==deletedNextID);
+    daw::Renderer restoredRenderer;restoredRenderer.prepare(deletedTrack.state());restoredRenderer.playing.store(true);renderedLeft.fill(0);renderedRight.fill(0);restoredRenderer.render(renderedLeft.data(),renderedRight.data(),4);CHECK(std::any_of(renderedLeft.begin(),renderedLeft.end(),[](float value){return value!=0;}));
+    deletedTrack.redo(12);CHECK(deletedTrack.state().tracks.size()==1&&deletedTrack.state().tracks[0].id==4&&deletedTrack.state().buses[0]==retainedBus&&deletedTrack.state().nextID==deletedNextID);
     daw::Session routing;routing.add("Lead",0);routing.addBus("Vocal Bus",1);routing.addBus("FX Return",2);routing.routeTrack(1,2,3);routing.routeBus(2,3,4);routing.upsertSend(1,3,-12,false,5);
     CHECK(routing.state().revision==6&&routing.state().tracks[0].outputBus==2&&routing.state().tracks[0].sends==std::vector<daw::Send>({{3,-12,false}}));
     rejects([&]{routing.routeBus(3,2,6);});CHECK(routing.state().revision==6&&routing.state().buses[1].outputBus==0);
@@ -151,6 +176,22 @@ int main() { try {
     rejects([&]{daw::readDraft(path);}); CHECK(daw_open_draft(bridge.get(),path.c_str())==1);
     CHECK(daw_get_track(bridge.get(),0,&t)==0 && t.gain_db==-12);
 
+    // The C bridge preserves the optimistic revision contract: failed stale
+    // or missing deletes cannot invalidate output, while a successful delete
+    // produces one revision and remains exactly undoable/redoable.
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> deleteBridge(daw_create(),daw_destroy);CHECK(deleteBridge);
+    daw_snapshot deleteSnapshot{};deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==0);
+    CHECK(daw_add_track(deleteBridge.get(),"Remove me",0)==0);CHECK(daw_add_track(deleteBridge.get(),"Keep me",1)==0);
+    daw_track removable{};removable.struct_size=sizeof(removable);daw_track retained{};retained.struct_size=sizeof(retained);CHECK(daw_get_track(deleteBridge.get(),0,&removable)==0&&daw_get_track(deleteBridge.get(),1,&retained)==0);
+    CHECK(daw_remove_track(deleteBridge.get(),removable.id,1)==1);CHECK(daw_remove_track(deleteBridge.get(),999,2)==1);
+    deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==2&&deleteSnapshot.track_count==2);
+    CHECK(daw_remove_track(deleteBridge.get(),removable.id,2)==0);deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==3&&deleteSnapshot.track_count==1);
+    retained={};retained.struct_size=sizeof(retained);CHECK(daw_get_track(deleteBridge.get(),0,&retained)==0&&retained.id==2&&std::string(retained.name)=="Keep me");
+    CHECK(daw_undo(deleteBridge.get(),3)==0);deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==4&&deleteSnapshot.track_count==2);
+    removable={};removable.struct_size=sizeof(removable);CHECK(daw_get_track(deleteBridge.get(),0,&removable)==0&&removable.id==1&&std::string(removable.name)=="Remove me");
+    CHECK(daw_redo(deleteBridge.get(),4)==0);deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==5&&deleteSnapshot.track_count==1);
+    CHECK(daw_add_track(deleteBridge.get(),"New ID",5)==0);retained={};retained.struct_size=sizeof(retained);CHECK(daw_get_track(deleteBridge.get(),1,&retained)==0&&retained.id==3);
+
     // v35 accepts the supported 44.1 kHz PCM WAV family at the public C ABI
     // boundary, converts it once into the fixed 48 kHz project representation,
     // and never partially mutates a session when validation fails.
@@ -212,12 +253,21 @@ int main() { try {
     asyncSnapshot.struct_size=sizeof(asyncSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&asyncSnapshot)==0&&asyncSnapshot.revision==3);
     asyncTrack={};asyncTrack.struct_size=sizeof(asyncTrack);CHECK(daw_get_track(asyncBridge.get(),1,&asyncTrack)==0&&asyncTrack.take_count==2);
 
+    // A ready take import holds no implicit claim on its target: deleting the
+    // target before apply rejects the job and leaves the new state untouched.
+    daw_import_job* deletedTargetImport=daw_begin_import_take_wav(asyncBridge.get(),asyncTrack.id,rate441Path.c_str(),"Deleted target",0,asyncSnapshot.revision);CHECK(deletedTargetImport);
+    asyncStatus=waitForImport(deletedTargetImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);
+    CHECK(daw_remove_track(asyncBridge.get(),asyncTrack.id,asyncSnapshot.revision)==0);
+    daw_snapshot deletedTargetSnapshot{};deletedTargetSnapshot.struct_size=sizeof(deletedTargetSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&deletedTargetSnapshot)==0&&deletedTargetSnapshot.revision==4&&deletedTargetSnapshot.track_count==1);
+    CHECK(daw_apply_import(asyncBridge.get(),deletedTargetImport,deletedTargetSnapshot.revision)==1);
+    deletedTargetSnapshot.struct_size=sizeof(deletedTargetSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&deletedTargetSnapshot)==0&&deletedTargetSnapshot.revision==4&&deletedTargetSnapshot.track_count==1);daw_release_import(deletedTargetImport);
+
     // Failed and canceled jobs are terminal and cannot touch domain state.
-    daw_import_job* failedImport=daw_begin_import_wav(asyncBridge.get(),zeroRatePath.c_str(),"Bad async",asyncSnapshot.revision);CHECK(failedImport);
-    asyncStatus=waitForImport(failedImport);CHECK(asyncStatus.status==DAW_IMPORT_FAILED&&asyncStatus.error[0]);CHECK(daw_apply_import(asyncBridge.get(),failedImport,asyncSnapshot.revision)==1);daw_release_import(failedImport);
-    daw_import_job* canceledImport=daw_begin_import_wav(asyncBridge.get(),rate441Path.c_str(),"Canceled async",asyncSnapshot.revision);CHECK(canceledImport);daw_cancel_import(canceledImport);
-    asyncStatus=waitForImport(canceledImport);CHECK(asyncStatus.status==DAW_IMPORT_CANCELED);CHECK(daw_apply_import(asyncBridge.get(),canceledImport,asyncSnapshot.revision)==1);daw_release_import(canceledImport);
-    daw_snapshot unchangedAsync{};unchangedAsync.struct_size=sizeof(unchangedAsync);CHECK(daw_get_snapshot(asyncBridge.get(),&unchangedAsync)==0&&unchangedAsync.revision==3&&unchangedAsync.track_count==2);
+    daw_import_job* failedImport=daw_begin_import_wav(asyncBridge.get(),zeroRatePath.c_str(),"Bad async",deletedTargetSnapshot.revision);CHECK(failedImport);
+    asyncStatus=waitForImport(failedImport);CHECK(asyncStatus.status==DAW_IMPORT_FAILED&&asyncStatus.error[0]);CHECK(daw_apply_import(asyncBridge.get(),failedImport,deletedTargetSnapshot.revision)==1);daw_release_import(failedImport);
+    daw_import_job* canceledImport=daw_begin_import_wav(asyncBridge.get(),rate441Path.c_str(),"Canceled async",deletedTargetSnapshot.revision);CHECK(canceledImport);daw_cancel_import(canceledImport);
+    asyncStatus=waitForImport(canceledImport);CHECK(asyncStatus.status==DAW_IMPORT_CANCELED);CHECK(daw_apply_import(asyncBridge.get(),canceledImport,deletedTargetSnapshot.revision)==1);daw_release_import(canceledImport);
+    daw_snapshot unchangedAsync{};unchangedAsync.struct_size=sizeof(unchangedAsync);CHECK(daw_get_snapshot(asyncBridge.get(),&unchangedAsync)==0&&unchangedAsync.revision==4&&unchangedAsync.track_count==1);
 
     // Opening a draft replaces the project epoch even when a source job is
     // already ready. The opaque handle is also safe after session destruction.

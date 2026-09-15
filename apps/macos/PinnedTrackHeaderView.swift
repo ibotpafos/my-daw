@@ -58,6 +58,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
     var onSplit: ((UInt64) -> Void)?
     var onDuplicate: ((UInt64) -> Void)?
     var onDelete: ((UInt64) -> Void)?
+    var onDeleteTrack: ((UInt64) -> Void)?
     var onCrossfade: ((UInt64) -> Void)?
 
     private let accentBar = NSView()
@@ -118,14 +119,16 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         mute.action = #selector(changeMute)
         solo.action = #selector(changeSolo)
 
-        actionMenu.addItems(withTitles: ["•••", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip"])
+        actionMenu.addItems(withTitles: ["•••", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку"])
         actionMenu.item(at: 0)?.isEnabled = false
         actionMenu.menu?.addItem(.separator())
         actionMenu.target = self
         actionMenu.action = #selector(performMenuAction)
         actionMenu.bezelStyle = .inline
         actionMenu.widthAnchor.constraint(equalToConstant: 34).isActive = true
-        actionMenu.toolTip = "Действия с клипом и дублями"
+        actionMenu.toolTip = "Действия с клипом, дублями и дорожкой"
+        actionMenu.setAccessibilityLabel("Действия дорожки \(model.name)")
+        actionMenu.setAccessibilityHelp("Содержит обратимое удаление дорожки. Обычное Delete удаляет выбранный клип, Command-Delete удаляет дорожку.")
 
         let titleRow = NSStackView(views: [numberLabel, nameField])
         titleRow.orientation = .horizontal
@@ -205,6 +208,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         case 4: onDuplicate?(model.id)
         case 5: onCrossfade?(model.id)
         case 6: onDelete?(model.id)
+        case 7: onDeleteTrack?(model.id)
         default: break
         }
     }

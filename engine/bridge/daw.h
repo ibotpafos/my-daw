@@ -240,6 +240,9 @@ void daw_destroy(daw_session* session);
 int daw_get_snapshot(daw_session*, daw_snapshot*);
 int daw_get_track(daw_session*, uint32_t index, daw_track*);
 int daw_add_track(daw_session*, const char* name, uint64_t expected_revision);
+/* Removes one complete track in a single revision.  Its clips, takes, sends,
+ * automation and inserts are removed with it; Undo restores the exact track. */
+int daw_remove_track(daw_session*, uint64_t track_id, uint64_t expected_revision);
 int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expected_revision);
 int daw_set_gain(daw_session*, uint64_t id, double gain_db, uint64_t expected_revision);
 int daw_set_pan(daw_session*,uint64_t id,double pan,uint64_t expected_revision);

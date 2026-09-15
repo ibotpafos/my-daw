@@ -124,6 +124,10 @@ extension DraftApp {
         importMessage = text
         importMessageUntil = Date().addingTimeInterval(duration)
     }
+    func setProjectMessage(_ text: String, duration: TimeInterval = 8) {
+        projectMessage = text
+        projectMessageUntil = Date().addingTimeInterval(duration)
+    }
     func releaseImportJob(cancel: Bool) {
         guard let job = importJob else { return }
         if cancel { daw_cancel_import(job) }
@@ -455,6 +459,11 @@ extension DraftApp {
             status.stringValue = Date().timeIntervalSince(saveStarted) > 10 ? "Запись занимает больше времени. Проект остаётся доступен для работы." : "Сохраняется снимок проекта… можно продолжать редактирование"
         } else if let error = saveError { status.stringValue = "Ошибка сохранения: \(error)" }
         else if let exportMessage, Date() < exportMessageUntil { status.stringValue = exportMessage }
+        else if let projectMessage, Date() < projectMessageUntil {
+            status.stringValue = projectMessage
+            status.setAccessibilityLabel("Статус проекта")
+            status.setAccessibilityValue(status.stringValue)
+        }
         else if dirty {
             if let error = recoveryError { status.stringValue = "Есть несохранённые изменения · \(error)" }
             else if recoveredRevision == revision { status.stringValue = "Есть несохранённые изменения · резервный черновик обновлён" }

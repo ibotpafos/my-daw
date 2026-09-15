@@ -44,6 +44,8 @@ int main(void) {
     result |= daw_get_recording(session, &recording);
     result |= daw_get_output_status(session, &output_status);
     result |= daw_set_loop(session, 0, 0, 0);
+    result |= daw_add_track(session, "Header track", 0);
+    result |= daw_remove_track(session, 1, 1);
     if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 1) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;

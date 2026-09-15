@@ -61,6 +61,10 @@ public:
     bool canUndo() const { return !past.empty(); }
     bool canRedo() const { return !future.empty(); }
     void add(const std::string&, uint64_t expected);
+    // Removes the complete track object in one revision.  The snapshot-based
+    // history retains its clips, takes, routing, automation, and inserts so
+    // Undo restores the exact prior track without allocating new IDs.
+    void removeTrack(uint64_t id, uint64_t expected);
     void import(const std::string&, std::shared_ptr<const Clip>, uint64_t expected);
     void importAt(const std::string&, std::shared_ptr<const Clip>, uint64_t start, uint64_t expected);
     void rename(uint64_t id, const std::string&, uint64_t expected);

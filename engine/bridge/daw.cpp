@@ -424,6 +424,7 @@ int daw_get_track(daw_session* s, uint32_t index, daw_track* out) { return guard
     std::memset(out->name,0,sizeof(out->name)); std::memcpy(out->name,t.name.data(),t.name.size());
 }); }
 int daw_add_track(daw_session* s,const char* name,uint64_t rev) { return guard(s,[&]{s->model.add(required(name),rev);cancelStalePlaybackPreparation(s);}); }
+int daw_remove_track(daw_session* s,uint64_t id,uint64_t rev) { return guard(s,[&]{s->model.removeTrack(id,rev);resetTransport(s);}); }
 int daw_rename_track(daw_session* s,uint64_t id,const char* name,uint64_t rev) { return guard(s,[&]{s->model.rename(id,required(name),rev);cancelStalePlaybackPreparation(s);}); }
 int daw_set_gain(daw_session* s,uint64_t id,double gain,uint64_t rev) { return guard(s,[&]{s->model.gain(id,gain,rev);cancelStalePlaybackPreparation(s);if(s->output) s->output->renderer.updateMix(s->model.state());}); }
 int daw_set_pan(daw_session* s,uint64_t id,double pan,uint64_t rev){return guard(s,[&]{s->model.pan(id,pan,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}

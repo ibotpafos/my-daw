@@ -13,6 +13,17 @@
 #include <vector>
 extern char** environ;
 #define CHECK(x) do {if(!(x))throw std::runtime_error("Failed: " #x);}while(false)
+static bool sameClip(const std::shared_ptr<const daw::Clip>& left,const std::shared_ptr<const daw::Clip>& right){
+    return (!left||!right)?left==right:left->samples()==right->samples();
+}
+static bool sameTrack(const daw::Track& left,const daw::Track& right){
+    if(left.id!=right.id||left.name!=right.name||left.gain!=right.gain||!sameClip(left.audio,right.audio)||left.regions!=right.regions||left.pan!=right.pan||left.muted!=right.muted||left.solo!=right.solo||left.baseStart!=right.baseStart||left.outputBus!=right.outputBus||left.sends!=right.sends||left.volumeAutomation!=right.volumeAutomation||left.panAutomation!=right.panAutomation||left.inserts!=right.inserts||left.takes.size()!=right.takes.size())return false;
+    for(size_t index=0;index<left.takes.size();++index)if(left.takes[index].name!=right.takes[index].name||left.takes[index].start!=right.takes[index].start||!sameClip(left.takes[index].audio,right.takes[index].audio))return false;
+    return true;
+}
+static bool sameTracks(const std::vector<daw::Track>& left,const std::vector<daw::Track>& right){
+    if(left.size()!=right.size())return false;for(size_t index=0;index<left.size();++index)if(!sameTrack(left[index],right[index]))return false;return true;
+}
 int crashStage=0;
 void crashAt(int stage){if(stage==crashStage)raise(SIGKILL);}
 daw_save_status waitJob(daw_save_job* job){
@@ -66,5 +77,40 @@ int main(int argc, char** argv){try{
     bool releasedComplete=false;for(int i=0;i<1000&&!releasedComplete;++i){try{releasedComplete=daw::readDraft(releasedPath).tracks[0].name=="Independent";}catch(...){std::this_thread::sleep_for(std::chrono::milliseconds(5));}}
     CHECK(releasedComplete&&daw::backgroundJobsInFlight()==0);
     daw_save_status bad{};CHECK(daw_poll_save(nullptr,&bad)==1);daw_release_save(nullptr);
-    std::cout<<"PASS: crash atomicity, immutable snapshots, bounded job saturation, explicit busy, released-handle/session lifetime independence\n";
+
+    // Deleting a track is a complete State snapshot transition. The snapshot
+    // writer must retain every durable field of survivors and omit every row
+    // owned by the removed track; Undo then has to restore the exact state
+    // before the next Save.
+    const auto removeClip=std::make_shared<daw::Clip>(std::vector<float>(960,0.125f));
+    const auto keepClip=std::make_shared<daw::Clip>(std::vector<float>(1440,-0.25f));
+    const auto removeTake=std::make_shared<daw::Clip>(std::vector<float>(480,0.5f));
+    const auto keepTake=std::make_shared<daw::Clip>(std::vector<float>(720,-0.5f));
+    daw::Session deleteProject;
+    deleteProject.import("Delete me",removeClip,0);
+    deleteProject.import("Keep me",keepClip,1);
+    deleteProject.addTake(1,"Deleted take",removeTake,24,2);
+    deleteProject.addTake(2,"Kept take",keepTake,48,3);
+    deleteProject.upsertTrackVolumeAutomation(1,120,-3,4);
+    deleteProject.upsertTrackPanAutomation(1,120,-0.3,5);
+    deleteProject.addTrackInsert(1,{0,1,2,3,"Deleted insert",false,8,{1,2,3}},6);
+    deleteProject.upsertPluginParameterAutomation(daw::PluginOwner::Track,1,3,7,"Deleted parameter",120,0.25,7);
+    deleteProject.upsertTrackVolumeAutomation(2,240,-6,8);
+    deleteProject.upsertTrackPanAutomation(2,240,0.4,9);
+    deleteProject.addTrackInsert(2,{0,4,5,6,"Kept insert",true,16,{4,5,6}},10);
+    deleteProject.upsertPluginParameterAutomation(daw::PluginOwner::Track,2,4,9,"Kept parameter",240,0.75,11);
+    const auto beforeDelete=deleteProject.state();
+    CHECK(beforeDelete.tracks.size()==2&&beforeDelete.nextID==5);
+    deleteProject.removeTrack(1,12);
+    CHECK(deleteProject.state().revision==13&&deleteProject.state().tracks.size()==1&&sameTrack(deleteProject.state().tracks[0],beforeDelete.tracks[1]));
+    const auto deletedPath=(directory/"delete-track.mydawdraft").string();
+    daw::writeDraft(deleteProject.state(),deletedPath);
+    const auto persistedDelete=daw::readDraft(deletedPath);
+    CHECK(persistedDelete.revision==13&&persistedDelete.nextID==beforeDelete.nextID&&persistedDelete.tracks.size()==1&&sameTrack(persistedDelete.tracks[0],beforeDelete.tracks[1]));
+    deleteProject.undo(13);
+    CHECK(deleteProject.state().revision==14&&sameTracks(deleteProject.state().tracks,beforeDelete.tracks)&&deleteProject.state().nextID==beforeDelete.nextID);
+    daw::writeDraft(deleteProject.state(),deletedPath);
+    const auto persistedUndo=daw::readDraft(deletedPath);
+    CHECK(persistedUndo.revision==14&&persistedUndo.nextID==beforeDelete.nextID&&sameTracks(persistedUndo.tracks,beforeDelete.tracks));
+    std::cout<<"PASS: crash atomicity, immutable snapshots, bounded job saturation, explicit busy, released-handle/session lifetime independence, delete-track storage roundtrip and undo restore\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
