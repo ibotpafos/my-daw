@@ -12,7 +12,7 @@
 
 Audio browser перечисляет до 1000 WAV из папки, которую пользователь явно выбрал через системную панель. My DAW не сканирует `Documents`, домашнюю папку или весь диск автоматически и не сохраняет фоновый доступ к выбранной папке. Поиск фильтрует имя файла и имя родительской папки; Add импортирует выбранный WAV как новую дорожку через `daw_import_wav`.
 
-Текущий import contract остаётся прежним: RIFF WAV, 48 kHz, mono/stereo, PCM16/24/32 или float32, до 60 секунд и 32 MiB. Более богатые media metadata, preview и persistent favorites потребуют отдельного read-only probe/catalog API.
+Текущий import contract остаётся прежним: RIFF WAV, 48 kHz, mono/stereo, PCM16/24/32 или float32, до 60 секунд и 32 MiB. [Версия 1.34](61-audio-browser-preview.md) добавила read-only WAV audition через AVFoundation; более богатые media metadata и persistent favorites по-прежнему требуют отдельного probe/catalog API.
 
 ## Plug-in browser
 
@@ -22,6 +22,6 @@ Add направляет выбранный эффект в текущий track
 
 ## Границы среза
 
-Browser selection и раскрытая вкладка являются локальным состоянием UI и не входят в переносимый музыкальный проект. Native vendor editors, media preview, arbitrary sample-rate conversion и runtime plug-in sandbox не входят в этот срез. [1.24.0](51-pinned-headers-keyboard.md) добавил pinned track headers и единый keyboard command boundary.
+Browser selection и раскрытая вкладка являются локальным состоянием UI и не входят в переносимый музыкальный проект. Native vendor editors, arbitrary sample-rate conversion и runtime plug-in sandbox не входят в этот срез. [1.24.0](51-pinned-headers-keyboard.md) добавил pinned track headers и единый keyboard command boundary.
 
 Выполнена compile/build проверка локального macOS bundle. QA, запуск приложения, прослушивание, hardware и сторонняя vendor matrix не выполнялись по текущему режиму разработки.

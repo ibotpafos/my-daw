@@ -188,6 +188,7 @@ if(BUILD_TESTING)
     add_executable(daw_duplex_hardware_smoke tests/duplex_hardware_smoke.cpp)
     target_include_directories(daw_duplex_hardware_smoke PRIVATE engine)
     target_link_libraries(daw_duplex_hardware_smoke PRIVATE daw_core)
+    add_test(NAME macos_audio_browser_preview COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/scripts/test-audio-preview.sh")
     # Deliberately not in CTest: requires a real output device, never shared CI.
   endif()
   add_executable(daw_core_tests tests/core_tests.cpp)

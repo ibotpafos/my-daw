@@ -23,6 +23,6 @@ Pinned header содержит имя, R/M/S, gain, pan, количество ta
 
 ## Границы среза
 
-Layout, zoom, browser selection и panel sizes являются UI state. Audio, routing, clips, takes, mixer values и plug-in chains продолжают изменяться через revision-aware C bridge и сохраняются в `.mydaw`. Runtime plug-in sandbox, vendor editors, media preview и physical UX/visual acceptance остаются отдельными задачами.
+Layout, zoom, browser selection и panel sizes являются UI state. Audio, routing, clips, takes, mixer values и plug-in chains продолжают изменяться через revision-aware C bridge и сохраняются в `.mydaw`. [Версия 1.34](61-audio-browser-preview.md) добавила отдельный read-only WAV audition; runtime plug-in sandbox, vendor editors и physical UX/listening acceptance остаются отдельными задачами.
 
 Выполнена compile/build проверка локального macOS bundle. QA, запуск приложения, прослушивание и hardware не выполнялись по текущему режиму разработки.

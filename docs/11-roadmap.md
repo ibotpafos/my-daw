@@ -14,6 +14,8 @@
 
 [1.33.0](60-infinite-tail-export-policy.md) завершает policy-срез B-013: WAV export различает finite и infinite declarations и даёт выбрать automatic bounded tail, finite-only либо 2/5/15/30-секундный предел. Политика живёт в локальных export preferences, не меняет проект и не подменяет legacy C ABI. Engine/bridge CTest и arm64 app build прошли; tail dialog ещё требует повторного визуального/VoiceOver smoke после сбоя Accessibility backend. Physical presentation timestamp и listening acceptance по-прежнему отдельные gates.
 
+[1.34.0](61-audio-browser-preview.md) добавляет B-018 browser audition: AVFoundation-плеер открывает только выбранный WAV из явно добавленной папки, не вызывает C bridge и не меняет transport, revision, Undo или draft. Смена выбора, папки, импорт, новый/открытый проект и завершение приложения останавливают preview. Unit-level controller test регистрируется как Apple CTest; ручной слуховой и VoiceOver smoke остаются отдельными gates.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.
@@ -62,7 +64,7 @@ Spikes одноразовые или изолированные; их нельз
 | B-015 | P2 | B-014, B-010 | **Code scope готов:** selected Lead/Doubles, peak/RMS suggestions, preview и atomic apply; listening evidence ещё требуется |
 | B-016 | P2 | B-009, B-013 | **Code scope готов:** DAWproject 1.0 XML/ZIP, media/AU/VST3 state, routing, channel и plug-in parameter automation, loss report; import matrix ещё не прогонялась |
 | B-017 | P2 | B-012 | **Основной code scope готов:** pinned MIT SDK, isolated scan/cache, stereo master processing, parameters/state, latency/tail, dry fallback, managed runtime isolation и DAWproject `.vstpreset`; vendor matrix, editors и sidechain ещё нужны |
-| B-018 | P1 | B-008, B-011, B-013 | **Code scope и локальный visual/AX QA готовы:** Studio Pro-inspired arrangement-first workspace с одним top toolbar, bottom transport/status, 195-point pinned track headers и режимным Inspector/Mixer; полноразмерный horizontal console bank с Inserts/Sends/routing summaries, track/bus/master controls, live stereo meters/faders и раскрываемыми подробными channel actions; shared zoom/ruler, synchronized vertical scroll, editable channel/clip inspector, WAV/AU/VST3 browser, persisted dock layout, direct move/trim/fade и единая keyboard command boundary; физический пользовательский workflow и полный VoiceOver audit ещё нужны |
+| B-018 | P1 | B-008, B-011, B-013 | **Code scope и локальный visual/AX QA готовы:** Studio Pro-inspired arrangement-first workspace с одним top toolbar, bottom transport/status, 195-point pinned track headers и режимным Inspector/Mixer; полноразмерный horizontal console bank с Inserts/Sends/routing summaries, track/bus/master controls, live stereo meters/faders и раскрываемыми подробными channel actions; shared zoom/ruler, synchronized vertical scroll, editable channel/clip inspector, WAV/AU/VST3 browser с read-only WAV audition, persisted dock layout, direct move/trim/fade и единая keyboard command boundary; физический пользовательский workflow, фактическое audition и полный VoiceOver audit ещё нужны |
 
 ## Риски
 

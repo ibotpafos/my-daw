@@ -100,6 +100,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var inspectorClipIndex: Int?
     var browserAudioURLs: [UUID: URL] = [:]
     var browserPluginTargets: [UUID: BrowserPluginTarget] = [:]
+    let audioPreview = AudioPreviewController()
     var mixerKinds: [UInt64: MixerStripKind] = [:]
     var selectedMixerID: UInt64?
     var meterHolds: [UInt64: (left: Float, right: Float)] = [:]
@@ -518,6 +519,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         inspectorBrowser.channel=InspectorChannelModel(title:strip.title,kind:kind,renameable:strip.kind != .master,volumeDb:strip.volumeDb,pan:strip.pan,muted:strip.isMuted,solo:strip.isSolo,inserts:strip.inserts.map{$0.bypassed ? "⊘ \($0.name)":$0.name},sends:strip.sends.map{"→ \($0.destination)  \(String(format:"%+.1f dB",$0.gainDb)) \($0.preFader ? "PRE":"POST")"},accent:strip.color ?? .systemBlue)
     }
     func wireInspectorBrowser() {
+        audioPreview.onChange = { [weak self] state in
+            self?.updateBrowserAudioPreview(state)
+        }
         inspectorBrowser.onChannelChange = { [weak self] volume,pan in
             guard let self,let id=self.selectedMixerID ?? self.inspectorTrackID,let current=self.inspectorBrowser.channel else{return}
             if abs(volume-current.volumeDb) >= 0.01 { self.mixerSetVolume(id,volume) }
@@ -542,6 +546,32 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         inspectorBrowser.onAdd = { [weak self] kind,item in self?.addBrowserItem(kind,item) }
         inspectorBrowser.onScanAU = { [weak self] in self?.scanInstalledAudioUnits() }
         inspectorBrowser.onScanVST3 = { [weak self] in self?.scanInstalledVST3() }
+        inspectorBrowser.onBrowserSelect = { [weak self] kind, item in
+            guard let self else { return }
+            guard kind == .audio, let item, let url = self.browserAudioURLs[item.id] else {
+                self.stopBrowserAudioPreview()
+                return
+            }
+            self.audioPreview.select(url)
+        }
+        inspectorBrowser.onPreview = { [weak self] item in
+            guard let self, let item, let url = self.browserAudioURLs[item.id] else { return }
+            if self.audioPreview.state.selectedURL != url { self.audioPreview.select(url) }
+            self.audioPreview.play()
+        }
+        inspectorBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
+    }
+
+    func updateBrowserAudioPreview(_ state: AudioPreviewController.State) {
+        let selectedID = state.selectedURL.flatMap { url in
+            browserAudioURLs.first { $0.value.standardizedFileURL == url.standardizedFileURL }?.key
+        }
+        inspectorBrowser.updateAudioPreview(isPlaying: state.isPlaying, selectedID: selectedID, error: state.errorMessage)
+    }
+
+    func stopBrowserAudioPreview() {
+        audioPreview.stop()
+        if audioPreview.state.selectedURL != nil { audioPreview.select(nil) }
     }
     func refreshBrowserCatalog() {
         browserPluginTargets.removeAll();var items:[InspectorBrowserItem]=[]
@@ -557,11 +587,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         var urls:[URL]=[]
         for case let url as URL in enumerator where url.pathExtension.lowercased() == "wav" {urls.append(url);if urls.count>=1000{break}}
         urls.sort{$0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending}
-        browserAudioURLs.removeAll();let items=urls.map{url -> InspectorBrowserItem in let item=InspectorBrowserItem(title:url.deletingPathExtension().lastPathComponent,detail:url.deletingLastPathComponent().lastPathComponent,available:true);browserAudioURLs[item.id]=url;return item};inspectorBrowser.audioItems=items
+        stopBrowserAudioPreview();browserAudioURLs.removeAll();let items=urls.map{url -> InspectorBrowserItem in let item=InspectorBrowserItem(title:url.deletingPathExtension().lastPathComponent,detail:url.deletingLastPathComponent().lastPathComponent,available:true);browserAudioURLs[item.id]=url;return item};inspectorBrowser.audioItems=items
     }
     func addBrowserItem(_ kind:InspectorBrowserKind,_ item:InspectorBrowserItem?) {
         guard !isRecording,let item else{return}
-        if kind == .audio {guard let url=browserAudioURLs[item.id] else{return};finishEditing();let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));if check(daw_import_wav(session,url.path,name,revision)){refresh()};return}
+        if kind == .audio {guard let url=browserAudioURLs[item.id] else{return};stopBrowserAudioPreview();finishEditing();let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));if check(daw_import_wav(session,url.path,name,revision)){refresh()};return}
+        stopBrowserAudioPreview()
         guard item.available,let target=browserPluginTargets[item.id] else{return}
         let destination=selectedMixerID ?? 0;let owner:Int32
         switch mixerKinds[destination] ?? .master {case .track:owner=Int32(DAW_INSERT_OWNER_TRACK);case .bus:owner=Int32(DAW_INSERT_OWNER_BUS);case .master:owner=Int32(DAW_INSERT_OWNER_MASTER)}
@@ -1119,6 +1150,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func importWav() {
         guard !isRecording else { return }
+        stopBrowserAudioPreview()
         finishEditing()
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
         panel.message = "WAV 48 кГц, mono/stereo, PCM16/24/32 или float32. До 60 секунд."
@@ -1317,7 +1349,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
-        transportTimer?.invalidate();auScanTimer?.invalidate();vst3ScanTimer?.invalidate(); cancelAutomationGesture(); cancelPluginParameterAutomation(); if let vst3ScanJob { daw_release_installed_vst3_scan(vst3ScanJob) }; rotateRecovery()
+        transportTimer?.invalidate();auScanTimer?.invalidate();vst3ScanTimer?.invalidate(); stopBrowserAudioPreview(); cancelAutomationGesture(); cancelPluginParameterAutomation(); if let vst3ScanJob { daw_release_installed_vst3_scan(vst3ScanJob) }; rotateRecovery()
         if let exportJob { daw_cancel_export(exportJob); daw_release_export(exportJob) }
         if let dawprojectJob { daw_cancel_dawproject_export(dawprojectJob); daw_release_dawproject_export(dawprojectJob) }
         daw_release_save(saveJob); daw_release_save(recoveryJob); daw_destroy(session); session = nil

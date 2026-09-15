@@ -219,6 +219,7 @@ extension DraftApp {
     @objc func newDraft() {
         requestLeave { [weak self] in
             guard let self, let fresh = daw_create() else { return }
+            self.stopBrowserAudioPreview()
             self.rotateRecovery(); daw_destroy(self.session); self.session = fresh
             self.currentURL = nil; self.savedRevision = 0; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
         }
@@ -229,6 +230,7 @@ extension DraftApp {
             let panel = NSOpenPanel(); panel.allowedContentTypes = [self.draftType, .data]
             panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
             guard panel.runModal() == .OK, let url = panel.url else { return }
+            self.stopBrowserAudioPreview()
             guard self.check(daw_open_draft(self.session, url.path)) else { return }
             var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
             guard self.check(daw_get_snapshot(self.session, &snapshot)) else { return }

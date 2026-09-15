@@ -49,6 +49,8 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onAdd: ((InspectorBrowserKind, InspectorBrowserItem?) -> Void)?
     var onScanAU: (() -> Void)?
     var onScanVST3: (() -> Void)?
+    var onPreview: ((InspectorBrowserItem?) -> Void)?
+    var onStopPreview: (() -> Void)?
 
     private let tabs = NSSegmentedControl(labels: ["INSPECTOR", "BROWSER"], trackingMode: .selectOne, target: nil, action: nil)
     private let browserKind = NSSegmentedControl(labels: ["Audio", "Plug-ins"], trackingMode: .selectOne, target: nil, action: nil)
@@ -58,6 +60,9 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let search = NSSearchField()
     private let table = NSTableView()
     private let tableScroll = NSScrollView()
+    private let preview = NSButton(title: "Прослушать", target: nil, action: nil)
+    private let stopPreview = NSButton(title: "Стоп", target: nil, action: nil)
+    private let previewStatus = NSTextField(labelWithString: "Выберите аудиофайл для предпрослушивания.")
     private let volume = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
     private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
     private let channelName = NSTextField(string: "")
@@ -69,6 +74,9 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let sendSummary = NSTextField(wrappingLabelWithString: "")
     private let clipForm = NSStackView()
     private var fields: [NSTextField] = []
+    private var isAudioPreviewPlaying = false
+    private var previewedAudioID: UUID?
+    private var audioPreviewError: String?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -109,7 +117,11 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         search.target = self; search.action = #selector(filterBrowser)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item")); column.title = ""; column.width = 220
         table.addTableColumn(column); table.headerView = nil; table.dataSource = self; table.delegate = self; table.rowHeight = 32
+        table.target = self; table.doubleAction = #selector(doubleClickBrowserItem)
         tableScroll.documentView = table; tableScroll.hasVerticalScroller = true; tableScroll.drawsBackground = false
+        preview.target = self; preview.action = #selector(previewSelectedAudio); preview.bezelStyle = .texturedRounded; preview.font = DAWDesignTokens.Typography.caption
+        stopPreview.target = self; stopPreview.action = #selector(stopAudioPreview); stopPreview.bezelStyle = .texturedRounded; stopPreview.font = DAWDesignTokens.Typography.caption
+        previewStatus.font = DAWDesignTokens.Typography.caption; previewStatus.textColor = DAWDesignTokens.Color.secondaryText; previewStatus.lineBreakMode = .byTruncatingTail
         reloadInspector()
     }
 
@@ -140,20 +152,27 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return query.isEmpty ? source : source.filter { $0.title.lowercased().contains(query) || $0.detail.lowercased().contains(query) }
     }
-    private func reloadBrowser() { guard tabs.selectedSegment == InspectorBrowserTab.browser.rawValue else { return }; titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor; table.reloadData() }
+    private func reloadBrowser() {
+        guard tabs.selectedSegment == InspectorBrowserTab.browser.rawValue else { return }
+        titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor
+        table.reloadData()
+        updatePreviewControls()
+    }
     private func showBrowser() {
         clearBody();body.isHidden=false;inspectorForm.isHidden=true; titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor
         let commands = NSStackView(views: [button("Add Folder", #selector(addFolder)), button("Import", #selector(importItem)), button("Add", #selector(addItem))]); commands.spacing = 6
         let scanners = NSStackView(views: [button("Scan AU", #selector(scanAU)), button("Scan VST3", #selector(scanVST3))]); scanners.spacing = 6
-        body.addArrangedSubview(browserKind); body.addArrangedSubview(search); body.addArrangedSubview(commands); body.addArrangedSubview(scanners); body.addArrangedSubview(tableScroll)
+        let previewCommands = NSStackView(views: [preview, stopPreview]); previewCommands.spacing = 6
+        body.addArrangedSubview(browserKind); body.addArrangedSubview(search); body.addArrangedSubview(commands); body.addArrangedSubview(previewCommands); body.addArrangedSubview(previewStatus); body.addArrangedSubview(scanners); body.addArrangedSubview(tableScroll)
         browserKind.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; search.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
         table.reloadData()
+        updatePreviewControls()
     }
     private func button(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .texturedRounded; button.font = DAWDesignTokens.Typography.caption; return button }
 
     @objc private func changeTab() { if tabs.selectedSegment == InspectorBrowserTab.inspector.rawValue { reloadInspector() } else { showBrowser() } }
-    @objc private func changeBrowserKind() { reloadBrowser() }
-    @objc private func filterBrowser() { table.reloadData() }
+    @objc private func changeBrowserKind() { table.deselectAll(nil); reloadBrowser() }
+    @objc private func filterBrowser() { table.deselectAll(nil); table.reloadData(); updatePreviewControls() }
     @objc private func changeChannel() { onChannelChange?(volume.doubleValue, pan.doubleValue) }
     @objc private func changeChannelName() { onChannelRename?(channelName.stringValue) }
     @objc private func changeMute() { onChannelMute?(mute.state == .on) }
@@ -168,10 +187,71 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     @objc private func addItem() { let kind = InspectorBrowserKind(rawValue: browserKind.selectedSegment) ?? .audio; let row = table.selectedRow; let item = row >= 0 && row < visibleItems.count ? visibleItems[row] : nil; onAdd?(kind, item) }
     @objc private func scanAU() { onScanAU?() }
     @objc private func scanVST3() { onScanVST3?() }
+    @objc private func previewSelectedAudio() { onPreview?(selectedAudioItem) }
+    @objc private func stopAudioPreview() { onStopPreview?() }
+    @objc private func doubleClickBrowserItem() {
+        guard browserKind.selectedSegment == InspectorBrowserKind.audio.rawValue,
+              preview.isEnabled else { return }
+        previewSelectedAudio()
+    }
+
+    private var selectedAudioItem: InspectorBrowserItem? {
+        guard browserKind.selectedSegment == InspectorBrowserKind.audio.rawValue else { return nil }
+        let row = table.selectedRow
+        guard row >= 0, row < visibleItems.count else { return nil }
+        let item = visibleItems[row]
+        return item.available ? item : nil
+    }
+
+    private var previewedAudioTitle: String? {
+        guard let previewedAudioID else { return nil }
+        return audioItems.first(where: { $0.id == previewedAudioID })?.title
+    }
+
+    private func updatePreviewControls() {
+        let isAudio = browserKind.selectedSegment == InspectorBrowserKind.audio.rawValue
+        let selected = selectedAudioItem
+        let selectedName = selected?.title
+        preview.isHidden = !isAudio
+        stopPreview.isHidden = !isAudio
+        previewStatus.isHidden = !isAudio
+        preview.isEnabled = isAudio && selected != nil && !isAudioPreviewPlaying
+        stopPreview.isEnabled = isAudio && isAudioPreviewPlaying
+        preview.setAccessibilityLabel(selectedName.map { "Прослушать \($0)" } ?? "Прослушать выбранный аудиофайл")
+        preview.setAccessibilityHelp("Только прослушивание выбранного аудиофайла: файл и проект не изменяются.")
+        stopPreview.setAccessibilityLabel(previewedAudioTitle.map { "Остановить предпрослушивание \($0)" } ?? "Остановить предпрослушивание")
+        stopPreview.setAccessibilityHelp("Останавливает только предпрослушивание; файл и проект не изменяются.")
+        previewStatus.setAccessibilityLabel("Статус предпрослушивания")
+        if let audioPreviewError, !audioPreviewError.isEmpty {
+            previewStatus.stringValue = audioPreviewError
+            previewStatus.textColor = .systemRed
+        } else if isAudioPreviewPlaying {
+            previewStatus.stringValue = "Идёт предпрослушивание: \(previewedAudioTitle ?? selectedName ?? "аудиофайл")"
+            previewStatus.textColor = DAWDesignTokens.Color.secondaryText
+        } else if let selected {
+            previewStatus.stringValue = "Готово к предпрослушиванию: \(selected.title)"
+            previewStatus.textColor = DAWDesignTokens.Color.secondaryText
+        } else {
+            previewStatus.stringValue = "Выберите доступный аудиофайл для предпрослушивания."
+            previewStatus.textColor = DAWDesignTokens.Color.secondaryText
+        }
+    }
+
+    func updateAudioPreview(isPlaying: Bool, selectedID: UUID?, error: String?) {
+        isAudioPreviewPlaying = isPlaying
+        previewedAudioID = selectedID
+        audioPreviewError = error
+        if let selectedID,
+           let visibleRow = visibleItems.firstIndex(where: { $0.id == selectedID }),
+           table.selectedRow != visibleRow {
+            table.selectRowIndexes(IndexSet(integer: visibleRow), byExtendingSelection: false)
+        }
+        updatePreviewControls()
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { visibleItems.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = visibleItems[row]; let view = NSTableCellView(); let title = NSTextField(labelWithString: item.title); let detail = NSTextField(labelWithString: item.available ? item.detail : "MISSING · " + item.detail); title.font = .systemFont(ofSize: 12, weight: .medium); detail.font = .systemFont(ofSize: 10); detail.textColor = item.available ? .secondaryLabelColor : .systemRed; let stack = NSStackView(views: [title, detail]); stack.orientation = .vertical; stack.spacing = 1; stack.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(stack); NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 5), stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -5), stack.centerYAnchor.constraint(equalTo: view.centerYAnchor)]); return view
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { let kind = InspectorBrowserKind(rawValue: browserKind.selectedSegment) ?? .audio; let row = table.selectedRow; let item = row >= 0 && row < visibleItems.count ? visibleItems[row] : nil; onBrowserSelect?(kind, item) }
+    func tableViewSelectionDidChange(_ notification: Notification) { let kind = InspectorBrowserKind(rawValue: browserKind.selectedSegment) ?? .audio; let row = table.selectedRow; let item = row >= 0 && row < visibleItems.count ? visibleItems[row] : nil; onBrowserSelect?(kind, item); updatePreviewControls() }
 }
