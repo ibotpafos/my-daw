@@ -79,6 +79,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let trackHeaderRows = NSStackView()
     let consoleRows = NSStackView()
     let mixerWorkspace = MixerWorkspaceView(frame: .zero)
+    let mixerSummary = NSTextField(labelWithString: "0 CH · 0 BUS · MASTER")
     let timelineRuler = TimelineRulerView(frame: .zero)
     var timelineDocument: DraftCanvas!
     var timelineScroll: NSScrollView!
@@ -160,6 +161,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var insertControlTargets: [ObjectIdentifier: (owner: Int32, ownerID: UInt64, id: UInt64, bypassed: Bool, index: UInt32)] = [:]
     var insertEditorTargets: [ObjectIdentifier: (owner: Int32, ownerID: UInt64, id: UInt64)] = [:]
     var insertHostingTargets: [ObjectIdentifier: (owner: Int32, ownerID: UInt64, id: UInt64)] = [:]
+    var insertRuntimeBadges: [(label: NSTextField, policy: NSTextField, selectedMode: UInt32, owner: Int32, ownerID: UInt64, id: UInt64)] = []
     var insertParameterTargets: [ObjectIdentifier: (owner: Int32, ownerID: UInt64, plugin: UInt64, parameter: UInt32)] = [:]
     var parameterAutomationTargets: [ObjectIdentifier: (owner: Int32, ownerID: UInt64, plugin: UInt64, parameter: UInt32, name: String, normalized: Double)] = [:]
     var armedPluginParameter: (owner: Int32, ownerID: UInt64, plugin: UInt64, parameter: UInt32, name: String)?
@@ -239,7 +241,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         consoleDetailsVisible.toggle()
         consoleDetailsScroll?.isHidden = !consoleDetailsVisible
         sender.title = consoleDetailsVisible ? "Скрыть детали" : "Детали канала"
-        sender.setAccessibilityLabel(sender.title)
+        sender.setAccessibilityLabel(consoleDetailsVisible ? "Скрыть детали выбранного канала" : "Показать детали выбранного канала")
         arrangementConsoleSplit?.adjustSubviews()
         window.contentView?.layoutSubtreeIfNeeded()
     }
@@ -371,14 +373,18 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let consoleDocument=DraftCanvas();consoleDocument.translatesAutoresizingMaskIntoConstraints=false;consoleDocument.addSubview(consoleRows)
         let consoleScroll=NSScrollView();self.consoleDetailsScroll=consoleScroll;consoleScroll.hasVerticalScroller=true;consoleScroll.drawsBackground=false;consoleScroll.documentView=consoleDocument;consoleScroll.isHidden=true
         NSLayoutConstraint.activate([consoleDocument.widthAnchor.constraint(equalTo:consoleScroll.contentView.widthAnchor),consoleRows.leadingAnchor.constraint(equalTo:consoleDocument.leadingAnchor),consoleRows.trailingAnchor.constraint(equalTo:consoleDocument.trailingAnchor),consoleRows.topAnchor.constraint(equalTo:consoleDocument.topAnchor),consoleRows.bottomAnchor.constraint(equalTo:consoleDocument.bottomAnchor)])
-        let console=NSStackView();self.consoleView=console;console.orientation = .vertical;console.alignment = .leading;console.distribution = .fill;console.spacing=4
-        let mixerHeading=label("MIXER",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold)
-        let consoleDetailsButton=button("Детали канала",#selector(toggleConsoleDetails(_:)));consoleDetailsButton.setAccessibilityLabel("Детали канала")
-        let consoleHeader=NSStackView(views:[mixerHeading,flexibleSpace(),consoleDetailsButton]);consoleHeader.alignment = .centerY;consoleHeader.edgeInsets=NSEdgeInsets(top:3,left:8,bottom:2,right:8)
+        let console=NSStackView();self.consoleView=console;console.orientation = .vertical;console.alignment = .leading;console.distribution = .fill;console.spacing=4;console.wantsLayer=true;console.layer?.backgroundColor=DAWDesignTokens.Color.canvas.withAlphaComponent(0.72).cgColor;console.layer?.cornerRadius=DAWDesignTokens.Radius.card
+        let mixerHeading=label("MIXER CONSOLE",size:10,color:.tertiaryLabelColor);mixerHeading.font = .systemFont(ofSize:10,weight:.semibold);mixerHeading.setAccessibilityLabel("Консоль микшера")
+        mixerSummary.font = .monospacedSystemFont(ofSize:10,weight:.medium);mixerSummary.textColor = DAWDesignTokens.Color.secondaryText;mixerSummary.setAccessibilityLabel("Состав консоли микшера")
+        let consoleDetailsButton=button("Детали канала",#selector(toggleConsoleDetails(_:)));consoleDetailsButton.setAccessibilityLabel("Показать детали выбранного канала");consoleDetailsButton.setAccessibilityHelp("Показывает routing, sends и inserts выбранного канала под консолью.")
+        let consoleHeader=NSStackView(views:[mixerHeading,mixerSummary,flexibleSpace(),consoleDetailsButton]);consoleHeader.spacing=10;consoleHeader.alignment = .centerY;consoleHeader.edgeInsets=NSEdgeInsets(top:5,left:9,bottom:4,right:8);consoleHeader.wantsLayer=true;consoleHeader.layer?.backgroundColor=DAWDesignTokens.Color.surface.withAlphaComponent(0.90).cgColor
         console.addArrangedSubview(consoleHeader);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll)
         mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true
-        mixerWorkspace.heightAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:180).isActive=true
+        let mixerMinimumHeight=mixerWorkspace.heightAnchor.constraint(greaterThanOrEqualToConstant:240);mixerMinimumHeight.priority = .defaultHigh;mixerMinimumHeight.isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:180).isActive=true
         mixerWorkspace.setContentHuggingPriority(.defaultLow,for:.vertical);mixerWorkspace.setContentCompressionResistancePriority(.defaultLow,for:.vertical)
+        mixerWorkspace.toolTip="Горизонтальная консоль: inserts, sends, routing, pan, meter и fader. Выбери канал для Inspector; используй горизонтальную прокрутку для остальных полос."
+        mixerWorkspace.setAccessibilityLabel("Консоль микшера: горизонтальные полосы каналов")
+        mixerWorkspace.setAccessibilityHelp("Каждая полоса содержит inserts, sends, выход, панораму, meter и fader. Track, bus и master визуально разделены.")
         inspectorBrowser.translatesAutoresizingMaskIntoConstraints=false
         inspectorBrowser.widthAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true
         inspectorBrowser.widthAnchor.constraint(lessThanOrEqualToConstant:380).isActive=true
@@ -605,13 +611,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.title = (currentURL?.deletingPathExtension().lastPathComponent ?? "Новый черновик") + " — My DAW"
         window.isDocumentEdited = dirty
         summary.stringValue = "ДОРОЖКИ  \(snapshot.track_count) / 256      BUS  \(snapshot.bus_count) / 16      AU  \(snapshot.master_insert_count) / 4      РЕВИЗИЯ  \(revision)"
+        mixerSummary.stringValue = "\(snapshot.track_count) CH · \(snapshot.bus_count) BUS · MASTER"
+        mixerSummary.setAccessibilityLabel("Состав консоли: \(snapshot.track_count) дорожек, \(snapshot.bus_count) шин и master канал")
         status.stringValue = dirty ? "Есть несохранённые изменения" : (currentURL == nil ? "Создай первую дорожку, чтобы начать." : "Черновик сохранён на этом Mac")
         for view in rows.arrangedSubviews { rows.removeArrangedSubview(view); view.removeFromSuperview() }
         for view in trackHeaderRows.arrangedSubviews { trackHeaderRows.removeArrangedSubview(view); view.removeFromSuperview() }
         for view in consoleRows.arrangedSubviews { consoleRows.removeArrangedSubview(view); view.removeFromSuperview() }
         mixerKinds.removeAll()
         var mixerStrips:[MixerStripModel]=[]
-        trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; waveforms.removeAll()
+        trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();insertRuntimeBadges.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; waveforms.removeAll()
         for busIndex in 0..<snapshot.bus_count {var bus=daw_bus();bus.struct_size=UInt32(MemoryLayout<daw_bus>.size);guard check(daw_get_bus(session,busIndex,&bus))else{return};let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};orderedBuses.append((bus.id,name))}
         var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
         guard check(daw_get_transport(session, &transport)) else { return }
@@ -731,12 +739,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let isVST3=plugin.type == 0 && plugin.subtype == 0 && plugin.manufacturer == 0;let badge=label(isVST3 ? "VST3":"AU",size:10,color:isVST3 ? .systemPurple:.systemBlue);badge.font = .systemFont(ofSize:10,weight:.semibold);badge.widthAnchor.constraint(equalToConstant:34).isActive=true
             let stateTitle=plugin.available == 0 ? "MISSING":(plugin.bypassed != 0 ? "BYPASSED":"ACTIVE")
             let bypass=button(stateTitle,#selector(toggleMasterInsert(_:)));bypass.setButtonType(.momentaryPushIn);bypass.isEnabled=plugin.available != 0;bypass.contentTintColor=plugin.available == 0 ? .systemRed:(plugin.bypassed != 0 ? .systemOrange:.systemGreen);bypass.widthAnchor.constraint(equalToConstant:84).isActive=true
-            let edit=button(isolated ? "Параметры в OOP":"Параметры…",#selector(editMasterInsert(_:)));edit.isEnabled=plugin.available != 0 && !isolated;edit.toolTip=isolated ? "Переключи insert в режим «В процессе», чтобы изменить его state.":nil;pluginEditorTargets[ObjectIdentifier(edit)]=plugin.id
+            let edit=button(isolated ? "Параметры в OOP":"Параметры…",#selector(editMasterInsert(_:)));edit.isEnabled=plugin.available != 0 && !isolated;edit.toolTip=isolated ? "Remote parameter proxy для изолированного plug-in ещё не реализован. Переключи insert в режим «В процессе», чтобы изменить параметры.":nil;edit.setAccessibilityLabel(isolated ? "Параметры мастера недоступны в изолированном режиме" : "Параметры мастера \(name)");edit.setAccessibilityHelp(edit.toolTip ?? "Открывает параметры plug-in мастера.");pluginEditorTargets[ObjectIdentifier(edit)]=plugin.id
             let up=button("↑",#selector(moveMasterInsertUp(_:)));up.isEnabled=pluginIndex>0;let down=button("↓",#selector(moveMasterInsertDown(_:)));down.isEnabled=pluginIndex+1<snapshot.master_insert_count
             let remove=button("Удалить",#selector(removeMasterInsert(_:)));remove.contentTintColor = .systemRed
             let pluginTarget=(plugin.id,plugin.bypassed != 0,pluginIndex);for control in [bypass,up,down,remove]{pluginControlTargets[ObjectIdentifier(control)]=pluginTarget}
             let latency=label(String(format:"LATENCY  %.2f ms",Double(plugin.latency_frames)/48.0),size:10,color:.secondaryLabelColor);latency.font = .monospacedDigitSystemFont(ofSize:10,weight:.regular)
             let row=NSStackView(views:[badge,label(name,size:13,color:.labelColor),latency,flexibleSpace(),edit,up,down,bypass,remove]);row.spacing=8;row.edgeInsets=NSEdgeInsets(top:7,left:10,bottom:7,right:10);row.wantsLayer=true;row.layer?.backgroundColor=NSColor(calibratedRed:0.05,green:0.12,blue:0.18,alpha:0.4).cgColor;row.layer?.cornerRadius=2;consoleRows.addArrangedSubview(row);row.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
+            let hosting=insertHostingRow(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0,plugin:plugin);consoleRows.addArrangedSubview(hosting);hosting.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
         if !orderedBuses.isEmpty {
             let heading=label("BUS CONSOLE",size:10,color:.tertiaryLabelColor);heading.font = .systemFont(ofSize:10,weight:.semibold);consoleRows.addArrangedSubview(heading)
@@ -776,7 +785,44 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func insertOwnerKey(_ owner: Int32, _ ownerID: UInt64) -> String { "\(owner):\(ownerID)" }
     func hostingModeTitle(_ mode: UInt32) -> String {
-        switch mode { case 2: return "Запрос OOP (AUv3)"; default: return "В процессе" }
+        switch mode { case UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS): return "Изолированно"; default: return "В процессе" }
+    }
+    func insertRuntimeStatus(owner: Int32, ownerID: UInt64, pluginID: UInt64) -> daw_insert_runtime_status? {
+        var runtime=daw_insert_runtime_status();runtime.struct_size=UInt32(MemoryLayout<daw_insert_runtime_status>.size)
+        return daw_get_insert_runtime_status(session,owner,ownerID,pluginID,&runtime) == 0 ? runtime:nil
+    }
+    func runtimeFaultHint(_ code: UInt32) -> String {
+        switch code {
+        case UInt32(DAW_INSERT_RUNTIME_FAULT_PREPARE_FAILED): return " Подготовка plug-in не удалась."
+        case UInt32(DAW_INSERT_RUNTIME_FAULT_RESTART_REQUIRED): return " Нажми Play, чтобы подготовить граф."
+        case UInt32(DAW_INSERT_RUNTIME_FAULT_DEADLINE_MISSED): return " Изолированный helper не уложился в аудиосрок."
+        case UInt32(DAW_INSERT_RUNTIME_FAULT_PROTOCOL_ERROR): return " Ошибка протокола изолированного helper."
+        case UInt32(DAW_INSERT_RUNTIME_FAULT_HELPER_EXITED): return " Изолированный helper завершился. Нажми Play для новой подготовки."
+        default: return ""
+        }
+    }
+    func runtimeBadge(_ runtime: daw_insert_runtime_status?) -> (title: String, color: NSColor, hint: String) {
+        guard let runtime else { return ("UNPREPARED",.secondaryLabelColor,"Статус подготовленного графа недоступен.") }
+        let latency = runtime.extra_pipeline_latency_frames == 0 ? "" : String(format:" Доп. pipeline latency: %.2f ms.",Double(runtime.extra_pipeline_latency_frames)/48.0)
+        let fault=runtimeFaultHint(runtime.fault_code)
+        switch runtime.state {
+        case UInt32(DAW_INSERT_RUNTIME_ACTIVE_IN_PROCESS): return ("IN PROCESS",.systemGreen,"Insert подготовлен и исполняется в процессе." + latency + fault)
+        case UInt32(DAW_INSERT_RUNTIME_ACTIVE_ISOLATED): return ("ISOLATED",.systemCyan,"Insert подготовлен в изолированном процессе." + latency + fault)
+        case UInt32(DAW_INSERT_RUNTIME_DRY_FALLBACK): return ("DRY",.systemOrange,"Граф использует dry fallback." + latency + fault)
+        case UInt32(DAW_INSERT_RUNTIME_FAILED): return ("FAILED",.systemRed,"Подготовка графа не удалась." + fault)
+        default:
+            return ("UNPREPARED",.secondaryLabelColor,"Граф ещё не подготовлен." + fault)
+        }
+    }
+    func updateInsertRuntimeBadges() {
+        for target in insertRuntimeBadges {
+            let raw=insertRuntimeStatus(owner:target.owner,ownerID:target.ownerID,pluginID:target.id)
+            let runtime=runtimeBadge(raw)
+            target.label.stringValue=runtime.title;target.label.textColor=runtime.color;target.label.toolTip=runtime.hint
+            target.label.setAccessibilityLabel("Runtime insert: \(runtime.title)");target.label.setAccessibilityHelp(runtime.hint)
+            let pending=raw?.state == UInt32(DAW_INSERT_RUNTIME_UNPREPARED) ? " · ждёт Play":""
+            target.policy.stringValue="Policy: \(hostingModeTitle(target.selectedMode))\(pending)"
+        }
     }
     func hostingUnavailableReason(_ format: UInt32) -> String {
         switch format {
@@ -794,15 +840,20 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard daw_get_insert_hosting_status(session,owner,ownerID,plugin.id,&hosting) == 0 else {
             row.addArrangedSubview(label("Статус хостинга недоступен",size:10,color:.secondaryLabelColor));return row
         }
-        let mode=NSPopUpButton();mode.addItem(withTitle:"В процессе");mode.lastItem?.representedObject=NSNumber(value:1)
-        mode.addItem(withTitle:"Запрос OOP (AUv3)");mode.lastItem?.representedObject=NSNumber(value:2)
+        let mode=NSPopUpButton();mode.addItem(withTitle:"В процессе");mode.lastItem?.representedObject=NSNumber(value:UInt32(DAW_INSERT_HOSTING_MODE_IN_PROCESS))
+        mode.addItem(withTitle:"Изолированно");mode.lastItem?.representedObject=NSNumber(value:UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS))
         if let item=mode.itemArray.first(where: { ($0.representedObject as? NSNumber)?.uint32Value == hosting.selected_mode }) { mode.select(item) }
         let outOfProcessAvailable=(hosting.supported_modes & UInt32(DAW_INSERT_HOSTING_MODE_FLAG_OUT_OF_PROCESS)) != 0
         if !outOfProcessAvailable { mode.item(at:1)?.isEnabled=false }
         mode.isEnabled=plugin.available != 0 && !isRecording
-        mode.target=self;mode.action=#selector(changeInsertHostingMode(_:));mode.widthAnchor.constraint(equalToConstant:152).isActive=true;insertHostingTargets[ObjectIdentifier(mode)]=(owner,ownerID,plugin.id)
-        let effective=label("Активно: \(hostingModeTitle(hosting.selected_mode))",size:10,color:.secondaryLabelColor);effective.font = .monospacedDigitSystemFont(ofSize:10,weight:.regular)
-        row.addArrangedSubview(mode);row.addArrangedSubview(effective)
+        mode.target=self;mode.action=#selector(changeInsertHostingMode(_:));mode.widthAnchor.constraint(equalToConstant:126).isActive=true;mode.setAccessibilityLabel("Режим хостинга insert \(plugin.id)");mode.setAccessibilityHelp("В процессе исполняет plug-in внутри приложения. Изолированно доступен только для поддерживаемого plug-in.");insertHostingTargets[ObjectIdentifier(mode)]=(owner,ownerID,plugin.id)
+        let runtimeStatus=insertRuntimeStatus(owner:owner,ownerID:ownerID,pluginID:plugin.id)
+        let pending=runtimeStatus?.state == UInt32(DAW_INSERT_RUNTIME_UNPREPARED) ? " · ждёт Play":""
+        let policy=label("Policy: \(hostingModeTitle(hosting.selected_mode))\(pending)",size:10,color:.secondaryLabelColor);policy.font = .monospacedDigitSystemFont(ofSize:10,weight:.regular)
+        let runtime=runtimeBadge(runtimeStatus)
+        let badge=label(runtime.title,size:10,color:runtime.color);badge.font = .monospacedDigitSystemFont(ofSize:10,weight:.semibold);badge.toolTip=runtime.hint;badge.setAccessibilityLabel("Runtime insert: \(runtime.title)");badge.setAccessibilityHelp(runtime.hint)
+        insertRuntimeBadges.append((badge,policy,hosting.selected_mode,owner,ownerID,plugin.id))
+        row.addArrangedSubview(mode);row.addArrangedSubview(policy);row.addArrangedSubview(badge)
         if !outOfProcessAvailable {
             row.addArrangedSubview(label(hostingUnavailableReason(hosting.format),size:10,color:.systemOrange))
         }
@@ -823,7 +874,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var hostingStatus=daw_insert_hosting_status();hostingStatus.struct_size=UInt32(MemoryLayout<daw_insert_hosting_status>.size);let isolated=daw_get_insert_hosting_status(session,owner,ownerID,plugin.id,&hostingStatus) == 0 && hostingStatus.selected_mode == UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS)
             let badge=label(vst3 ? "VST3":"AU",size:10,color:vst3 ? .systemPurple:.systemOrange);badge.font = .systemFont(ofSize:10,weight:.semibold);badge.widthAnchor.constraint(equalToConstant:34).isActive=true
             let state=plugin.available == 0 ? "MISSING":(plugin.bypassed != 0 ? "BYPASSED":"ACTIVE");let bypass=button(state,#selector(toggleOwnerInsert(_:)));bypass.isEnabled=plugin.available != 0;bypass.contentTintColor=plugin.available == 0 ? .systemRed:(plugin.bypassed != 0 ? .systemOrange:.systemGreen);bypass.widthAnchor.constraint(equalToConstant:84).isActive=true
-            let edit=button(isolated ? "Параметры в OOP":"Параметры…",#selector(editOwnerInsert(_:)));edit.isEnabled=plugin.available != 0 && !isolated;edit.toolTip=isolated ? "Для изолированного AUv3 нужен remote parameter editor. Переключи insert в режим «В процессе», чтобы изменить state.":nil;insertEditorTargets[ObjectIdentifier(edit)]=(owner,ownerID,plugin.id)
+            let edit=button(isolated ? "Параметры в OOP":"Параметры…",#selector(editOwnerInsert(_:)));edit.isEnabled=plugin.available != 0 && !isolated;edit.toolTip=isolated ? "Remote parameter proxy для изолированного plug-in ещё не реализован. Переключи insert в режим «В процессе», чтобы изменить параметры.":nil;edit.setAccessibilityLabel(isolated ? "Параметры недоступны в изолированном режиме" : "Параметры \(name)");edit.setAccessibilityHelp(edit.toolTip ?? "Открывает параметры plug-in.");insertEditorTargets[ObjectIdentifier(edit)]=(owner,ownerID,plugin.id)
             let up=button("↑",#selector(moveOwnerInsertUp(_:)));up.isEnabled=index>0;let down=button("↓",#selector(moveOwnerInsertDown(_:)));down.isEnabled=index+1<count;let remove=button("Удалить",#selector(removeOwnerInsert(_:)));remove.contentTintColor = .systemRed
             let target=(owner,ownerID,plugin.id,plugin.bypassed != 0,index);for control in [bypass,up,down,remove]{insertControlTargets[ObjectIdentifier(control)]=target}
             let latency=label(String(format:"%.2f ms",Double(plugin.latency_frames)/48.0),size:10,color:.secondaryLabelColor);latency.font = .monospacedDigitSystemFont(ofSize:10,weight:.regular)
@@ -843,7 +894,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func removeOwnerInsert(_ sender:NSButton){guard !isRecording,let target=insertControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_remove_insert(session,target.owner,target.ownerID,target.id,revision)){refresh();pollTransport()}}
     @objc func changeInsertHostingMode(_ sender:NSPopUpButton){guard !isRecording,let target=insertHostingTargets[ObjectIdentifier(sender)],let mode=(sender.selectedItem?.representedObject as? NSNumber)?.uint32Value else{return};_=daw_stop(session);if check(daw_set_insert_hosting_mode(session,target.owner,target.ownerID,target.id,mode,revision)){refresh();pollTransport()}}
     @objc func editOwnerInsert(_ sender:NSButton){
-        guard !isRecording,let target=insertEditorTargets[ObjectIdentifier(sender)]else{return};var count:UInt32=0;guard check(daw_get_insert_parameter_count(session,target.owner,target.ownerID,target.id,&count))else{return};let content=NSStackView();content.orientation = .vertical;content.spacing = 8;content.alignment = .leading;insertParameterTargets.removeAll()
+        guard !isRecording,let target=insertEditorTargets[ObjectIdentifier(sender)]else{return}
+        var hosting=daw_insert_hosting_status();hosting.struct_size=UInt32(MemoryLayout<daw_insert_hosting_status>.size)
+        guard daw_get_insert_hosting_status(session,target.owner,target.ownerID,target.id,&hosting) == 0,hosting.selected_mode != UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS) else { storageMessage("Remote parameter proxy для изолированного plug-in ещё не реализован. Переключи insert в режим «В процессе», чтобы изменить параметры."); return }
+        var count:UInt32=0;guard check(daw_get_insert_parameter_count(session,target.owner,target.ownerID,target.id,&count))else{return};let content=NSStackView();content.orientation = .vertical;content.spacing = 8;content.alignment = .leading;insertParameterTargets.removeAll()
         for index in 0..<count{var parameter=daw_au_parameter();parameter.struct_size=UInt32(MemoryLayout<daw_au_parameter>.size);guard check(daw_get_insert_parameter(session,target.owner,target.ownerID,target.id,index,&parameter))else{return};let name=withUnsafeBytes(of:parameter.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let slider=AutomationSlider(value:Double(parameter.value),minValue:Double(parameter.minimum),maxValue:Double(parameter.maximum),target:self,action:#selector(changeOwnerInsertParameter(_:)));slider.isContinuous=true;slider.isEnabled=parameter.writable != 0;slider.widthAnchor.constraint(equalToConstant:220).isActive=true;let gestureTarget=(target.owner,target.ownerID,target.id,parameter.id,name);slider.automationBegin={[weak self]in let range=slider.maxValue-slider.minValue;self?.beginPluginParameterAutomation(gestureTarget,normalized:range == 0 ? 0:(slider.doubleValue-slider.minValue)/range)};slider.automationEnd={[weak self]in self?.endPluginParameterAutomation()};insertParameterTargets[ObjectIdentifier(slider)]=(target.owner,target.ownerID,target.id,parameter.id);pluginParameterGestureTargets[ObjectIdentifier(slider)]=(target.owner,target.ownerID,target.id,parameter.id,name,slider.minValue,slider.maxValue);let value=label(String(format:"%.3f",parameter.value),size:11,color:.secondaryLabelColor);value.font = .monospacedDigitSystemFont(ofSize:11,weight:.regular);value.widthAnchor.constraint(equalToConstant:66).isActive=true;var views:[NSView]=[label(name,size:12,color:.labelColor),flexibleSpace(),slider,value];if let automation=parameterAutomationButton(owner:target.owner,ownerID:target.ownerID,plugin:target.id,parameter:parameter,name:name){views.insert(automation,at:1)};views.insert(parameterArmButton(gestureTarget),at:1);let row=NSStackView(views:views);row.spacing=8;row.widthAnchor.constraint(equalToConstant:560).isActive=true;content.addArrangedSubview(row)}
         if count==0{content.addArrangedSubview(label("Этот плагин не публикует параметры.",size:13,color:.secondaryLabelColor))};let scroll=NSScrollView();scroll.documentView=content;scroll.hasVerticalScroller=true;scroll.drawsBackground=false;scroll.widthAnchor.constraint(equalToConstant:560).isActive=true;scroll.heightAnchor.constraint(equalToConstant:min(420,max(90,CGFloat(count)*34))).isActive=true;let alert=NSAlert();alert.messageText="Параметры плагина";alert.informativeText="Изменения сохраняются в проекте и применяются к playback и export.";alert.accessoryView=scroll;alert.addButton(withTitle:"Готово");alert.runModal();insertParameterTargets.removeAll();refresh();pollTransport()
     }
@@ -1016,6 +1070,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func pollTransport() {
         guard session != nil else { return }
+        updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard check(daw_get_recording(session,&recording)) else {
             _=daw_record_cancel(session); isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); return
@@ -1177,6 +1232,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func moveMasterInsertDown(_ sender:NSButton){guard let plugin=pluginControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_move_master_insert(session,plugin.id,plugin.index+1,revision)){refresh();pollTransport()}}
     @objc func editMasterInsert(_ sender:NSButton){
         guard !isRecording,let pluginID=pluginEditorTargets[ObjectIdentifier(sender)] else{return}
+        var hosting=daw_insert_hosting_status();hosting.struct_size=UInt32(MemoryLayout<daw_insert_hosting_status>.size)
+        guard daw_get_insert_hosting_status(session,Int32(DAW_INSERT_OWNER_MASTER),0,pluginID,&hosting) == 0,hosting.selected_mode != UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS) else { storageMessage("Remote parameter proxy для изолированного plug-in ещё не реализован. Переключи insert в режим «В процессе», чтобы изменить параметры."); return }
         var count:UInt32=0;guard check(daw_get_master_insert_parameter_count(session,pluginID,&count))else{return}
         let content=NSStackView();content.orientation = .vertical;content.spacing=8;content.alignment = .leading
         pluginParameterTargets.removeAll()

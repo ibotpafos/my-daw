@@ -16,6 +16,13 @@ struct GraphLatencyPlan {
 // uninitialized. Gain/telemetry atomics are the only concurrently accessed
 // mutable state.
 class Renderer {
+  static constexpr size_t kRuntimeInsertCapacity = kMaxProjectPluginInserts;
+  struct RuntimeInsertSlot {
+    std::atomic<uint64_t> id{0};
+    std::atomic<uint32_t> state{static_cast<uint32_t>(PreparedEffectRuntimeState::Unprepared)};
+    std::atomic<uint32_t> extraPipelineLatency{0};
+    std::atomic<uint32_t> faultCode{0};
+  };
   struct Voice {
     size_t gainIndex = 0;
     std::shared_ptr<const Clip> clip;
@@ -74,6 +81,9 @@ class Renderer {
   std::vector<std::unique_ptr<PreparedEffect>> masterEffects;
   ChainAutomationPlan masterEffectAutomation;
   std::vector<uint64_t> masterEffectIDs;
+  // Fixed slots are published only after preparation. Runtime readers only
+  // perform atomic loads, while the callback can refresh a proxy's status.
+  std::array<RuntimeInsertSlot, kRuntimeInsertCapacity> runtimeInserts{};
   // Allocated in prepare() to the persisted project-wide automation limit.
   // Callback code writes a prefix then passes it synchronously to one effect.
   std::vector<PreparedParameterEvent> parameterEvents;
@@ -110,6 +120,8 @@ class Renderer {
   bool processChain(std::vector<std::unique_ptr<PreparedEffect>> &,
                     ChainAutomationPlan &, const std::vector<uint64_t> &, float *,
                     float *, uint32_t, uint64_t, uint64_t) noexcept;
+  void publishRuntimeStatus(uint64_t id,
+                            PreparedEffectRuntimeStatus status) noexcept;
   void updateAudiblePosition() noexcept;
   void clearMeters() noexcept;
 
@@ -146,6 +158,10 @@ public:
   bool trackMeter(size_t preparedIndex, float &left, float &right) const noexcept;
   bool busMeter(size_t preparedIndex, float &left, float &right) const noexcept;
   void masterMeter(float &left, float &right) const noexcept;
+  // Returns false only when this prepared graph has no record for insertID.
+  // The returned fields are lock-free snapshots and do not mutate State.
+  bool insertRuntimeStatus(uint64_t insertID,
+                           PreparedEffectRuntimeStatus &out) const noexcept;
   // Call from the output stop path to clear visible telemetry immediately.
   void resetMeters() noexcept { clearMeters(); }
   // Exactly one live touch may be active. The override is runtime-only and

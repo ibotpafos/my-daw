@@ -78,6 +78,29 @@ typedef struct {
     uint32_t selected_mode;
     uint32_t supported_modes;
 } daw_insert_hosting_status;
+/* Volatile execution state for a persisted insert. This ABI intentionally
+ * complements (and never changes) daw_insert_hosting_status: hosting policy
+ * is saved in the project, while this reports one prepared graph only. */
+enum { DAW_INSERT_RUNTIME_STATUS_VERSION = 1 };
+enum {
+  DAW_INSERT_RUNTIME_UNPREPARED = 0,
+  DAW_INSERT_RUNTIME_ACTIVE_IN_PROCESS = 1,
+  DAW_INSERT_RUNTIME_ACTIVE_ISOLATED = 2,
+  DAW_INSERT_RUNTIME_DRY_FALLBACK = 3,
+  DAW_INSERT_RUNTIME_FAILED = 4
+};
+enum { DAW_INSERT_RUNTIME_FAULT_NONE = 0, DAW_INSERT_RUNTIME_FAULT_PREPARE_FAILED = 1,
+       DAW_INSERT_RUNTIME_FAULT_RESTART_REQUIRED = 2,
+       DAW_INSERT_RUNTIME_FAULT_DEADLINE_MISSED = 3,
+       DAW_INSERT_RUNTIME_FAULT_PROTOCOL_ERROR = 4,
+       DAW_INSERT_RUNTIME_FAULT_HELPER_EXITED = 5 };
+typedef struct {
+  uint32_t struct_size;
+  uint32_t version;
+  uint32_t state;
+  uint32_t extra_pipeline_latency_frames;
+  uint32_t fault_code;
+} daw_insert_runtime_status;
 typedef struct { uint32_t struct_size; uint32_t id; float minimum; float maximum; float value; float normalized_value; int32_t writable; int32_t logarithmic; int32_t indexed; char name[481]; } daw_au_parameter;
 /* Plug-in parameter automation points are normalized values at 48 kHz project
  * frames. Owner uses DAW_INSERT_OWNER_*; Master owner_id remains zero. */
@@ -232,9 +255,13 @@ int daw_add_insert_au(daw_session*,int32_t owner,uint64_t owner_id,uint32_t type
 int daw_get_insert_count(daw_session*,int32_t owner,uint64_t owner_id,uint32_t* count);
 int daw_get_insert(daw_session*,int32_t owner,uint64_t owner_id,uint32_t index,daw_plugin*);
 /* Reads the saved policy and the modes this build can actually host for one
- * insert.  format distinguishes AUv2 from AUv3 using the native component
- * capability where available; VST3 currently has no out-of-process runtime. */
+ * insert. format distinguishes AUv2 from AUv3 using the native component
+ * capability where available; VST3 out-of-process mode is advertised only
+ * when the isolated runtime is linked into this build. */
 int daw_get_insert_hosting_status(daw_session*,int32_t owner,uint64_t owner_id,uint64_t plugin_id,daw_insert_hosting_status*);
+/* Reads only the live prepared graph. With no active graph it returns
+ * UNPREPARED + RESTART_REQUIRED; it never changes project revision. */
+int daw_get_insert_runtime_status(daw_session*,int32_t owner,uint64_t owner_id,uint64_t plugin_id,daw_insert_runtime_status*);
 /* mode uses DAW_INSERT_HOSTING_MODE_*.  Out-of-process mode is rejected when
  * supported_modes does not advertise it, leaving the project unchanged. */
 int daw_set_insert_hosting_mode(daw_session*,int32_t owner,uint64_t owner_id,uint64_t plugin_id,uint32_t mode,uint64_t expected_revision);

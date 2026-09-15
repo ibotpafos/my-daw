@@ -2,7 +2,7 @@
 
 Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
 
-**Состояние: аудиопрототип 1.30.0.** Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Локальный visual/AX QA прошёл на отдельных QA drafts; listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
+**Состояние: аудиопрототип 1.31.0.** Режимы Сведение и Мастеринг используют Studio Pro-inspired нижнюю консоль: узкие вертикальные track/bus/master strips, верхние Inserts/Sends summaries, routing, pan, channel controls, длинные stereo meters/faders, automation state и цветные подписи каналов. Консоль занимает половину рабочего окна, прокручивается по горизонтали и не вытесняет arrangement; полные routing/send/insert actions открываются кнопкой «Детали канала». Создание и Запись по-прежнему отдают почти всё окно arrangement. AUv3 использует обязательный системный out-of-process path, а VST3 может работать через managed helper: отдельный процесс на подготовленный OOP insert, fixed 4096-frame stereo/48 kHz pipeline и явный runtime badge. Это проверенный fake-helper code scope, а не подтверждение совместимости реальных vendor plug-ins или пригодности для live recording. Локальный visual/AX QA mixer прошёл на отдельных QA drafts; listening acceptance, vendor/import compatibility matrix, VST3 vendor editors и hardware presentation latency ещё не приняты.
 
 Собрать и запустить на Apple Silicon Mac:
 
@@ -42,6 +42,7 @@
 
 | Документ | Содержание |
 |---|---|
+| [58 VST3 managed runtime isolation](docs/58-vst3-managed-runtime-isolation.md) | Per-insert helper, fixed delayed IPC pipeline, runtime ABI/UI, dry fallback и границы проверки |
 | [57 Studio Pro mixer console](docs/57-studio-pro-mixer-console.md) | Полноразмерная нижняя консоль, узкие channel strips, routing summaries, details toggle и visual/AX QA |
 | [56 Arrangement-first Studio Pro layout](docs/56-studio-pro-arrangement-first-layout.md) | Один top toolbar, compact bottom transport, режимные Inspector/Mixer и visual/AX QA |
 | [55 Accessible mixer controls](docs/55-accessible-mixer-controls.md) | AX roles/labels/value, keyboard и VoiceOver increment/decrement для channel strips |

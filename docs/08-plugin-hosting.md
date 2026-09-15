@@ -22,6 +22,10 @@ Apple описывает out-of-process hosting AU и возможность у�
 
 В [1.26.0](53-async-auv3-hosting.md) AUv3 получил строгий системный OOP path. Подготовка graph выполняется в bounded background job, а созданный instance принимается только когда `kAudioUnitProperty_LoadedOutOfProcess` подтверждает фактическое размещение. Generic parameter editor для такого insert выключен до появления remote state proxy. Это не расширяет capability AUv2 или VST3.
 
+В [1.31.0](58-vst3-managed-runtime-isolation.md) VST3 получил отдельный managed OOP path. Для каждого подготовленного VST3 insert host создаёт свой disposable helper и один fixed pipeline: stereo float32, 48 kHz, до 4096 frames. Он сознательно добавляет 4096 frames pipeline latency поверх latency processor и входит в PDC. Host не ждёт ответ из helper на audio thread: первый block даёт silence, следующий может заменить delayed dry window готовым ответом. Missing, late или malformed reply вызывает один failure signal, затем chain продолжает deterministic delayed dry fallback. Настоящее размещение видно через отдельный volatile runtime status ABI; выбранная durable policy и фактический runtime не смешиваются.
+
+Этот VST3 OOP path принимает MDVS envelope только после проверки module executable SHA-256 против сохранённого fingerprint. Generic parameter editor остаётся выключенным для любого `OutOfProcess` insert: remote parameter/state editor в этом срезе не реализован. Capability OOP для VST3 объявляется только в build, где helper действительно собран и linked; unsupported build отклоняет выбор policy без изменения revision.
+
 Если системный AU host обслуживает render иначе, его timing и failure behavior измеряются отдельно. Синхронный render API стороннего host может нарушить deadline при зависшем plugin; watchdog после факта не превращает его в гарантированно bounded execution.
 
 Для live monitoring baseline допускает встроенные эффекты и только проверенный low-latency AU path. Режим защиты и добавленная задержка видны. Не объявлять все сторонние плагины безопасными для записи.

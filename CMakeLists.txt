@@ -8,6 +8,7 @@ option(DAW_THREAD_SANITIZER "Thread sanitizer" OFF)
 set(DAW_VST3_SDK_DIR "${CMAKE_SOURCE_DIR}/build/dependencies/vst3sdk" CACHE PATH
     "Pinned VST3 SDK checkout; bootstrap it explicitly with scripts/bootstrap-vst3-sdk.sh")
 option(DAW_BUILD_VST3_SCAN_HELPER "Build the isolated VST3 scanner helper when the pinned SDK is present" OFF)
+option(DAW_BUILD_VST3_RUNTIME_HELPER "Build the managed isolated VST3 runtime helper when the pinned SDK is present" OFF)
 if(DAW_SANITIZERS AND DAW_THREAD_SANITIZER)
   message(FATAL_ERROR "Choose ASan/UBSan or TSan, not both")
 endif()
@@ -38,6 +39,7 @@ if(APPLE)
   if(EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
     target_sources(daw_core PRIVATE
       engine/platform/macos/vst3_effect.cpp
+      engine/platform/macos/vst3_runtime.cpp
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp"
@@ -116,6 +118,38 @@ if(APPLE)
       message(STATUS "Pinned VST3 SDK found; daw_vst3_scan_helper is deferred until tools/vst3_scan_helper.cpp exists")
     endif()
   endif()
+  if(DAW_BUILD_VST3_RUNTIME_HELPER)
+    if(NOT EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
+      message(FATAL_ERROR "DAW_BUILD_VST3_RUNTIME_HELPER requires the pinned VST3 SDK at ${DAW_VST3_SDK_DIR}")
+    endif()
+    add_executable(daw_vst3_runtime_helper
+      tools/vst3_runtime_helper.cpp
+      engine/domain/session.cpp
+      engine/platform/macos/vst3_effect.cpp
+      engine/platform/macos/vst3_runtime.cpp
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/parameterchanges.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/pluginterfacesupport.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/common/memorystream.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp"
+      "${DAW_VST3_SDK_DIR}/pluginterfaces/base/coreiids.cpp"
+      "${DAW_VST3_SDK_DIR}/pluginterfaces/base/funknown.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/vstinitiids.cpp"
+      engine/plugins/plugin_descriptor.cpp)
+    set_source_files_properties("${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm" PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    set_source_files_properties(engine/platform/macos/vst3_effect.cpp
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
+      "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp"
+      PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations;-Wno-unnecessary-virtual-specifier")
+    target_include_directories(daw_vst3_runtime_helper PRIVATE engine "${DAW_VST3_SDK_DIR}" "${DAW_VST3_SDK_DIR}/pluginterfaces" "${DAW_VST3_SDK_DIR}/base/source")
+    target_compile_options(daw_vst3_runtime_helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(daw_vst3_runtime_helper PRIVATE "-framework Cocoa" "-framework CoreFoundation" "-framework Foundation")
+    target_compile_definitions(daw_core PRIVATE DAW_VST3_RUNTIME_AVAILABLE=1)
+  endif()
 else()
   target_sources(daw_core PRIVATE engine/audio/input_stub.cpp engine/audio/output_stub.cpp engine/audio/duplex_stub.cpp engine/audio/effect_stub.cpp engine/audio/vst3_effect_stub.cpp engine/audio/plugin_parameters_stub.cpp)
 endif()
@@ -138,6 +172,12 @@ if(BUILD_TESTING)
   target_link_libraries(daw_recording_recovery PRIVATE daw_core)
   add_test(NAME recording_crash_recovery COMMAND daw_recording_recovery)
   if(APPLE)
+    if(DAW_BUILD_VST3_RUNTIME_HELPER)
+      add_executable(daw_vst3_runtime_isolation tests/vst3_runtime_isolation.cpp)
+      target_include_directories(daw_vst3_runtime_isolation PRIVATE engine)
+      target_link_libraries(daw_vst3_runtime_isolation PRIVATE daw_core)
+      add_test(NAME vst3_runtime_isolation COMMAND daw_vst3_runtime_isolation)
+    endif()
     add_executable(daw_au_host_probe tests/au_host_probe.cpp)
     target_include_directories(daw_au_host_probe PRIVATE engine)
     target_link_libraries(daw_au_host_probe PRIVATE daw_core)

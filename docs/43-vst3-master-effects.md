@@ -20,10 +20,12 @@ Generic parameter panel читает `IEditController` и показывает �
 
 DAWproject не получает внутренний MDVS. Экспорт создаёт `Vst3Plugin` с canonical FUID и `plugins/master-<id>.vstpreset` в официальной chunk layout: `Comp`, optional `Cont` и `List`.
 
-## Оставшиеся границы
+## Isolation и оставшиеся границы
 
-Текущий runtime загружает выбранный VST3 в процесс приложения. Следующие hardening-срезы: runtime isolation, vendor editors, instruments/MIDI, sidechain и compatibility matrix реальных plugins. [Версия 1.19.0](46-plugin-automation-tail-export.md) подключила sample-offset parameter automation и bounded finite VST3 tail export; отдельная user policy для infinite tail остаётся частью hardening.
+[Версия 1.31.0](58-vst3-managed-runtime-isolation.md) добавила отдельный runtime helper для выбранного `OutOfProcess` VST3 insert. Он не заменяет in-process path: выбранная policy сохраняется в проекте, а фактический runtime публикуется отдельно. Helper обслуживает один prepared insert через fixed 4096-frame stereo/48 kHz pipeline; эта дополнительная latency входит в PDC. После missing, late или malformed ответа host один раз сообщает failure, затем продолжает deterministic delayed dry path. Перед запуском helper проверяет сохранённый MDVS envelope и SHA-256 executable fingerprint module.
 
-В этом срезе выполнена compile/build проверка. QA, запуск приложения, прослушивание и сторонние VST3 не выполнялись по текущему режиму разработки.
+Пока нет remote vendor editor или remote parameter/state proxy: generic parameter editor выключен для каждого OOP insert. Следующие hardening-срезы: vendor editors, instruments/MIDI, sidechain и compatibility matrix реальных plug-ins. [Версия 1.19.0](46-plugin-automation-tail-export.md) подключила sample-offset parameter automation и bounded finite VST3 tail export; отдельная user policy для infinite tail остаётся частью hardening.
+
+Первичный VST3 code scope и managed isolation проверены compile/build и self-hosted fake helper. Запуск с реальным сторонним VST3, physical device path и listening acceptance не выполнялись.
 
 Официальные материалы: [VST3 SDK 3.8.1 build 84](https://github.com/steinbergmedia/vst3sdk/releases/tag/v3.8.1_build_84), [VST3 processing lifecycle](https://steinbergmedia.github.io/vst3_dev_portal/pages/FAQ/Processing.html).

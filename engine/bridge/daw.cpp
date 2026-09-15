@@ -30,6 +30,9 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#ifndef DAW_VST3_RUNTIME_AVAILABLE
+#define DAW_VST3_RUNTIME_AVAILABLE 0
+#endif
 struct LivePluginParameterGesture { uint64_t pluginID=0;uint32_t parameterID=0; };
 namespace {
 enum class PlaybackPreparationStatus:uint32_t { preparing=0, ready=1, failed=2, canceled=3, consumed=4 };
@@ -249,6 +252,13 @@ uint32_t insertHostingFormat(const daw::PluginInsert& plugin) noexcept {
 }
 uint32_t supportedHostingModes(const daw::PluginInsert& plugin) noexcept {
     const auto format=insertHostingFormat(plugin);
+    if(format==DAW_INSERT_HOSTING_FORMAT_VST3) {
+#if DAW_VST3_RUNTIME_AVAILABLE
+        return DAW_INSERT_HOSTING_MODE_FLAG_IN_PROCESS|DAW_INSERT_HOSTING_MODE_FLAG_OUT_OF_PROCESS;
+#else
+        return DAW_INSERT_HOSTING_MODE_FLAG_IN_PROCESS;
+#endif
+    }
     if(format==DAW_INSERT_HOSTING_FORMAT_AUV3)
         return DAW_INSERT_HOSTING_MODE_FLAG_IN_PROCESS|DAW_INSERT_HOSTING_MODE_FLAG_OUT_OF_PROCESS;
     return DAW_INSERT_HOSTING_MODE_FLAG_IN_PROCESS;
@@ -273,9 +283,40 @@ void writeInsertHostingStatus(const daw::PluginInsert& plugin,daw_insert_hosting
     out->format=insertHostingFormat(plugin);out->selected_mode=bridgeHostingMode(plugin.hostingMode);
     out->supported_modes=supportedHostingModes(plugin);
 }
+uint32_t bridgeRuntimeState(daw::PreparedEffectRuntimeState state) noexcept {
+    switch(state) {
+        case daw::PreparedEffectRuntimeState::Unprepared:return DAW_INSERT_RUNTIME_UNPREPARED;
+        case daw::PreparedEffectRuntimeState::ActiveInProcess:return DAW_INSERT_RUNTIME_ACTIVE_IN_PROCESS;
+        case daw::PreparedEffectRuntimeState::ActiveIsolated:return DAW_INSERT_RUNTIME_ACTIVE_ISOLATED;
+        case daw::PreparedEffectRuntimeState::DryFallback:return DAW_INSERT_RUNTIME_DRY_FALLBACK;
+        case daw::PreparedEffectRuntimeState::Failed:return DAW_INSERT_RUNTIME_FAILED;
+    }
+    return DAW_INSERT_RUNTIME_FAILED;
+}
+void writeInsertRuntimeStatus(const daw::Renderer* renderer,uint64_t insertID,
+                              daw_insert_runtime_status* out) {
+    if(!out || out->struct_size!=sizeof(daw_insert_runtime_status))
+        throw daw::Error("Insert runtime status ABI mismatch");
+    *out={};out->struct_size=sizeof(daw_insert_runtime_status);
+    out->version=DAW_INSERT_RUNTIME_STATUS_VERSION;
+    if(!renderer) {
+        out->state=DAW_INSERT_RUNTIME_UNPREPARED;
+        out->fault_code=DAW_INSERT_RUNTIME_FAULT_RESTART_REQUIRED;
+        return;
+    }
+    daw::PreparedEffectRuntimeStatus status{};
+    if(!renderer->insertRuntimeStatus(insertID,status)) {
+        out->state=DAW_INSERT_RUNTIME_UNPREPARED;
+        out->fault_code=DAW_INSERT_RUNTIME_FAULT_RESTART_REQUIRED;
+        return;
+    }
+    out->state=bridgeRuntimeState(status.state);
+    out->extra_pipeline_latency_frames=status.extraPipelineLatencyFrames;
+    out->fault_code=status.faultCode;
+}
 void requireInProcessParameterEditor(const daw::PluginInsert& plugin) {
     if(plugin.hostingMode==daw::PluginHostingMode::OutOfProcess)
-        throw daw::Error("Isolated AUv3 parameters require a remote parameter editor; switch this insert to in-process to edit its state");
+        throw daw::Error("Isolated plug-in parameters require a remote parameter editor; switch this insert to in-process to edit its state");
 }
 void readChannelMeter(const daw::State& state,const daw::Renderer& renderer,int32_t owner,uint64_t ownerID,float& left,float& right){
     validateInsertOwner(owner,ownerID);
@@ -479,6 +520,7 @@ int daw_get_insert_count(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t*
 });}
 int daw_get_insert(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t index,daw_plugin* out){return guard(s,[&]{const auto& inserts=insertsFor(s->model.state(),owner,ownerID);if(index>=inserts.size())throw daw::Error("Insert index out of range");writePlugin(s,inserts[index],out);});}
 int daw_get_insert_hosting_status(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,daw_insert_hosting_status* out){return guard(s,[&]{writeInsertHostingStatus(insertFor(s->model.state(),owner,ownerID,insertID),out);});}
+int daw_get_insert_runtime_status(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,daw_insert_runtime_status* out){return guard(s,[&]{(void)insertFor(s->model.state(),owner,ownerID,insertID);writeInsertRuntimeStatus(s->output?&s->output->renderer:nullptr,insertID,out);});}
 int daw_set_insert_hosting_mode(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t mode,uint64_t rev){return guard(s,[&]{
     validateInsertOwner(owner,ownerID);const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);const auto requested=hostingMode(mode);
     const auto supported=supportedHostingModes(insert);const auto flag=requested==daw::PluginHostingMode::InProcess?DAW_INSERT_HOSTING_MODE_FLAG_IN_PROCESS:DAW_INSERT_HOSTING_MODE_FLAG_OUT_OF_PROCESS;

@@ -25,6 +25,8 @@
 #include <vector>
 
 namespace daw {
+std::unique_ptr<PreparedEffect> prepareVst3OutOfProcessEffect(
+    const PluginInsert &, uint32_t, uint32_t);
 namespace {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -402,6 +404,8 @@ bool isVst3Insert(const PluginInsert &plugin) noexcept {
 std::unique_ptr<PreparedEffect> prepareVst3Effect(const PluginInsert &plugin,
                                                   uint32_t sampleRate,
                                                   uint32_t maxFrames) {
+  if (plugin.hostingMode == PluginHostingMode::OutOfProcess)
+    return prepareVst3OutOfProcessEffect(plugin, sampleRate, maxFrames);
   return std::make_unique<Vst3Effect>(plugin, sampleRate, maxFrames);
 }
 

@@ -24,6 +24,7 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
     var id: UInt64
     var kind: MixerStripKind
     var title: String
+    var channelNumber: Int = 0
     var color: NSColor? = nil
     var volumeDb: Double = 0
     var pan: Double = 0
@@ -187,32 +188,40 @@ private final class MixerStripView: NSView {
         fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
     }
     private func refresh() {
-        title.stringValue = model.title
-        footer.stringValue = model.title.uppercased()
+        title.stringValue = model.kind == .bus ? "BUS · \(model.title)" : (model.kind == .master ? "MASTER" : model.title)
+        let footerPrefix = model.kind == .master ? "M" : "\(model.channelNumber)"
+        footer.stringValue = "\(footerPrefix)  \(model.title.uppercased())"
         meter.snapshot = model.meter
         fader.valueDb = model.volumeDb
         pan.doubleValue = model.pan
         arm.state = model.isArmed ? .on : .off
         mute.state = model.isMuted ? .on : .off
         solo.state = model.isSolo ? .on : .off
-        routing.stringValue = model.kind == .master ? "OUTPUT  \(model.outputName)" : "OUT  \(model.outputName)"
+        routing.stringValue = model.kind == .master ? "MAIN  \(model.outputName)" : "OUT  \(model.outputName)"
         automation.stringValue = model.isAutomationRead ? "AUTO: READ" : "AUTO: OFF"
         value.stringValue = String(format: "%+.1f dB", model.volumeDb)
-        inserts.stringValue = model.inserts.prefix(4).map { $0.bypassed ? "⊘ \($0.name)" : "◉ \($0.name)" }.joined(separator: "\n")
+        inserts.stringValue = model.inserts.isEmpty ? "—" : model.inserts.prefix(4).map { $0.bypassed ? "⊘ \($0.name)" : "◉ \($0.name)" }.joined(separator: "\n")
         sends.stringValue = model.sends.prefix(3).map {
             "→ \($0.destination) \(String(format: "%+.0f", $0.gainDb)) \($0.preFader ? "PRE" : "POST")"
         }.joined(separator: "\n")
+        if sends.stringValue.isEmpty { sends.stringValue = "—" }
         meter.setAccessibilityLabel("Пиковый уровень \(model.title)")
         fader.setAccessibilityLabel("Громкость \(model.title)")
         pan.setAccessibilityLabel("Панорама \(model.title)")
         arm.setAccessibilityLabel("Запись \(model.title)")
         mute.setAccessibilityLabel("Mute \(model.title)")
         solo.setAccessibilityLabel("Solo \(model.title)")
-        setAccessibilityLabel("Канал микшера \(model.title)")
+        inserts.setAccessibilityLabel("Inserts \(model.title): \(inserts.stringValue)")
+        sends.setAccessibilityLabel("Sends \(model.title): \(sends.stringValue)")
+        routing.setAccessibilityLabel("Выход \(model.title): \(routing.stringValue)")
+        value.setAccessibilityLabel("Текущий уровень \(model.title): \(value.stringValue)")
+        automation.setAccessibilityLabel("Автоматизация \(model.title): \(automation.stringValue)")
+        let channelName = model.kind == .master ? "Master" : "Канал \(model.channelNumber) \(model.title)"
+        setAccessibilityLabel("\(channelName) микшера")
         title.toolTip = model.title
         footer.toolTip = model.title
-        title.setAccessibilityLabel("Канал \(model.title)")
-        footer.setAccessibilityLabel("Канал \(model.title)")
+        title.setAccessibilityLabel(channelName)
+        footer.setAccessibilityLabel(channelName)
         let canArm = model.kind == .track
         arm.isHidden = !canArm
         arm.isEnabled = canArm
@@ -232,27 +241,28 @@ private final class MixerStripView: NSView {
         let width = bounds.width
         let height = bounds.height
         let padding: CGFloat = 5
-        let footerHeight: CGFloat = 18
-        let showDetails = height >= 250
-        let detailHeight = showDetails ? min(212, max(122, height * 0.40)) : 0
-        let channelControlsY = showDetails ? detailHeight + 6 : 7
-        let meterTop = channelControlsY + 72
-        let meterBottom = max(meterTop + 26, height - footerHeight - 22)
+        let footerHeight: CGFloat = 20
+        let titleHeight: CGFloat = 15
+        let showDetails = height >= 286
+        let detailTop = padding + titleHeight + 2
+        let detailHeight = showDetails ? min(176, max(104, height * 0.34)) : 0
+        let channelControlsY = showDetails ? detailTop + detailHeight + 5 : detailTop + 2
+        let meterTop = channelControlsY + 74
+        let meterBottom = max(meterTop + 30, height - footerHeight - 22)
 
         insertHeading.isHidden = !showDetails
         inserts.isHidden = !showDetails
         sendHeading.isHidden = !showDetails
         sends.isHidden = !showDetails
-        title.isHidden = showDetails
+        title.isHidden = false
+        title.frame = NSRect(x: padding, y: padding, width: width - 2 * padding, height: titleHeight)
 
         if showDetails {
-            insertHeading.frame = NSRect(x: padding, y: 6, width: width - 2 * padding, height: 13)
-            inserts.frame = NSRect(x: padding, y: 20, width: width - 2 * padding, height: max(24, detailHeight * 0.52 - 21))
-            let sendY = max(50, detailHeight * 0.52)
+            insertHeading.frame = NSRect(x: padding, y: detailTop, width: width - 2 * padding, height: 13)
+            inserts.frame = NSRect(x: padding, y: detailTop + 14, width: width - 2 * padding, height: max(24, detailHeight * 0.52 - 15))
+            let sendY = detailTop + max(48, detailHeight * 0.52)
             sendHeading.frame = NSRect(x: padding, y: sendY, width: width - 2 * padding, height: 13)
-            sends.frame = NSRect(x: padding, y: sendY + 14, width: width - 2 * padding, height: max(24, detailHeight - sendY - 15))
-        } else {
-            title.frame = NSRect(x: padding, y: 5, width: width - 2 * padding, height: 16)
+            sends.frame = NSRect(x: padding, y: sendY + 14, width: width - 2 * padding, height: max(24, detailTop + detailHeight - sendY - 15))
         }
 
         routing.frame = NSRect(x: padding, y: channelControlsY, width: width - 2 * padding, height: 15)
@@ -280,10 +290,14 @@ private final class MixerStripView: NSView {
         color.withAlphaComponent(model.isSelected ? 0.85 : 0.28).setStroke()
         NSBezierPath(roundedRect: card, xRadius: DAWDesignTokens.Radius.card, yRadius: DAWDesignTokens.Radius.card).stroke()
         color.withAlphaComponent(0.92).setFill()
-        NSRect(x: 2, y: max(2, bounds.height - 18), width: max(0, bounds.width - 4), height: 15).fill()
+        NSRect(x: 2, y: max(2, bounds.height - 20), width: max(0, bounds.width - 4), height: 17).fill()
+        if model.kind == .bus {
+            color.withAlphaComponent(0.72).setFill()
+            NSRect(x: 2, y: 2, width: max(0, bounds.width - 4), height: 2).fill()
+        }
         if model.kind == .master {
             color.withAlphaComponent(0.95).setFill()
-            NSRect(x: 2, y: 2, width: 3, height: max(0, bounds.height - 22)).fill()
+            NSRect(x: 2, y: 2, width: 3, height: max(0, bounds.height - 24)).fill()
         }
         DAWDesignTokens.Color.canvas.withAlphaComponent(0.55).setStroke()
         NSBezierPath(rect: NSRect(x: 4, y: 0, width: max(0, bounds.width - 8), height: 0.5)).stroke()
@@ -313,8 +327,9 @@ final class MixerWorkspaceView: NSScrollView {
     private func rebuild() {
         canvas.subviews.forEach { $0.removeFromSuperview() }
         stripViews.removeAll()
-        for model in strips {
-            let strip = MixerStripView(model: model)
+        for (index, model) in strips.enumerated() {
+            var displayModel=model;displayModel.channelNumber=index + 1
+            let strip = MixerStripView(model: displayModel)
             stripViews[model.id] = strip
             strip.onSelect = { [weak self] in self?.onSelect?($0) }
             strip.onArm = { [weak self] in self?.onArm?($0, $1) }
@@ -329,20 +344,28 @@ final class MixerWorkspaceView: NSScrollView {
         layoutStrips()
     }
     private func layoutStrips() {
-        let stripWidth: CGFloat = bounds.height >= 300 ? 92 : 84
+        let stripWidth: CGFloat = bounds.height >= 300 ? 80 : 74
         let gap: CGFloat = 4
+        let groupGap: CGFloat = 10
+        let extraGaps = strips.enumerated().reduce(0) { partial, item in
+            guard item.offset > 0 else { return partial }
+            return partial + (item.element.kind != strips[item.offset - 1].kind ? 1 : 0)
+        }
         let canvasSize = NSSize(
-            width: max(bounds.width, CGFloat(strips.count) * (stripWidth + gap) + gap),
+            width: max(bounds.width, CGFloat(strips.count) * (stripWidth + gap) + gap + CGFloat(extraGaps) * groupGap),
             height: max(150, bounds.height)
         )
         if canvas.frame.size != canvasSize { canvas.frame.size = canvasSize }
+        var x = gap
         for (index, model) in strips.enumerated() {
+            if index > 0, model.kind != strips[index - 1].kind { x += groupGap }
             stripViews[model.id]?.frame = NSRect(
-                x: gap + CGFloat(index) * (stripWidth + gap),
+                x: x,
                 y: 0,
                 width: stripWidth,
                 height: canvasSize.height
             )
+            x += stripWidth + gap
         }
     }
     override func layout() { super.layout(); layoutStrips() }

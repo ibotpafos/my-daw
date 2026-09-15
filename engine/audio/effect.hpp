@@ -23,6 +23,22 @@ struct AudioUnitSnapshot {
   uint32_t latencyFrames = 0;
   std::vector<uint8_t> state;
 };
+// Runtime state is deliberately separate from the persisted PluginInsert
+// policy. Implementations expose it through atomics so Renderer and the C ABI
+// can inspect a published graph without touching plug-in state on the control
+// thread.  The default keeps every existing in-process effect compatible.
+enum class PreparedEffectRuntimeState : uint32_t {
+  Unprepared = 0,
+  ActiveInProcess = 1,
+  ActiveIsolated = 2,
+  DryFallback = 3,
+  Failed = 4,
+};
+struct PreparedEffectRuntimeStatus {
+  PreparedEffectRuntimeState state = PreparedEffectRuntimeState::ActiveInProcess;
+  uint32_t extraPipelineLatencyFrames = 0;
+  uint32_t faultCode = 0;
+};
 class PreparedEffect {
 public:
   virtual ~PreparedEffect() = default;
@@ -37,6 +53,11 @@ public:
   // Finite VST3 tail length captured after activation. Existing AU effects
   // default to zero until their host reports a comparable value.
   virtual uint32_t tailFrames() const noexcept { return 0; }
+  // Must be safe to call while the audio graph is published. Implementations
+  // with mutable state publish this value from lock-free atomics.
+  virtual PreparedEffectRuntimeStatus runtimeStatus() const noexcept {
+    return {};
+  }
 };
 std::vector<AudioUnitDescriptor> supportedAudioUnits();
 bool audioUnitAvailable(const AudioUnitDescriptor &) noexcept;

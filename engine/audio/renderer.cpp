@@ -183,13 +183,49 @@ bool Renderer::processChain(std::vector<std::unique_ptr<PreparedEffect>> &chain,
       else
         parameterEvents[count++] = {touchParameter, 0, std::clamp(touchValue, 0.0f, 1.0f)};
     }
-    if (!okay ||
-        !chain[effectIndex]->process(left, right, frames, time,
-                                     std::span<const PreparedParameterEvent>(
-                                         parameterEvents.data(), count)))
+    const bool processed = okay && chain[effectIndex]->process(
+        left, right, frames, time,
+        std::span<const PreparedParameterEvent>(parameterEvents.data(), count));
+    auto runtime = chain[effectIndex]->runtimeStatus();
+    if (!processed && runtime.state == PreparedEffectRuntimeState::ActiveInProcess)
+      runtime.state = PreparedEffectRuntimeState::DryFallback;
+    publishRuntimeStatus(effectIDs[effectIndex], runtime);
+    if (!processed)
       okay = false;
   }
   return okay;
+}
+
+void Renderer::publishRuntimeStatus(uint64_t id,
+                                    PreparedEffectRuntimeStatus status) noexcept {
+  if (!id)
+    return;
+  for (auto &slot : runtimeInserts) {
+    if (slot.id.load(std::memory_order_acquire) != id)
+      continue;
+    slot.extraPipelineLatency.store(status.extraPipelineLatencyFrames,
+                                    std::memory_order_relaxed);
+    slot.faultCode.store(status.faultCode, std::memory_order_relaxed);
+    slot.state.store(static_cast<uint32_t>(status.state),
+                     std::memory_order_release);
+    return;
+  }
+}
+
+bool Renderer::insertRuntimeStatus(uint64_t insertID,
+                                   PreparedEffectRuntimeStatus &out) const noexcept {
+  if (!insertID)
+    return false;
+  for (const auto &slot : runtimeInserts) {
+    if (slot.id.load(std::memory_order_acquire) != insertID)
+      continue;
+    out.extraPipelineLatencyFrames = slot.extraPipelineLatency.load(std::memory_order_relaxed);
+    out.faultCode = slot.faultCode.load(std::memory_order_relaxed);
+    out.state = static_cast<PreparedEffectRuntimeState>(
+        slot.state.load(std::memory_order_acquire));
+    return true;
+  }
+  return false;
 }
 
 void Renderer::prepare(const State &state, uint64_t start, uint64_t loopStart,
@@ -292,20 +328,21 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   }
 
   uint64_t unavailable = 0;
+  struct PendingRuntimeStatus {
+    uint64_t id = 0;
+    PreparedEffectRuntimeStatus status{};
+  };
+  std::vector<PendingRuntimeStatus> nextRuntimeStatuses;
+  nextRuntimeStatuses.reserve(kMaxProjectPluginInserts);
   const auto makeChain =
       [&](const std::vector<PluginInsert> &inserts,
           std::vector<std::unique_ptr<PreparedEffect>> &chain,
           ChainAutomationPlan &automation, std::vector<uint64_t> &effectIDs) {
         uint64_t total = 0;
         for (const auto &insert : inserts) {
-          if (insert.bypassed)
-            continue;
-          // VST3 has no isolation runtime in this host. AU requests are handed
-          // to the macOS factory, which accepts OOP only for AUv3 and never
-          // silently falls back to AudioComponentInstanceNew.
-          if (insert.hostingMode == PluginHostingMode::OutOfProcess &&
-              isVst3Insert(insert)) {
-            ++unavailable;
+          if (insert.bypassed) {
+            nextRuntimeStatuses.push_back(
+                {insert.id, {PreparedEffectRuntimeState::Unprepared, 0, 0}});
             continue;
           }
           std::unique_ptr<PreparedEffect> effect;
@@ -314,8 +351,17 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
                                           : prepareAudioUnit(insert);
           } catch (...) {
             ++unavailable;
+            nextRuntimeStatuses.push_back(
+                {insert.id, {PreparedEffectRuntimeState::Failed, 0, 1}});
             continue;
           }
+          if (!effect) {
+            ++unavailable;
+            nextRuntimeStatuses.push_back(
+                {insert.id, {PreparedEffectRuntimeState::Failed, 0, 1}});
+            continue;
+          }
+          nextRuntimeStatuses.push_back({insert.id, effect->runtimeStatus()});
           total += effect->latencyFrames();
           if (total > kMaximumPdcEdgeFrames)
             throw Error("Plug-in chain latency exceeds 10 seconds");
@@ -507,6 +553,28 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   busBlockLeft.assign(state.buses.size() * kRenderBlockFrames, 0.0f);
   busBlockRight.assign(state.buses.size() * kRenderBlockFrames, 0.0f);
   masterEffects = std::move(nextMasterEffects);
+  for (auto &slot : runtimeInserts) {
+    slot.state.store(static_cast<uint32_t>(PreparedEffectRuntimeState::Unprepared),
+                     std::memory_order_relaxed);
+    slot.extraPipelineLatency.store(0, std::memory_order_relaxed);
+    slot.faultCode.store(0, std::memory_order_relaxed);
+    slot.id.store(0, std::memory_order_release);
+  }
+  for (const auto &entry : nextRuntimeStatuses) {
+    if (!entry.id)
+      continue;
+    for (auto &slot : runtimeInserts) {
+      if (slot.id.load(std::memory_order_relaxed) != 0)
+        continue;
+      slot.extraPipelineLatency.store(entry.status.extraPipelineLatencyFrames,
+                                      std::memory_order_relaxed);
+      slot.faultCode.store(entry.status.faultCode, std::memory_order_relaxed);
+      slot.state.store(static_cast<uint32_t>(entry.status.state),
+                       std::memory_order_relaxed);
+      slot.id.store(entry.id, std::memory_order_release);
+      break;
+    }
+  }
   preparedTrackCount = static_cast<uint32_t>(trackEffects.size());
   preparedBusCount = static_cast<uint32_t>(busEffects.size());
   clearMeters();
