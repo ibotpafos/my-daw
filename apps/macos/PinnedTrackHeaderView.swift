@@ -90,15 +90,15 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         translatesAutoresizingMaskIntoConstraints = false
         accentBar.wantsLayer = true
         numberLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
-        numberLabel.textColor = .secondaryLabelColor
-        nameField.font = .systemFont(ofSize: 12, weight: .semibold)
-        nameField.textColor = .labelColor
+        numberLabel.textColor = DAWDesignTokens.Color.secondaryText
+        nameField.font = DAWDesignTokens.Typography.label
+        nameField.textColor = DAWDesignTokens.Color.text
         nameField.drawsBackground = false
         nameField.isBordered = false
         nameField.focusRingType = .none
         nameField.delegate = self
-        statusLabel.font = .systemFont(ofSize: 9, weight: .medium)
-        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.font = DAWDesignTokens.Typography.caption
+        statusLabel.textColor = DAWDesignTokens.Color.secondaryText
 
         gain.isContinuous = true
         gain.target = self
@@ -168,8 +168,8 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
 
     private func renderModel() {
         layer?.backgroundColor = (model.selected
-            ? NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.15, alpha: 1)
-            : NSColor(calibratedRed: 0.055, green: 0.06, blue: 0.075, alpha: 1)).cgColor
+            ? model.accent.withAlphaComponent(0.17)
+            : DAWDesignTokens.Color.surface).cgColor
         accentBar.layer?.backgroundColor = model.accent.cgColor
         numberLabel.stringValue = String(format: "%02d", model.index + 1)
         nameField.stringValue = model.name

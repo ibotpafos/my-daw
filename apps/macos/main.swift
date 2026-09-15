@@ -101,6 +101,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let status = NSTextField(labelWithString: "")
     let summary = NSTextField(labelWithString: "")
     let transportLabel = NSTextField(labelWithString: "Импортируй WAV, чтобы услышать проект")
+    let workspaceMode = NSSegmentedControl(labels: ["Создание", "Запись", "Сведение", "Мастеринг"], trackingMode: .selectOne, target: nil, action: nil)
     let playButton = NSButton(title: "▶ Играть", target: nil, action: nil)
     let stopButton = NSButton(title: "■ Стоп", target: nil, action: nil)
     let recordButton = NSButton(title: "● Запись", target: nil, action: nil)
@@ -172,14 +173,42 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 
     func label(_ text: String, size: CGFloat, color: NSColor = .labelColor) -> NSTextField {
         let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: size, weight: size >= 24 ? .semibold : .regular)
+        field.font = size <= 11 ? DAWDesignTokens.Typography.caption : (size >= 17 ? DAWDesignTokens.Typography.title : DAWDesignTokens.Typography.body)
         field.textColor = color
         return field
     }
     func button(_ title: String, _ action: Selector) -> NSButton {
         let b = NSButton(title: title, target: self, action: action)
-        b.bezelStyle = .rounded
+        b.bezelStyle = .texturedRounded
+        b.font = DAWDesignTokens.Typography.label
+        b.contentTintColor = DAWDesignTokens.Color.text
         return b
+    }
+    func iconButton(_ icon: DAWIcon, _ action: Selector) -> NSButton {
+        let b = button("", action)
+        b.image = icon.symbol
+        b.imagePosition = .imageOnly
+        b.toolTip = icon.accessibilityLabel
+        b.setAccessibilityLabel(icon.accessibilityLabel)
+        b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        return b
+    }
+    func styleIconButton(_ button: NSButton, icon: DAWIcon) {
+        button.image = icon.symbol
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.toolTip = icon.accessibilityLabel
+        button.setAccessibilityLabel(icon.accessibilityLabel)
+        if !button.constraints.contains(where: { $0.firstAttribute == .width }) {
+            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        }
+    }
+    func updateRecordButton(_ recording: Bool) {
+        styleIconButton(recordButton, icon: recording ? .stop : .record)
+        recordButton.contentTintColor = DAWDesignTokens.Color.coral
+        let label = recording ? "Закончить запись" : DAWIcon.record.accessibilityLabel
+        recordButton.toolTip = label
+        recordButton.setAccessibilityLabel(label)
     }
     func flexibleSpace() -> NSView {
         let view=NSView();view.setContentHuggingPriority(.defaultLow,for:.horizontal);view.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);return view
@@ -189,6 +218,29 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func zoomIn(){setTimelineZoom(timelineZoom*2)}
     @objc func zoomOut(){setTimelineZoom(timelineZoom/2)}
     @objc func resetZoom(){setTimelineZoom(1)}
+    @objc func changeWorkspaceMode() {
+        let titles = ["Создание", "Запись", "Сведение", "Мастеринг"]
+        guard workspaceMode.selectedSegment >= 0, workspaceMode.selectedSegment < titles.count else { return }
+        UserDefaults.standard.set(workspaceMode.selectedSegment, forKey: "workspace.mode")
+        applyWorkspaceMode(workspaceMode.selectedSegment)
+        status.stringValue = "Режим: \(titles[workspaceMode.selectedSegment])"
+    }
+    func applyWorkspaceMode(_ mode: Int) {
+        guard let arrangementInspectorSplit, let arrangementConsoleSplit else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        restoringWorkspaceLayout = true
+        defer { restoringWorkspaceLayout = false }
+        let height = arrangementConsoleSplit.bounds.height
+        let ratio: CGFloat = mode == 1 ? 0.74 : (mode >= 2 ? 0.36 : 0.68)
+        let arrangementHeight = min(max(260, height - 190), max(260, height * ratio))
+        arrangementConsoleSplit.setPosition(arrangementHeight, ofDividerAt: 0)
+        let inspectorWidth: CGFloat = mode == 1 ? 260 : (mode >= 2 ? 340 : 300)
+        arrangementInspectorSplit.setPosition(max(420, arrangementInspectorSplit.bounds.width - inspectorWidth), ofDividerAt: 0)
+        if mode == 3 {
+            selectedMixerID = 0; inspectorTrackID = nil; inspectorClipIndex = nil
+            refresh(); updateMixerInspector(0)
+        }
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let core = daw_create() else { NSApp.terminate(nil); return }
         session = core
@@ -199,31 +251,33 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.minSize = NSSize(width: 1060, height: 620)
         window.delegate = self
         window.isReleasedWhenClosed = false
-        window.backgroundColor = NSColor(calibratedRed: 0.035, green: 0.04, blue: 0.05, alpha: 1)
+        window.backgroundColor = DAWDesignTokens.Color.canvas
         window.onPlayStop = { [weak self] in guard let self else{return};self.isPlaying ? self.stopAudio():self.playAudio() }
         window.onRewind = { [weak self] in self?.rewindAudio() }
         window.onDeleteSelectedClip = { [weak self] in self?.deleteCurrentSelectedClip() }
         window.onZoomIn = { [weak self] in self?.zoomIn() };window.onZoomOut = { [weak self] in self?.zoomOut() };window.onZoomReset = { [weak self] in self?.resetZoom() }
         let root = NSView(); window.contentView = root
-        let content = NSStackView(); content.orientation = .vertical; content.alignment = .leading; content.spacing = 10
+        let content = NSStackView(); content.orientation = .vertical; content.alignment = .leading; content.spacing = DAWDesignTokens.Space.sm
         content.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(content)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
-            content.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
-            content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14)
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: DAWDesignTokens.Space.md),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -DAWDesignTokens.Space.md),
+            content.topAnchor.constraint(equalTo: root.topAnchor, constant: DAWDesignTokens.Space.sm),
+            content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -DAWDesignTokens.Space.sm)
         ])
-        let brand=label("MY DAW",size:17,color:.systemMint)
-        let buildLabel=label("SESSION  /  DEVELOPMENT 36",size:10,color:.tertiaryLabelColor)
-        summary.font = .monospacedSystemFont(ofSize: 10, weight: .medium); summary.textColor = .secondaryLabelColor
-        let header=NSStackView(views:[brand,buildLabel,flexibleSpace(),summary]);header.alignment = .centerY;header.spacing=10
+        let brand=label("MY DAW",size:17,color:DAWDesignTokens.Color.text)
+        let buildLabel=label("LOCAL SESSION",size:10,color:DAWDesignTokens.Color.secondaryText)
+        summary.font = .monospacedSystemFont(ofSize: 10, weight: .medium); summary.textColor = DAWDesignTokens.Color.secondaryText
+        workspaceMode.selectedSegment = max(0, min(3, UserDefaults.standard.integer(forKey: "workspace.mode"))); workspaceMode.target = self; workspaceMode.action = #selector(changeWorkspaceMode); workspaceMode.controlSize = .small
+        let header=NSStackView(views:[brand,buildLabel,workspaceMode,flexibleSpace(),summary]);header.alignment = .centerY;header.spacing=DAWDesignTokens.Space.sm
+        header.wantsLayer = true; header.layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor; header.layer?.cornerRadius = DAWDesignTokens.Radius.card; header.edgeInsets = NSEdgeInsets(top: 7, left: 10, bottom: 7, right: 10)
         content.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         func section(_ title: String, _ views: [NSView]) -> NSStackView {
             let controls=NSStackView(views:views); controls.spacing = 8; controls.alignment = .centerY
             let heading=label(title,size:10,color:.tertiaryLabelColor)
             let group=NSStackView(views:[heading,controls]); group.orientation = .vertical; group.alignment = .leading; group.spacing = 7
             group.edgeInsets=NSEdgeInsets(top:9,left:11,bottom:10,right:11); group.wantsLayer = true
-            group.layer?.backgroundColor=NSColor(white:1,alpha:0.018).cgColor; group.layer?.cornerRadius = 2
+            group.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor; group.layer?.cornerRadius = DAWDesignTokens.Radius.card
             return group
         }
         undoButton.target = self; undoButton.action = #selector(undo)
@@ -249,9 +303,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         automationModePopup.addItems(withTitles:["AUTO Read","AUTO Touch","AUTO Latch"]);automationModePopup.selectItem(at:0);automationModePopup.target=self;automationModePopup.action=#selector(changeAutomationMode(_:));automationModePopup.widthAnchor.constraint(equalToConstant:105).isActive=true
         automationArmPopup.addItem(withTitle:"ARM: none");automationArmPopup.target=self;automationArmPopup.action=#selector(changeAutomationArm(_:));automationArmPopup.widthAnchor.constraint(equalToConstant:170).isActive=true
         exportButton.title="WAV…";exportButton.toolTip="Экспортировать микс WAV";dawprojectButton.title="DAWproject…";cancelExportButton.title="Отмена";cancelExportButton.toolTip="Отменить экспорт"
-        let transportTools=NSStackView(views:[recordButton,playButton,stopButton,button("↤",#selector(rewindAudio)),button("−",#selector(zoomOut)),button("＋",#selector(zoomIn)),button("1×",#selector(resetZoom)),flexibleSpace(),button("Открыть…",#selector(openDraft)),button("Сохранить",#selector(saveDraft)),exportButton,dawprojectButton,cancelExportButton]);transportTools.spacing=7;transportTools.alignment = .centerY
-        let projectTools=NSStackView(views:[label("EDIT",size:9,color:.tertiaryLabelColor),importButton,addTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,loopButton,clearRangeButton,rangeLabel,flexibleSpace(),label("GRID",size:9,color:.tertiaryLabelColor),tempoLabel,tempoStepper,gridPopup]);projectTools.spacing=6;projectTools.alignment = .centerY
-        let toolbar=NSStackView(views:[transportTools,projectTools]);toolbar.orientation = .vertical;toolbar.alignment = .leading;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:7,bottom:6,right:7);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=NSColor(white:1,alpha:0.025).cgColor;toolbar.layer?.cornerRadius=4
+        updateRecordButton(false); styleIconButton(playButton, icon: .play); styleIconButton(stopButton, icon: .stop); styleIconButton(loopButton, icon: .loop); styleIconButton(undoButton, icon: .undo); styleIconButton(redoButton, icon: .redo)
+        let transportTools=NSStackView(views:[recordButton,playButton,stopButton,iconButton(.rewind,#selector(rewindAudio)),loopButton,undoButton,redoButton,flexibleSpace(),button("Открыть…",#selector(openDraft)),button("Сохранить",#selector(saveDraft)),exportButton,dawprojectButton,cancelExportButton]);transportTools.spacing=DAWDesignTokens.Space.xs;transportTools.alignment = .centerY
+        let projectTools=NSStackView(views:[label("EDIT",size:9,color:.tertiaryLabelColor),importButton,addTrackButton,addBusButton,workflowButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,rangeLabel,flexibleSpace(),label("GRID",size:9,color:.tertiaryLabelColor),tempoLabel,tempoStepper,gridPopup]);projectTools.spacing=6;projectTools.alignment = .centerY
+        let toolbar=NSStackView(views:[transportTools,projectTools]);toolbar.orientation = .vertical;toolbar.alignment = .leading;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:8,left:10,bottom:8,right:10);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.panel
         transportTools.widthAnchor.constraint(equalTo:toolbar.widthAnchor,constant:-14).isActive=true
         projectTools.widthAnchor.constraint(equalTo:toolbar.widthAnchor,constant:-14).isActive=true
         rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
@@ -259,12 +314,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         playButton.target = self; playButton.action = #selector(playAudio)
         stopButton.target = self; stopButton.action = #selector(stopAudio); stopButton.isEnabled = false
         recordButton.target = self; recordButton.action = #selector(toggleRecording)
-        recordButton.contentTintColor = .systemRed
+        recordButton.contentTintColor = DAWDesignTokens.Color.coral
         exportButton.target = self; exportButton.action = #selector(exportMix)
         dawprojectButton.target = self; dawprojectButton.action = #selector(exportDawproject)
         cancelExportButton.target = self; cancelExportButton.action = #selector(cancelExport); cancelExportButton.isEnabled = false
         transportLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        transportLabel.textColor = .systemMint
+        transportLabel.textColor = DAWDesignTokens.Color.mint
         let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 8
@@ -331,6 +386,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         arrangementInspectorSplit.setPosition(max(420,arrangementInspectorSplit.bounds.width-inspectorWidth),ofDividerAt:0)
         let arrangementHeight=min(max(280,arrangementConsoleSplit.bounds.height-210),max(280,arrangementConsoleSplit.bounds.height*ratio("workspace.arrangementHeightRatio",0.60)))
         arrangementConsoleSplit.setPosition(arrangementHeight,ofDividerAt:0)
+        applyWorkspaceMode(workspaceMode.selectedSegment)
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
@@ -612,12 +668,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
                 wave.onToggle = { [weak self] in guard let self else { return }; if self.isPlaying { self.stopAudio() } else { self.playAudio() } }
                 timelineGroup.addArrangedSubview(wave)
-                wave.heightAnchor.constraint(equalToConstant: 132).isActive = true
+                wave.heightAnchor.constraint(equalToConstant: 92).isActive = true
                 wave.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true
                 waveforms.append(wave)
-            } else {let empty=EmptyTimelineLaneView(message:"Import WAV or start recording",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:132).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
+            } else {let empty=EmptyTimelineLaneView(message:"Import WAV or start recording",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:92).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
             if track.take_count>1 {for takeIndex in 0..<track.take_count{var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var takePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,takeIndex,&take)),check(daw_get_take_waveform(session,track.id,takeIndex,&takePeaks,512))else{return};let takeName=withUnsafeBytes(of:take.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let lane=TakeLaneView(frame:.zero);lane.title=takeIndex==0 ? "Основной":takeName;lane.peaks=takePeaks;lane.takeStart=take.start;lane.takeFrames=take.frames;lane.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));lane.selected=selectedTake==Int(takeIndex);lane.setAccessibilityLabel("Дубль \(lane.title)");let laneIndex=Int(takeIndex);lane.onSelect={[weak self]in self?.selectedTakes[track.id]=laneIndex;self?.refresh()};timelineGroup.addArrangedSubview(lane);lane.heightAnchor.constraint(equalToConstant:46).isActive=true;lane.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}}
-            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(132+laneCount*48)
+            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(92+laneCount*48)
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
@@ -901,7 +957,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let started=armedTrackID.map{daw_record_start_take(session,$0,start,recovery.path)} ?? daw_record_start(session,start,recovery.path)
         guard check(started) else { return }
         activeRecordingURL=recovery
-        isRecording=true; recordButton.title="■ Закончить"; setProjectControlsEnabled(false); pollTransport()
+        isRecording=true; updateRecordButton(true); setProjectControlsEnabled(false); pollTransport()
     }
     func finishRecording() {
         guard isRecording else { return }
@@ -909,19 +965,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let target=armedTrackID
         if check(daw_record_stop(session,name,revision)) {
             if let target { selectedTakes[target]=Int.max }
-            recordingNumber += 1; activeRecordingURL=nil; isRecording=false; recordButton.title="● Запись"; setProjectControlsEnabled(true); refresh(); pollTransport()
+            recordingNumber += 1; activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); refresh(); pollTransport()
         } else {
-            _=daw_record_cancel(session); activeRecordingURL=nil; isRecording=false; recordButton.title="● Запись"; setProjectControlsEnabled(true); pollTransport()
+            _=daw_record_cancel(session); activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); pollTransport()
         }
     }
     func pollTransport() {
         guard session != nil else { return }
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard check(daw_get_recording(session,&recording)) else {
-            _=daw_record_cancel(session); isRecording=false; recordButton.title="● Запись"; setProjectControlsEnabled(true); return
+            _=daw_record_cancel(session); isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); return
         }
         if recording.recording != 0 {
-            isRecording=true; recordButton.title="■ Закончить"
+            isRecording=true; updateRecordButton(true)
             if recording.loop_recording != 0 {if let start=rangeStart,let end=rangeEnd,end>start{let frame=start+recording.frames%(end-start);for wave in waveforms{wave.playhead=frame}};transportLabel.stringValue=String(format:"● Loop recording  %.1f с · дублей %d · playback + mono input",Double(recording.frames)/48000,recording.pass_count)}
             else{transportLabel.stringValue=String(format:recording.target_track_id != 0 ? "● Новый дубль  %.1f с · mono / 48 кГц":"● Запись  %.1f с · mono / 48 кГц",Double(recording.frames)/48000)}
             if recording.overflowed != 0 { finishRecording() }
@@ -962,7 +1018,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         panel.message = "WAV 48 кГц, mono/stereo, PCM16/24/32 или float32. До 60 секунд."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
-        if check(daw_import_wav(session, url.path, name, revision)) { refresh() }
+        if check(daw_import_wav(session, url.path, name, revision)) {
+            refresh()
+            if let track = mixerWorkspace.strips.last(where: { $0.kind == .track }) {
+                selectedMixerID = track.id; inspectorTrackID = track.id; inspectorClipIndex = 0; selectedClips[track.id] = 0
+                refresh()
+            }
+        }
     }
     func performTrackAction(_ id:UInt64,_ action:Selector) {guard let index=trackIDs.first(where:{$0.value==id})?.key else{return};let sender=NSButton();sender.tag=index;_ = NSApp.sendAction(action,to:self,from:sender)}
     func deleteCurrentSelectedClip(){guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return};performTrackAction(id,#selector(deleteSelectedClip(_:)))}

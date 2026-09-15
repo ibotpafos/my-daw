@@ -73,7 +73,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(calibratedRed: 0.035, green: 0.04, blue: 0.05, alpha: 1).cgColor
+        layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
         setup()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -81,9 +81,9 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private func setup() {
         tabs.selectedSegment = InspectorBrowserTab.inspector.rawValue; tabs.target = self; tabs.action = #selector(changeTab)
         browserKind.selectedSegment = InspectorBrowserKind.audio.rawValue; browserKind.target = self; browserKind.action = #selector(changeBrowserKind)
-        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold); titleLabel.textColor = .secondaryLabelColor
-        body.orientation = .vertical; body.alignment = .width; body.spacing = 8
-        inspectorForm.orientation = .vertical; inspectorForm.alignment = .leading; inspectorForm.spacing = 8
+        titleLabel.font = DAWDesignTokens.Typography.label; titleLabel.textColor = DAWDesignTokens.Color.secondaryText
+        body.orientation = .vertical; body.alignment = .width; body.spacing = DAWDesignTokens.Space.xs
+        inspectorForm.orientation = .vertical; inspectorForm.alignment = .leading; inspectorForm.spacing = DAWDesignTokens.Space.xs
         [tabs, titleLabel, body, inspectorForm].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; addSubview($0) }
         NSLayoutConstraint.activate([
             tabs.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), tabs.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), tabs.topAnchor.constraint(equalTo: topAnchor, constant: 10),
@@ -114,7 +114,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     private func clearBody() { body.arrangedSubviews.forEach { body.removeArrangedSubview($0); $0.removeFromSuperview() } }
-    private func label(_ text: String, color: NSColor = .secondaryLabelColor) -> NSTextField { let value = NSTextField(labelWithString: text); value.font = .systemFont(ofSize: 10, weight: .medium); value.textColor = color; return value }
+    private func label(_ text: String, color: NSColor = DAWDesignTokens.Color.secondaryText) -> NSTextField { let value = NSTextField(labelWithString: text); value.font = DAWDesignTokens.Typography.caption; value.textColor = color; return value }
     private func row(_ name: String, _ control: NSView) -> NSStackView {
         let stack = NSStackView(views: [label(name), control]);stack.orientation = .vertical;stack.alignment = .leading;stack.spacing = 4
         control.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -149,7 +149,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         browserKind.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; search.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
         table.reloadData()
     }
-    private func button(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .texturedRounded; return button }
+    private func button(_ title: String, _ action: Selector) -> NSButton { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .texturedRounded; button.font = DAWDesignTokens.Typography.caption; return button }
 
     @objc private func changeTab() { if tabs.selectedSegment == InspectorBrowserTab.inspector.rawValue { reloadInspector() } else { showBrowser() } }
     @objc private func changeBrowserKind() { reloadBrowser() }

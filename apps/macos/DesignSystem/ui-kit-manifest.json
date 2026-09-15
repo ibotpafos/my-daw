@@ -1,0 +1,5 @@
+{
+  "name": "My DAW UI asset kit", "version": 1, "platform": "macOS 14+", "reference": "approved dark DAW workspace", "tokens": "DAWDesignTokens.swift", "icons": "DAWIcon.swift", "dataDrivenRenderers": "DAWDataVisuals.swift",
+  "assetFiles": ["Assets/transport.svg", "Assets/workspace.svg", "Assets/tracks-effects.svg", "Assets/ai-status.svg"],
+  "coverage": {"sfSymbolMappings": 38, "transport": 7, "editingAndWorkspace": 10, "trackTypes": 7, "effects": 4, "aiActions": 4, "status": 6, "controlStates": 7, "colorTokens": 11, "spacingTokens": 6, "radiusTokens": 4, "typeTokens": 4, "dataDrivenVisuals": 3}
+}

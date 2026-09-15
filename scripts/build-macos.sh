@@ -30,6 +30,7 @@ fi
 mkdir -p "$DAW_APP/Contents/MacOS"
 mkdir -p "$DAW_APP/Contents/Resources/Workflows/vocal-preparation"
 mkdir -p "$DAW_APP/Contents/Resources/ThirdPartyNotices"
+mkdir -p "$DAW_APP/Contents/Resources/DesignSystem"
 cp apps/macos/Info.plist "$DAW_APP/Contents/Info.plist"
 cp build/debug/daw_au_scan_helper "$DAW_APP/Contents/MacOS/daw_au_scan_helper"
 if [ "$VST3_HELPER_OPTION" = ON ]; then
@@ -37,8 +38,10 @@ if [ "$VST3_HELPER_OPTION" = ON ]; then
   cp third_party/notices/VST3-SDK.txt "$DAW_APP/Contents/Resources/ThirdPartyNotices/VST3-SDK.txt"
 fi
 cp modules/vocal-preparation/module.json "$DAW_APP/Contents/Resources/Workflows/vocal-preparation/module.json"
+cp apps/macos/DesignSystem/ui-kit-manifest.json "$DAW_APP/Contents/Resources/DesignSystem/ui-kit-manifest.json"
+cp apps/macos/DesignSystem/Assets/*.svg "$DAW_APP/Contents/Resources/DesignSystem/"
 xcrun swiftc -swift-version 6 -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header engine/bridge/daw.h apps/macos/main.swift apps/macos/DAWWindow.swift apps/macos/WaveformView.swift apps/macos/PinnedTrackHeaderView.swift apps/macos/MixerWorkspaceView.swift apps/macos/InspectorBrowserView.swift apps/macos/StorageUI.swift apps/macos/WorkflowUI.swift \
+  -import-objc-header engine/bridge/daw.h apps/macos/main.swift apps/macos/DAWWindow.swift apps/macos/WaveformView.swift apps/macos/PinnedTrackHeaderView.swift apps/macos/MixerWorkspaceView.swift apps/macos/InspectorBrowserView.swift apps/macos/StorageUI.swift apps/macos/WorkflowUI.swift apps/macos/DesignSystem/DAWDesignTokens.swift apps/macos/DesignSystem/DAWIcon.swift apps/macos/DesignSystem/DAWDataVisuals.swift \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers -framework AVFoundation -framework AudioToolbox -framework CoreAudio \
   -o "$DAW_APP/Contents/MacOS/My DAW"
 # Set to an installed Apple Development/Developer ID identity to preserve the

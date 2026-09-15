@@ -2,7 +2,7 @@
 
 Нативная музыкальная станция для Mac: запись, монтаж и сведение в едином интерфейсе, расширяемом через общую систему действий. My DAW — рабочее имя, не выбранный публичный бренд.
 
-**Состояние: аудиопрототип 1.26.0.** Рабочее окно развивает плотную структуру Fender Studio Pro: закреплённые track headers, общий zoomable timeline, постоянный Inspector/Browser dock и компактный mixer. AUv3 теперь можно запускать с обязательной системной out-of-process политикой: render graph и плагины готовятся асинхронно, main thread показывает состояние подготовки, а stale/canceled результат не запускает Core Audio. Фактический OOP instance проверяется через публичное Audio Unit property; AUv2 и VST3 остаются явно in-process. QA также исправил стартовую gain ramp и точную позицию loop boundary. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
+**Состояние: аудиопрототип 1.27.0.** Рабочее окно использует единую Studio Pro-inspired дизайн-систему: тёмные semantic tokens, SF Symbols, плотные track rows, адаптивный mixer и режимы Создание/Запись/Сведение/Мастеринг с реальными пропорциями workspace. Импортированный клип автоматически выбирается и сразу открывается в Inspector. AUv3 запускается с обязательной системной out-of-process политикой; AUv2 и VST3 остаются явно in-process. Listening acceptance, vendor/import compatibility matrix, VST3 runtime isolation, vendor editors и hardware presentation latency ещё не приняты.
 
 Собрать и запустить на Apple Silicon Mac:
 
@@ -43,6 +43,7 @@ open 'build/My DAW.app'
 
 | Документ | Содержание |
 |---|---|
+| [54 Design system and workspace modes](docs/54-design-system-workspace-modes.md) | Semantic UI kit, functional workspace modes, compact lanes/mixer и результаты визуального QA |
 | [53 Async AUv3 hosting](docs/53-async-auv3-hosting.md) | Bounded render-graph prepare, strict system OOP verification, cancel/stale transport и UI state |
 | [52 UI QA and hosting policy](docs/52-ui-qa-hosting-policy.md) | Реальный layout QA, format v15 и явная per-insert hosting policy |
 | [49 Studio Pro workspace and live meters](docs/49-studio-pro-workspace-meters.md) | Общий zoom/ruler, правый inspector, сохранение dock layout и realtime channel meters |

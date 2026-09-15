@@ -42,14 +42,14 @@ final class MixerMeterView: NSView {
     var snapshot = MixerMeterSnapshot() { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0, alpha: 0.45).setFill(); bounds.fill()
+        DAWDesignTokens.Color.canvas.withAlphaComponent(0.86).setFill(); bounds.fill()
         let channels = [snapshot.leftPeak, snapshot.rightPeak]
         let holds = [snapshot.leftHold, snapshot.rightHold]
         for index in 0..<2 {
             let lane = NSRect(x: CGFloat(index) * (bounds.width + 1) / 2, y: 0, width: max(1, (bounds.width - 1) / 2), height: bounds.height)
             let level = CGFloat(min(1, max(0, channels[index])))
             let filled = NSRect(x: lane.minX, y: lane.maxY - lane.height * level, width: lane.width, height: lane.height * level)
-            let color: NSColor = level > 0.92 ? .systemRed : (level > 0.72 ? .systemOrange : .systemGreen)
+            let color = DAWDataVisuals.meterColor(for: level)
             color.withAlphaComponent(0.9).setFill(); filled.fill()
             let hold = lane.maxY - lane.height * CGFloat(min(1, max(0, holds[index])))
             color.setFill(); NSRect(x: lane.minX, y: hold, width: lane.width, height: 1).fill()
@@ -74,11 +74,16 @@ final class MixerFaderView: NSView {
     override func mouseDragged(with event: NSEvent) { guard dragging else{return}; let v=value(at:convert(event.locationInWindow,from:nil)); valueDb=v; onChange?(v) }
     override func mouseUp(with event: NSEvent) { guard dragging else{return}; dragging=false; onEnd?(valueDb) }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0, alpha: 0.5).setFill(); NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
+        DAWDesignTokens.Color.canvas.withAlphaComponent(0.85).setFill(); NSBezierPath(roundedRect: bounds, xRadius: DAWDesignTokens.Radius.control, yRadius: DAWDesignTokens.Radius.control).fill()
         let fraction=CGFloat((min(24,max(-120,valueDb))+120)/144); let y=bounds.height*(1-fraction)
-        NSColor.systemCyan.withAlphaComponent(0.38).setFill(); NSRect(x: bounds.midX - 1, y: y, width: 2, height: bounds.maxY-y).fill()
-        NSColor.white.withAlphaComponent(0.9).setFill(); NSBezierPath(roundedRect:NSRect(x:2,y:y-4,width:bounds.width-4,height:8),xRadius:3,yRadius:3).fill()
+        DAWDesignTokens.Color.accent.withAlphaComponent(0.45).setFill(); NSRect(x: bounds.midX - 1, y: y, width: 2, height: bounds.maxY-y).fill()
+        DAWDesignTokens.Color.text.withAlphaComponent(0.9).setFill(); NSBezierPath(roundedRect:NSRect(x:2,y:y-4,width:bounds.width-4,height:8),xRadius:3,yRadius:3).fill()
     }
+}
+
+@MainActor
+private final class MixerCanvasView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 @MainActor
@@ -113,13 +118,13 @@ private final class MixerStripView: NSView {
         let w=bounds.width,h=bounds.height
         title.frame=NSRect(x:5,y:5,width:w-10,height:17)
         arm.frame=NSRect(x:7,y:25,width:25,height:21);mute.frame=NSRect(x:34,y:25,width:25,height:21);solo.frame=NSRect(x:61,y:25,width:25,height:21)
-        let controlBottom:CGFloat=48;let panY=max(controlBottom+58,h-26);let faderHeight=max(52,panY-controlBottom-7)
+        let controlBottom:CGFloat=48;let panY=max(controlBottom+28,h-26);let faderHeight=max(24,panY-controlBottom-7)
         meter.frame=NSRect(x:14,y:controlBottom,width:18,height:faderHeight);fader.frame=NSRect(x:42,y:controlBottom,width:28,height:faderHeight);pan.frame=NSRect(x:7,y:panY,width:w-14,height:18)
         let showDetails=h>=235;inserts.isHidden = !showDetails;sends.isHidden = !showDetails
         if showDetails { inserts.frame=NSRect(x:5,y:h-92,width:w-10,height:38);sends.frame=NSRect(x:5,y:h-50,width:w-10,height:36) }
     }
     override func mouseDown(with event:NSEvent) { onSelect?(model.id) }
-    override func draw(_ dirtyRect:NSRect) { let color=model.color ?? (model.kind == .master ? .systemOrange : (model.kind == .bus ? .systemPurple:.systemBlue));(model.isSelected ? color.withAlphaComponent(0.18):NSColor(white:1,alpha:0.025)).setFill();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:2,yRadius:2).fill();color.withAlphaComponent(model.isSelected ? 0.85:0.24).setStroke();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:2,yRadius:2).stroke() }
+    override func draw(_ dirtyRect:NSRect) { let color=model.color ?? (model.kind == .master ? DAWDesignTokens.Color.warning : (model.kind == .bus ? DAWDesignTokens.Color.accent:DAWDesignTokens.Color.mint));(model.isSelected ? color.withAlphaComponent(0.18):DAWDesignTokens.Color.surface).setFill();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:DAWDesignTokens.Radius.card,yRadius:DAWDesignTokens.Radius.card).fill();color.withAlphaComponent(model.isSelected ? 0.85:0.24).setStroke();NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:DAWDesignTokens.Radius.card,yRadius:DAWDesignTokens.Radius.card).stroke() }
     @objc private func toggleArm(){onArm?(model.id,arm.state == .on)}
     @objc private func toggleMute(){onMute?(model.id,mute.state == .on)}
     @objc private func toggleSolo(){onSolo?(model.id,solo.state == .on)}
@@ -137,7 +142,7 @@ final class MixerWorkspaceView: NSScrollView {
     var onVolume: ((UInt64, Double) -> Void)?
     var onVolumeGestureEnd: ((UInt64, Double) -> Void)?
     var onPan: ((UInt64, Double) -> Void)?
-    private let canvas=NSView()
+    private let canvas=MixerCanvasView()
     private var stripViews:[UInt64:MixerStripView]=[:]
     override init(frame: NSRect) { super.init(frame:frame); drawsBackground=false; hasHorizontalScroller=true; hasVerticalScroller=false; documentView=canvas }
     required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
