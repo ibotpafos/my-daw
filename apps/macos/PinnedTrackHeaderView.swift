@@ -44,7 +44,7 @@ struct PinnedTrackHeaderModel: Equatable, Identifiable {
 }
 
 @MainActor
-final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
+final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource {
     var model: PinnedTrackHeaderModel { didSet { renderModel() } }
     var onSelect: ((UInt64) -> Void)?
     var onRename: ((UInt64, String) -> Void)?
@@ -60,6 +60,9 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
     var onDelete: ((UInt64) -> Void)?
     var onDeleteTrack: ((UInt64) -> Void)?
     var onCrossfade: ((UInt64) -> Void)?
+    /// Zero-based insertion index in the current ordering, before the source
+    /// channel is removed. The controller preserves selection by channel ID.
+    var onMoveToIndex: ((UInt64, Int) -> Void)?
 
     private let accentBar = NSView()
     private let numberLabel = NSTextField(labelWithString: "")
@@ -71,21 +74,19 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
     private let mute = NSButton(title: "M", target: nil, action: nil)
     private let solo = NSButton(title: "S", target: nil, action: nil)
     private let actionMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var dragStart: NSPoint?
+    private static let trackPasteboardType = NSPasteboard.PasteboardType("com.mydaw.track-reorder")
 
     init(model: PinnedTrackHeaderModel) {
         self.model = model
         super.init(frame: .zero)
         wantsLayer = true
+        registerForDraggedTypes([Self.trackPasteboardType])
         setup()
         renderModel()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-
-    override func mouseDown(with event: NSEvent) {
-        onSelect?(model.id)
-        super.mouseDown(with: event)
-    }
 
     private func setup() {
         translatesAutoresizingMaskIntoConstraints = false
@@ -119,7 +120,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         mute.action = #selector(changeMute)
         solo.action = #selector(changeSolo)
 
-        actionMenu.addItems(withTitles: ["•••", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку"])
+        actionMenu.addItems(withTitles: ["•••", "Переместить выше", "Переместить ниже", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку"])
         actionMenu.item(at: 0)?.isEnabled = false
         actionMenu.menu?.addItem(.separator())
         actionMenu.target = self
@@ -128,7 +129,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         actionMenu.widthAnchor.constraint(equalToConstant: 34).isActive = true
         actionMenu.toolTip = "Действия с клипом, дублями и дорожкой"
         actionMenu.setAccessibilityLabel("Действия дорожки \(model.name)")
-        actionMenu.setAccessibilityHelp("Содержит обратимое удаление дорожки. Обычное Delete удаляет выбранный клип, Command-Delete удаляет дорожку.")
+        actionMenu.setAccessibilityHelp("Перемещает дорожку выше или ниже, либо перетащи её за заголовок. Содержит обратимое удаление дорожки.")
 
         let titleRow = NSStackView(views: [numberLabel, nameField])
         titleRow.orientation = .horizontal
@@ -187,6 +188,8 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
         let media = model.hasAudio ? "AUDIO" : "EMPTY"
         let takes = model.takeCount > 0 ? " · \(model.takeCount) TAKE\(model.takeCount == 1 ? "" : "S")" : ""
         statusLabel.stringValue = "\(media) · \(String(format: "%+.1f", model.gainDb)) dB · P \(String(format: "%+.2f", model.pan))\(takes)"
+        setAccessibilityLabel("Дорожка \(model.index + 1): \(model.name)")
+        setAccessibilityHelp("Перетащи заголовок, чтобы изменить порядок. Меню действий содержит команды перемещения.")
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
@@ -200,15 +203,63 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate {
     @objc private func changeArm() { onArm?(model.id, arm.state == .on) }
     @objc private func changeMute() { onMute?(model.id, mute.state == .on) }
     @objc private func changeSolo() { onSolo?(model.id, solo.state == .on) }
+    override func mouseDown(with event: NSEvent) {
+        dragStart = convert(event.locationInWindow, from: nil)
+        onSelect?(model.id)
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStart else { return }
+        let location = convert(event.locationInWindow, from: nil)
+        guard hypot(location.x - dragStart.x, location.y - dragStart.y) >= 4 else { return }
+        self.dragStart = nil
+        let item = NSPasteboardItem()
+        item.setString(String(model.id), forType: Self.trackPasteboardType)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        if let preview = bitmapImageRepForCachingDisplay(in: bounds) {
+            cacheDisplay(in: bounds, to: preview)
+            dragItem.setDraggingFrame(bounds, contents: preview)
+        } else {
+            dragItem.setDraggingFrame(bounds, contents: nil)
+        }
+        beginDraggingSession(with: [dragItem], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .move
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.string(forType: Self.trackPasteboardType) == nil ? [] : .move
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.string(forType: Self.trackPasteboardType) != nil
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let source = sender.draggingPasteboard.string(forType: Self.trackPasteboardType).flatMap(UInt64.init), source != model.id else { return false }
+        let location = convert(sender.draggingLocation, from: nil)
+        // AppKit's default view coordinates start at the bottom. Dropping on
+        // the lower visual half inserts after this row; the upper half inserts
+        // before it.
+        let rawDestination = model.index + (location.y < bounds.midY ? 1 : 0)
+        onMoveToIndex?(source, rawDestination)
+        return true
+    }
+
     @objc private func performMenuAction() {
         switch actionMenu.indexOfSelectedItem {
-        case 1: onImportTake?(model.id)
-        case 2: onComp?(model.id)
-        case 3: onSplit?(model.id)
-        case 4: onDuplicate?(model.id)
-        case 5: onCrossfade?(model.id)
-        case 6: onDelete?(model.id)
-        case 7: onDeleteTrack?(model.id)
+        case 1: onMoveToIndex?(model.id, model.index - 1)
+        case 2: onMoveToIndex?(model.id, model.index + 2)
+        case 3: onImportTake?(model.id)
+        case 4: onComp?(model.id)
+        case 5: onSplit?(model.id)
+        case 6: onDuplicate?(model.id)
+        case 7: onCrossfade?(model.id)
+        case 8: onDelete?(model.id)
+        case 9: onDeleteTrack?(model.id)
         default: break
         }
     }

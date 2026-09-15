@@ -22,6 +22,8 @@
 
 [1.37.0](64-delete-track-undo.md) добавляет базовое управление проектом: выбранная дорожка удаляется полностью одним revision-aware commit, а Undo/Redo возвращают или снова убирают тот же immutable snapshot. Удаление не меняет buses и master chain; после сохранения/открытия остаётся только surviving project state. Это не операция с корзиной, не media garbage collection и не proof слушательского или физического поведения.
 
+[1.38.0](65-track-reorder.md) делает порядок track list редактируемым и durable: пользователь переносит целую дорожку между соседями, а её media, takes, automation и inserts следуют за тем же owner. Одна перестановка — одна revision и один Undo snapshot; SQLite сохраняет новый `tracks.position`. Это не folder/group hierarchy, не rewire routing и не listening/physical gate.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.

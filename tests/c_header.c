@@ -45,6 +45,7 @@ int main(void) {
     result |= daw_get_output_status(session, &output_status);
     result |= daw_set_loop(session, 0, 0, 0);
     result |= daw_add_track(session, "Header track", 0);
+    result |= daw_move_track(session, 1, 0, 1);
     result |= daw_remove_track(session, 1, 1);
     if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 1) result |= 1;
     daw_destroy(session);

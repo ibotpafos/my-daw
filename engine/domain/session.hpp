@@ -65,6 +65,10 @@ public:
     // history retains its clips, takes, routing, automation, and inserts so
     // Undo restores the exact prior track without allocating new IDs.
     void removeTrack(uint64_t id, uint64_t expected);
+    // Places the identified track at newIndex in the resulting track order.
+    // newIndex is zero-based and must be strictly less than track count; a
+    // move to the current index is a validated no-op and does not commit.
+    void moveTrack(uint64_t id, uint32_t newIndex, uint64_t expected);
     void import(const std::string&, std::shared_ptr<const Clip>, uint64_t expected);
     void importAt(const std::string&, std::shared_ptr<const Clip>, uint64_t start, uint64_t expected);
     void rename(uint64_t id, const std::string&, uint64_t expected);

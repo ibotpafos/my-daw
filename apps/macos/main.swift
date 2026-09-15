@@ -499,7 +499,17 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false)])
+        if let projectMenu = main.items.last?.submenu {
+            let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
+            up.target = self; up.keyEquivalentModifierMask = [.command, .option]
+            let down = NSMenuItem(title: "Переместить выбранную дорожку ниже", action: #selector(moveSelectedTrackDown), keyEquivalent: "\u{F701}")
+            down.target = self; down.keyEquivalentModifierMask = [.command, .option]
+            // The non-shortcut commands above remain visible and discoverable;
+            // these items provide the standard Option-Command arrow workflow.
+            projectMenu.removeItem(at: 5); projectMenu.removeItem(at: 4)
+            projectMenu.insertItem(up, at: 4); projectMenu.insertItem(down, at: 5)
+        }
         menu("Вид", [("Увеличить timeline", #selector(zoomIn), "+", false), ("Уменьшить timeline", #selector(zoomOut), "-", false), ("Timeline 1×", #selector(resetZoom), "0", false)])
         let edit = NSMenuItem(); edit.title = "Текст"; let submenu = NSMenu(title: "Текст")
         for (title, selector, key) in [("Вырезать", "cut:", "x"), ("Копировать", "copy:", "c"), ("Вставить", "paste:", "v"), ("Выбрать всё", "selectAll:", "a")] {
@@ -508,7 +518,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         edit.submenu = submenu; main.addItem(edit); NSApp.mainMenu = main
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(deleteCurrentSelectedTrack) {
+        if menuItem.action == #selector(deleteCurrentSelectedTrack) || menuItem.action == #selector(moveSelectedTrackUp) || menuItem.action == #selector(moveSelectedTrackDown) {
             let selected = inspectorTrackID ?? selectedMixerID
             return !isRecording && automationGesture == nil && pluginParameterGesture == nil && selected.map { mixerKinds[$0] == .track } == true
         }
@@ -790,7 +800,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
-            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)}
+            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }
         let masterHeading=label("MASTER / PLUG-INS",size:10,color:.tertiaryLabelColor);masterHeading.font = .systemFont(ofSize:10,weight:.semibold)
@@ -1214,6 +1224,48 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func deleteCurrentSelectedTrack() {
         guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track else { return }
         deleteTrack(id)
+    }
+    @objc func moveSelectedTrackUp() {
+        guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track,
+              let index = trackIDs.first(where: { $0.value == id })?.key else { return }
+        moveTrack(id, toInsertionIndex: index - 1)
+    }
+    @objc func moveSelectedTrackDown() {
+        guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track,
+              let index = trackIDs.first(where: { $0.value == id })?.key else { return }
+        moveTrack(id, toInsertionIndex: index + 2)
+    }
+    /// `insertionIndex` is measured before the source row is removed. This
+    /// makes drag targets and keyboard movement use the same arrangement rule.
+    func moveTrack(_ id: UInt64, toInsertionIndex insertionIndex: Int) {
+        guard !isRecording else {
+            setProjectMessage("Останови запись перед перемещением дорожки.")
+            updateStorageStatus()
+            return
+        }
+        guard automationGesture == nil, pluginParameterGesture == nil else {
+            storageMessage("Заверши жест автоматизации перед перемещением дорожки.")
+            return
+        }
+        let orderedTrackIDs = trackIDs.keys.sorted().compactMap { trackIDs[$0] }
+        guard let sourceIndex = orderedTrackIDs.firstIndex(of: id) else { return }
+        let rawDestination = min(max(0, insertionIndex), orderedTrackIDs.count)
+        let destination = rawDestination > sourceIndex ? rawDestination - 1 : rawDestination
+        guard destination != sourceIndex else {
+            setProjectMessage("Порядок дорожек не изменился.")
+            updateStorageStatus()
+            return
+        }
+        finishEditing()
+        stopBrowserAudioPreview()
+        guard check(daw_move_track(session, id, UInt32(destination), revision)) else { return }
+        selectedMixerID = id; inspectorTrackID = id; inspectorClipIndex = nil
+        refresh(); updateMixerInspector(id)
+        let direction = destination < sourceIndex ? "выше" : "ниже"
+        setProjectMessage("Дорожка перемещена \(direction) · ⌘Z")
+        updateStorageStatus()
+        status.setAccessibilityLabel("Дорожка перемещена \(direction). Нажми Command-Z, чтобы вернуть порядок.")
+        pollTransport()
     }
     func deleteTrack(_ id: UInt64) {
         guard !isRecording else {

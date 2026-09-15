@@ -80,6 +80,34 @@ int main() { try {
     deletedTrack.undo(11);CHECK(deletedTrack.state().tracks.size()==2&&deletedTrack.state().tracks[0]==deletedOriginal&&deletedTrack.state().buses[0]==retainedBus&&deletedTrack.state().nextID==deletedNextID);
     daw::Renderer restoredRenderer;restoredRenderer.prepare(deletedTrack.state());restoredRenderer.playing.store(true);renderedLeft.fill(0);renderedRight.fill(0);restoredRenderer.render(renderedLeft.data(),renderedRight.data(),4);CHECK(std::any_of(renderedLeft.begin(),renderedLeft.end(),[](float value){return value!=0;}));
     deletedTrack.redo(12);CHECK(deletedTrack.state().tracks.size()==1&&deletedTrack.state().tracks[0].id==4&&deletedTrack.state().buses[0]==retainedBus&&deletedTrack.state().nextID==deletedNextID);
+    // Reordering has final-index semantics: moving a track to index N places
+    // it at N in the resulting order and preserves its complete owner subtree.
+    daw::Session reorderedTrack;
+    auto reorderClip=std::make_shared<daw::Clip>(std::vector<float>{0.75f,0.5f,0.25f,0.0f,-0.25f,-0.5f,-0.75f,-1.0f});
+    reorderedTrack.import("Detailed strip",reorderClip,0); // track 1, revision 1
+    reorderedTrack.addBus("Reorder bus",1); // bus 2, revision 2
+    reorderedTrack.addTake(1,"Reorder alternate",reorderClip,0,2);
+    reorderedTrack.upsertSend(1,2,-9,true,3);
+    reorderedTrack.upsertTrackVolumeAutomation(1,0,-3,4);
+    reorderedTrack.upsertTrackPanAutomation(1,0,0.25,5);
+    reorderedTrack.addTrackInsert(1,{0,1,2,3,"Reorder insert",false,0,{}},6);
+    reorderedTrack.add("Middle strip",7); // track 4
+    reorderedTrack.add("Last strip",8); // track 5
+    const auto reorderOriginal=reorderedTrack.state();
+    daw::Renderer beforeReorderRenderer;beforeReorderRenderer.prepare(reorderOriginal);beforeReorderRenderer.playing.store(true);
+    std::array<float,4> beforeReorderLeft{},beforeReorderRight{};beforeReorderRenderer.render(beforeReorderLeft.data(),beforeReorderRight.data(),4);
+    reorderedTrack.moveTrack(1,2,9);
+    CHECK(reorderedTrack.state().revision==10&&reorderedTrack.state().nextID==reorderOriginal.nextID&&reorderedTrack.state().tracks.size()==3);
+    CHECK(reorderedTrack.state().tracks[0].id==4&&reorderedTrack.state().tracks[1].id==5&&reorderedTrack.state().tracks[2]==reorderOriginal.tracks[0]);
+    daw::Renderer afterReorderRenderer;afterReorderRenderer.prepare(reorderedTrack.state());afterReorderRenderer.playing.store(true);
+    std::array<float,4> afterReorderLeft{},afterReorderRight{};afterReorderRenderer.render(afterReorderLeft.data(),afterReorderRight.data(),4);
+    CHECK(beforeReorderLeft==afterReorderLeft&&beforeReorderRight==afterReorderRight);
+    rejects([&]{reorderedTrack.moveTrack(1,0,9);}); // stale
+    rejects([&]{reorderedTrack.moveTrack(99,0,10);});
+    rejects([&]{reorderedTrack.moveTrack(1,3,10);});
+    reorderedTrack.moveTrack(1,2,10);CHECK(reorderedTrack.state().revision==10); // same-position no-op
+    reorderedTrack.undo(10);CHECK(reorderedTrack.state().revision==11&&reorderedTrack.state().tracks==reorderOriginal.tracks&&reorderedTrack.state().nextID==reorderOriginal.nextID);
+    reorderedTrack.redo(11);CHECK(reorderedTrack.state().revision==12&&reorderedTrack.state().tracks[2]==reorderOriginal.tracks[0]&&reorderedTrack.state().nextID==reorderOriginal.nextID);
     daw::Session routing;routing.add("Lead",0);routing.addBus("Vocal Bus",1);routing.addBus("FX Return",2);routing.routeTrack(1,2,3);routing.routeBus(2,3,4);routing.upsertSend(1,3,-12,false,5);
     CHECK(routing.state().revision==6&&routing.state().tracks[0].outputBus==2&&routing.state().tracks[0].sends==std::vector<daw::Send>({{3,-12,false}}));
     rejects([&]{routing.routeBus(3,2,6);});CHECK(routing.state().revision==6&&routing.state().buses[1].outputBus==0);
@@ -191,6 +219,23 @@ int main() { try {
     removable={};removable.struct_size=sizeof(removable);CHECK(daw_get_track(deleteBridge.get(),0,&removable)==0&&removable.id==1&&std::string(removable.name)=="Remove me");
     CHECK(daw_redo(deleteBridge.get(),4)==0);deleteSnapshot.struct_size=sizeof(deleteSnapshot);CHECK(daw_get_snapshot(deleteBridge.get(),&deleteSnapshot)==0&&deleteSnapshot.revision==5&&deleteSnapshot.track_count==1);
     CHECK(daw_add_track(deleteBridge.get(),"New ID",5)==0);retained={};retained.struct_size=sizeof(retained);CHECK(daw_get_track(deleteBridge.get(),1,&retained)==0&&retained.id==3);
+
+    // The C bridge exposes the same optimistic final-index contract, including
+    // a successful no-op that leaves the session revision unchanged.
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> moveBridge(daw_create(),daw_destroy);CHECK(moveBridge);
+    CHECK(daw_add_track(moveBridge.get(),"First",0)==0);CHECK(daw_add_track(moveBridge.get(),"Second",1)==0);CHECK(daw_add_track(moveBridge.get(),"Third",2)==0);
+    daw_track first{};first.struct_size=sizeof(first);daw_track second{};second.struct_size=sizeof(second);daw_track third{};third.struct_size=sizeof(third);
+    CHECK(daw_get_track(moveBridge.get(),0,&first)==0&&daw_get_track(moveBridge.get(),1,&second)==0&&daw_get_track(moveBridge.get(),2,&third)==0);
+    const auto firstID=first.id,secondID=second.id,thirdID=third.id;
+    CHECK(daw_move_track(moveBridge.get(),first.id,2,2)==1); // stale revision
+    CHECK(daw_move_track(moveBridge.get(),first.id,3,3)==1); // final index must exist
+    CHECK(daw_move_track(moveBridge.get(),99,0,3)==1);
+    CHECK(daw_move_track(moveBridge.get(),first.id,2,3)==0);
+    daw_snapshot moveSnapshot{};moveSnapshot.struct_size=sizeof(moveSnapshot);CHECK(daw_get_snapshot(moveBridge.get(),&moveSnapshot)==0&&moveSnapshot.revision==4&&moveSnapshot.track_count==3);
+    first={};first.struct_size=sizeof(first);second={};second.struct_size=sizeof(second);third={};third.struct_size=sizeof(third);CHECK(daw_get_track(moveBridge.get(),0,&first)==0&&daw_get_track(moveBridge.get(),1,&second)==0&&daw_get_track(moveBridge.get(),2,&third)==0&&first.id==secondID&&second.id==thirdID&&third.id==firstID);
+    CHECK(daw_move_track(moveBridge.get(),firstID,2,4)==0);moveSnapshot.struct_size=sizeof(moveSnapshot);CHECK(daw_get_snapshot(moveBridge.get(),&moveSnapshot)==0&&moveSnapshot.revision==4);
+    CHECK(daw_undo(moveBridge.get(),4)==0);moveSnapshot.struct_size=sizeof(moveSnapshot);CHECK(daw_get_snapshot(moveBridge.get(),&moveSnapshot)==0&&moveSnapshot.revision==5);first={};first.struct_size=sizeof(first);CHECK(daw_get_track(moveBridge.get(),0,&first)==0&&std::string(first.name)=="First");
+    CHECK(daw_redo(moveBridge.get(),5)==0);moveSnapshot.struct_size=sizeof(moveSnapshot);CHECK(daw_get_snapshot(moveBridge.get(),&moveSnapshot)==0&&moveSnapshot.revision==6);first={};first.struct_size=sizeof(first);CHECK(daw_get_track(moveBridge.get(),2,&first)==0&&std::string(first.name)=="First");
 
     // v35 accepts the supported 44.1 kHz PCM WAV family at the public C ABI
     // boundary, converts it once into the fixed 48 kHz project representation,

@@ -243,6 +243,10 @@ int daw_add_track(daw_session*, const char* name, uint64_t expected_revision);
 /* Removes one complete track in a single revision.  Its clips, takes, sends,
  * automation and inserts are removed with it; Undo restores the exact track. */
 int daw_remove_track(daw_session*, uint64_t track_id, uint64_t expected_revision);
+/* Moves track_id to zero-based new_index in the resulting track order. The
+ * index must be less than the current track count; a same-position move is a
+ * successful no-op and does not advance the revision. */
+int daw_move_track(daw_session*, uint64_t track_id, uint32_t new_index, uint64_t expected_revision);
 int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expected_revision);
 int daw_set_gain(daw_session*, uint64_t id, double gain_db, uint64_t expected_revision);
 int daw_set_pan(daw_session*,uint64_t id,double pan,uint64_t expected_revision);

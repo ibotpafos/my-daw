@@ -112,5 +112,47 @@ int main(int argc, char** argv){try{
     daw::writeDraft(deleteProject.state(),deletedPath);
     const auto persistedUndo=daw::readDraft(deletedPath);
     CHECK(persistedUndo.revision==14&&persistedUndo.nextID==beforeDelete.nextID&&sameTracks(persistedUndo.tracks,beforeDelete.tracks));
-    std::cout<<"PASS: crash atomicity, immutable snapshots, bounded job saturation, explicit busy, released-handle/session lifetime independence, delete-track storage roundtrip and undo restore\n";
+
+    // Track ordering is durable project state. Moving an owning Track must
+    // carry its complete subtree and SQLite position with it, while Undo
+    // restores the previous ordering before a subsequent save.
+    const auto firstClip=std::make_shared<daw::Clip>(std::vector<float>(960,0.1f));
+    const auto secondClip=std::make_shared<daw::Clip>(std::vector<float>(960,0.2f));
+    const auto thirdClip=std::make_shared<daw::Clip>(std::vector<float>(960,0.3f));
+    const auto firstTake=std::make_shared<daw::Clip>(std::vector<float>(480,-0.1f));
+    const auto secondTake=std::make_shared<daw::Clip>(std::vector<float>(480,-0.2f));
+    const auto thirdTake=std::make_shared<daw::Clip>(std::vector<float>(480,-0.3f));
+    daw::Session reorderProject;
+    reorderProject.import("First",firstClip,0);
+    reorderProject.import("Second",secondClip,1);
+    reorderProject.import("Third",thirdClip,2);
+    reorderProject.addTake(1,"First take",firstTake,10,3);
+    reorderProject.addTake(2,"Second take",secondTake,20,4);
+    reorderProject.addTake(3,"Third take",thirdTake,30,5);
+    reorderProject.upsertTrackVolumeAutomation(1,100,-1,6);
+    reorderProject.upsertTrackVolumeAutomation(2,100,-2,7);
+    reorderProject.upsertTrackVolumeAutomation(3,100,-3,8);
+    reorderProject.upsertTrackPanAutomation(1,100,-0.2,9);
+    reorderProject.upsertTrackPanAutomation(2,100,0,10);
+    reorderProject.upsertTrackPanAutomation(3,100,0.2,11);
+    reorderProject.addTrackInsert(1,{0,1,2,3,"First insert",false,4,{1}},12);
+    reorderProject.addTrackInsert(2,{0,4,5,6,"Second insert",false,5,{2}},13);
+    reorderProject.addTrackInsert(3,{0,7,8,9,"Third insert",true,6,{3}},14);
+    reorderProject.upsertPluginParameterAutomation(daw::PluginOwner::Track,1,4,1,"First parameter",100,0.1,15);
+    reorderProject.upsertPluginParameterAutomation(daw::PluginOwner::Track,2,5,2,"Second parameter",100,0.2,16);
+    reorderProject.upsertPluginParameterAutomation(daw::PluginOwner::Track,3,6,3,"Third parameter",100,0.3,17);
+    const auto beforeReorder=reorderProject.state();
+    CHECK(beforeReorder.tracks.size()==3&&beforeReorder.nextID==7);
+    reorderProject.moveTrack(3,0,18);
+    CHECK(reorderProject.state().revision==19&&reorderProject.state().nextID==beforeReorder.nextID&&sameTrack(reorderProject.state().tracks[0],beforeReorder.tracks[2])&&sameTrack(reorderProject.state().tracks[1],beforeReorder.tracks[0])&&sameTrack(reorderProject.state().tracks[2],beforeReorder.tracks[1]));
+    const auto reorderedPath=(directory/"reorder-track.mydawdraft").string();
+    daw::writeDraft(reorderProject.state(),reorderedPath);
+    const auto persistedReorder=daw::readDraft(reorderedPath);
+    CHECK(persistedReorder.revision==19&&persistedReorder.nextID==beforeReorder.nextID&&sameTracks(persistedReorder.tracks,reorderProject.state().tracks));
+    reorderProject.undo(19);
+    CHECK(reorderProject.state().revision==20&&reorderProject.state().nextID==beforeReorder.nextID&&sameTracks(reorderProject.state().tracks,beforeReorder.tracks));
+    daw::writeDraft(reorderProject.state(),reorderedPath);
+    const auto persistedReorderUndo=daw::readDraft(reorderedPath);
+    CHECK(persistedReorderUndo.revision==20&&persistedReorderUndo.nextID==beforeReorder.nextID&&sameTracks(persistedReorderUndo.tracks,beforeReorder.tracks));
+    std::cout<<"PASS: crash atomicity, immutable snapshots, bounded job saturation, explicit busy, released-handle/session lifetime independence, delete-track storage roundtrip and undo restore, track-reorder storage roundtrip and undo restore\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

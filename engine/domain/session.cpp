@@ -236,6 +236,21 @@ void Session::removeTrack(uint64_t id, uint64_t expected) {
     next.tracks.erase(track);
     commit(std::move(next));
 }
+void Session::moveTrack(uint64_t id, uint32_t newIndex, uint64_t expected) {
+    check(expected);
+    State next=current;
+    const auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==id;});
+    if(track==next.tracks.end())throw Error("Track not found");
+    if(newIndex>=next.tracks.size())throw Error("Track index out of range");
+    const auto currentIndex=static_cast<uint32_t>(std::distance(next.tracks.begin(),track));
+    if(currentIndex==newIndex)return;
+    // Move the complete Track value so all owned media, routing, automation,
+    // inserts and IDs remain exactly intact in the one history commit.
+    Track moved=std::move(*track);
+    next.tracks.erase(track);
+    next.tracks.insert(next.tracks.begin()+newIndex,std::move(moved));
+    commit(std::move(next));
+}
 void Session::import(const std::string& name, std::shared_ptr<const Clip> clip, uint64_t expected) {
     importAt(name,std::move(clip),0,expected);
 }
