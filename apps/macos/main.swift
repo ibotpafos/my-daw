@@ -415,6 +415,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let view=NSView();view.setContentHuggingPriority(.defaultLow,for:.horizontal);view.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);return view
     }
     func trackAccent(_ index:Int) -> NSColor { [.systemBlue,.systemTeal,.systemOrange,.systemPurple,.systemRed][index % 5] }
+    /// Durable v19 color wins; the positional palette remains the fallback.
+    func durableTrackColor(_ hex:UInt64,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(UInt32(hex)) : trackAccent(index) }
+    func durableTrackColor(_ hex:UInt32,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(hex) : trackAccent(index) }
     func setTimelineZoom(_ zoom:CGFloat){timelineZoom=min(8,max(1,zoom));timelineWidthConstraint?.constant=1400*timelineZoom;UserDefaults.standard.set(Double(timelineZoom),forKey:"timelineZoom");timelineDocument?.needsLayout=true;timelineRuler.needsDisplay=true}
     @objc func zoomIn(){setTimelineZoom(timelineZoom*2)}
     @objc func zoomOut(){setTimelineZoom(timelineZoom/2)}
@@ -691,7 +694,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true)])
         if let projectMenu = main.items.last?.submenu {
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
@@ -710,9 +713,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         edit.submenu = submenu; main.addItem(edit); NSApp.mainMenu = main
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(deleteCurrentSelectedTrack) || menuItem.action == #selector(moveSelectedTrackUp) || menuItem.action == #selector(moveSelectedTrackDown) {
+        if menuItem.action == #selector(deleteCurrentSelectedTrack) || menuItem.action == #selector(moveSelectedTrackUp) || menuItem.action == #selector(moveSelectedTrackDown) || menuItem.action == #selector(menuTrackDuplicate) {
             let selected = inspectorTrackID ?? selectedMixerID
             return !isRecording && automationGesture == nil && pluginParameterGesture == nil && selected.map { mixerKinds[$0] == .track } == true
+        }
+        if menuItem.action == #selector(menuClipSplit) || menuItem.action == #selector(menuClipDuplicate) || menuItem.action == #selector(menuClipDelete) {
+            let selected = inspectorTrackID ?? selectedMixerID
+            return !isRecording && selected.map { mixerKinds[$0] == .track && $0 != 0 } == true && trackIDs.values.contains(selected ?? 0)
         }
         return true
     }
@@ -1088,7 +1095,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             trackIDs[Int(index)] = track.id
             if track.audio_frames > 0 { hasAudio = true }
             var midiClipCount: UInt32 = 0; if track.audio_frames == 0 { _ = daw_get_midi_clip_count(session, track.id, &midiClipCount); if midiClipCount > 0 { hasMidiContent = true } }
-            let accent=trackAccent(Int(index));let number = label(String(format: "%02d", index + 1), size: 12, color: accent)
+            let accent=durableTrackColor(track.color,Int(index));let number = label(String(format: "%02d", index + 1), size: 12, color: accent)
             number.widthAnchor.constraint(equalToConstant: 26).isActive = true
             let field = NSTextField(string: name); field.tag = Int(index); field.delegate = self
             field.font = .systemFont(ofSize: 15, weight: .medium); field.isBordered = false; field.drawsBackground = false
@@ -1113,7 +1120,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let selectedTake=min(selectedTakes[track.id] ?? 0,max(0,Int(track.take_count)-1));selectedTakes[track.id]=selectedTake;takePopup.selectItem(at:selectedTake);takePopups[Int(index)]=takePopup
             let applyComp=button("В comp",#selector(applyComp(_:)));applyComp.tag=Int(index);applyComp.isEnabled=track.take_count>1
             var clips: [ClipGeometry] = []
-            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks)) } }
+            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db)) } }
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
             let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
@@ -1166,6 +1173,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onEdit = { [weak self] clipIndex,start,offset,length in self?.applyClipEdit(trackID,clipIndex,start,offset,length) }
                 wave.onFadeEdit = { [weak self] clipIndex,fadeIn,fadeOut in self?.applyClipFades(trackID,clipIndex,fadeIn,fadeOut) }
                 wave.onSelect = { [weak self] clipIndex in self?.selectedClips[trackID]=clipIndex;self?.updateClipInspector(trackID,clipIndex) }
+                wave.onClipMenu = { [weak self] clipIndex in self?.clipContextMenu(trackID,clipIndex) }
+                wave.onClipHotkey = { [weak self] key in self?.clipHotkey(trackID,key) }
                 wave.setAccessibilityLabel("Позиция на аудиоволне: \(name)")
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
                 wave.onToggle = { [weak self] in guard let self else { return }; if self.isPlaying { self.stopAudio() } else { self.playAudio() } }
@@ -1179,7 +1188,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
-            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)}
+            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }
         let masterHeading=label("MASTER / PLUG-INS",size:10,color:.tertiaryLabelColor);masterHeading.font = .systemFont(ofSize:10,weight:.semibold)
@@ -1704,6 +1713,95 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         beginTrackImport(url)
     }
     func performTrackAction(_ id:UInt64,_ action:Selector) {guard let index=trackIDs.first(where:{$0.value==id})?.key else{return};let sender=NSButton();sender.tag=index;_ = NSApp.sendAction(action,to:self,from:sender)}
+    // MARK: - Редактор клипов и дорожек (v19)
+    // Общие палитры цветов клипа, дорожки и MIDI-клипа; значения — доменные
+    // uint32 0xRRGGBB, 0 сбрасывает durable-цвет обратно к акценту по позиции.
+    static let colorPalette: [(String,UInt32)] = [("Красный",0xE57373),("Оранжевый",0xFFB74D),("Жёлтый",0xFFF176),("Зелёный",0x81C784),("Бирюзовый",0x4DB6AC),("Синий",0x64B5F6),("Фиолетовый",0xBA68C8),("Розовый",0xF06292)]
+    final class ClipActionPayload { let trackID:UInt64; let clipIndex:Int; let color:UInt32; init(_ trackID:UInt64,_ clipIndex:Int,_ color:UInt32=0){self.trackID=trackID;self.clipIndex=clipIndex;self.color=color} }
+    func clipContextMenu(_ trackID:UInt64,_ clipIndex:Int)->NSMenu {
+        let menu=NSMenu(); menu.autoenablesItems=false
+        let colorRoot=NSMenuItem(title:"Цвет клипа",action:nil,keyEquivalent:""); let colors=NSMenu(title:"Цвет клипа"); colors.autoenablesItems=false
+        for (name,hex) in Self.colorPalette { let item=NSMenuItem(title:name,action:#selector(pickClipColor(_:)),keyEquivalent:""); item.target=self; item.representedObject=ClipActionPayload(trackID,clipIndex,hex); colors.addItem(item) }
+        let reset=NSMenuItem(title:"Без цвета",action:#selector(pickClipColor(_:)),keyEquivalent:""); reset.target=self; reset.representedObject=ClipActionPayload(trackID,clipIndex,0)
+        colors.addItem(.separator()); colors.addItem(reset); colorRoot.submenu=colors; menu.addItem(colorRoot)
+        let gain=NSMenuItem(title:"Громкость клипа…",action:#selector(editClipGain(_:)),keyEquivalent:""); gain.target=self; gain.representedObject=ClipActionPayload(trackID,clipIndex); menu.addItem(gain)
+        menu.addItem(.separator())
+        for (title,selector) in [("Разделить в позиции курсора",#selector(splitClipFromMenu(_:))),("Дублировать клип",#selector(duplicateClipFromMenu(_:))),("Удалить клип",#selector(deleteClipFromMenu(_:)))] {
+            let item=NSMenuItem(title:title,action:selector,keyEquivalent:""); item.target=self; item.representedObject=ClipActionPayload(trackID,clipIndex); menu.addItem(item)
+        }
+        return menu
+    }
+    @objc func pickClipColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_clip_color(session,p.trackID,UInt32(p.clipIndex),p.color,revision)){selectedClips[p.trackID]=p.clipIndex;refresh(); pollTransport()} }
+    @objc func editClipGain(_ sender:NSMenuItem){
+        guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}
+        var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size)
+        guard check(daw_get_clip(session,p.trackID,UInt32(p.clipIndex),&clip)) else{return}
+        finishEditing(); stopAudio()
+        let alert=NSAlert(); alert.messageText="Громкость клипа"; alert.informativeText="Децибелы от −60 до +12; применяются к исходному сигналу до фейдера дорожки."
+        let field=NSTextField(string:String(format:"%+.1f",clip.gain_db)); field.widthAnchor.constraint(equalToConstant:120).isActive=true; field.setAccessibilityLabel("Громкость клипа, децибелы")
+        let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 8; form.addArrangedSubview(label("Громкость, dB",size:12)); form.addArrangedSubview(field); form.frame = NSRect(x:0,y:0,width:300,height:64); alert.accessoryView = form
+        alert.addButton(withTitle:"Применить"); alert.addButton(withTitle:"Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn,let value=Double(field.stringValue.replacingOccurrences(of:",",with:".")) else{return}
+        if check(daw_set_clip_gain(session,p.trackID,UInt32(p.clipIndex),value,revision)){refresh(); pollTransport()}
+    }
+    @objc func splitClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(splitClipAtCursor(_:))) }
+    @objc func duplicateClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(duplicateSelectedClip(_:))) }
+    @objc func deleteClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
+    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
+    func commitTrackColor(_ id:UInt64,_ color:UInt32){ guard !isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_track_color(session,id,color,revision)){refresh(); pollTransport()} }
+    @objc func pickTrackColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; commitTrackColor(p.trackID,p.color) }
+    func showTrackPalette(_ id:UInt64){
+        guard !isRecording,automationGesture==nil,pluginParameterGesture==nil else{return}
+        let menu=NSMenu(); menu.autoenablesItems=false
+        for (name,hex) in Self.colorPalette { let item=NSMenuItem(title:name,action:#selector(pickTrackColor(_:)),keyEquivalent:""); item.target=self; item.representedObject=ClipActionPayload(id,0,hex); menu.addItem(item) }
+        menu.addItem(.separator()); let reset=NSMenuItem(title:"Без цвета (акцент по позиции)",action:#selector(pickTrackColor(_:)),keyEquivalent:""); reset.target=self; reset.representedObject=ClipActionPayload(id,0,0); menu.addItem(reset)
+        menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
+    }
+    func duplicateTrackNow(_ id:UInt64){ guard !isRecording else{return}; finishEditing(); stopAudio(); var newID:UInt64=0; if check(daw_duplicate_track(session,id,&newID,revision)){refresh(); pollTransport()} }
+    func selectedMidiClip(_ trackID:UInt64)->UInt32? {
+        var count:UInt32=0; guard daw_get_midi_clip_count(session,trackID,&count)==0,count>0 else{storageMessage("На дорожке нет MIDI-клипа.");return nil}
+        let index=midiClipIndex != nil && UInt32(midiClipIndex!) < count ? UInt32(midiClipIndex!) : 0
+        return index
+    }
+    func showMidiTranspose(_ id:UInt64){
+        guard !isRecording,let clip=selectedMidiClip(id) else{return}
+        finishEditing(); stopAudio()
+        let alert=NSAlert(); alert.messageText="Транспонировать MIDI-клип"; alert.informativeText="Полутонов от −127 до 127; питчи клампятся в 0…127."
+        let field=NSTextField(string:"+12"); field.widthAnchor.constraint(equalToConstant:120).isActive=true; field.setAccessibilityLabel("Полутонов")
+        let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 8; form.addArrangedSubview(label("Полутонов",size:12)); form.addArrangedSubview(field); form.frame = NSRect(x:0,y:0,width:300,height:64); alert.accessoryView = form
+        alert.addButton(withTitle:"Применить"); alert.addButton(withTitle:"Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn,let value=Int(field.stringValue),value >= -127,value <= 127 else{return}
+        if check(daw_transpose_midi_clip(session,id,clip,Int32(value),revision)){refresh(); updateMixerInspector(id)}
+    }
+    func showMidiQuantize(_ id:UInt64){
+        guard !isRecording,let clip=selectedMidiClip(id) else{return}
+        finishEditing(); stopAudio()
+        let alert=NSAlert(); alert.messageText="Квантовать MIDI-клип"; alert.informativeText="Старты нот вытягиваются к ближайшей сетке по темпо-карте."
+        let popup=NSPopUpButton(); popup.widthAnchor.constraint(equalToConstant:220).isActive=true
+        let grids:[(String,Double)]=[("1/4 — такт",1.0),("1/8 — полтакта",0.5),("1/16 — четверть такта",0.25),("1/32",0.125),("1/4 триоль",2.0/3.0),("1/8 триоль",1.0/3.0)]
+        for (title,_) in grids { popup.addItem(withTitle:title) }
+        popup.setAccessibilityLabel("Сетка квантования")
+        let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 8; form.addArrangedSubview(label("Сетка",size:12)); form.addArrangedSubview(popup); form.frame = NSRect(x:0,y:0,width:280,height:64); alert.accessoryView = form
+        alert.addButton(withTitle:"Квантовать"); alert.addButton(withTitle:"Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else{return}
+        if check(daw_quantize_midi_clip(session,id,clip,grids[popup.indexOfSelectedItem].1,revision)){refresh(); updateMixerInspector(id)}
+    }
+    func showMidiClipColor(_ id:UInt64){
+        guard !isRecording,let clip=selectedMidiClip(id) else{return}
+        let menu=NSMenu(); menu.autoenablesItems=false
+        for (name,hex) in Self.colorPalette { let item=NSMenuItem(title:name,action:#selector(pickMidiColor(_:)),keyEquivalent:""); item.target=self; item.representedObject=ClipActionPayload(id,Int(clip),hex); menu.addItem(item) }
+        menu.addItem(.separator()); let reset=NSMenuItem(title:"Без цвета",action:#selector(pickMidiColor(_:)),keyEquivalent:""); reset.target=self; reset.representedObject=ClipActionPayload(id,Int(clip),0); menu.addItem(reset)
+        menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
+    }
+    @objc func pickMidiColor(_ sender:NSMenuItem){
+        guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}
+        stopAudio()
+        if check(daw_set_midi_clip_color(session,p.trackID,UInt32(p.clipIndex),p.color,revision)){refresh(); updateMixerInspector(p.trackID)}
+    }
+    @objc func menuClipSplit(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(splitClipAtCursor(_:))) }
+    @objc func menuClipDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(duplicateSelectedClip(_:))) }
+    @objc func menuClipDelete(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(deleteSelectedClip(_:))) }
+    @objc func menuTrackDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; duplicateTrackNow(id) }
     func deleteCurrentSelectedClip(){guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return};performTrackAction(id,#selector(deleteSelectedClip(_:)))}
     @objc func deleteCurrentSelectedTrack() {
         guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track else { return }

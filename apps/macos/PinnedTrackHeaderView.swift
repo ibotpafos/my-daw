@@ -60,6 +60,13 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
     var onDelete: ((UInt64) -> Void)?
     var onDeleteTrack: ((UInt64) -> Void)?
     var onCrossfade: ((UInt64) -> Void)?
+    /// Палитра цвета дорожки открывается контроллером у курсора; результат —
+    /// durable uint32 0xRRGGBB (0 = сброс).
+    var onTrackColor: ((UInt64) -> Void)?
+    var onDuplicateTrack: ((UInt64) -> Void)?
+    var onMidiTranspose: ((UInt64) -> Void)?
+    var onMidiQuantize: ((UInt64) -> Void)?
+    var onMidiColor: ((UInt64) -> Void)?
     /// Zero-based insertion index in the current ordering, before the source
     /// channel is removed. The controller preserves selection by channel ID.
     var onMoveToIndex: ((UInt64, Int) -> Void)?
@@ -120,7 +127,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         mute.action = #selector(changeMute)
         solo.action = #selector(changeSolo)
 
-        actionMenu.addItems(withTitles: ["•••", "Переместить выше", "Переместить ниже", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку"])
+        actionMenu.addItems(withTitles: ["•••", "Переместить выше", "Переместить ниже", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку", "Дублировать дорожку", "Цвет дорожки…", "Транспонировать MIDI-клип…", "Квантовать MIDI-клип…", "Цвет MIDI-клипа…"])
         actionMenu.item(at: 0)?.isEnabled = false
         actionMenu.menu?.addItem(.separator())
         actionMenu.target = self
@@ -260,6 +267,11 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         case 7: onCrossfade?(model.id)
         case 8: onDelete?(model.id)
         case 9: onDeleteTrack?(model.id)
+        case 10: onDuplicateTrack?(model.id)
+        case 11: onTrackColor?(model.id)
+        case 12: onMidiTranspose?(model.id)
+        case 13: onMidiQuantize?(model.id)
+        case 14: onMidiColor?(model.id)
         default: break
         }
     }

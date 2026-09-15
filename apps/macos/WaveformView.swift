@@ -9,6 +9,14 @@ struct ClipGeometry {
     var takeIndex: UInt32 = 0
     var sourceFramesForTake: UInt64 = 0
     var sourcePeaks: [Float] = []
+    var color: UInt32 = 0
+    var gainDb: Double = 0
+}
+
+/// Дurable 24-bit RGB из домена (0xRRGGBB); 0 означает «цвета нет» и
+/// оставляет акцент дорожки.
+func dawColorFromHex(_ hex: UInt32) -> NSColor {
+    NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255.0, green: CGFloat((hex >> 8) & 0xFF) / 255.0, blue: CGFloat(hex & 0xFF) / 255.0, alpha: 1)
 }
 
 @MainActor
@@ -43,6 +51,11 @@ final class WaveformView: NSView {
     var onEditBegin: (() -> Void)?
     var onEdit: ((Int, UInt64, UInt64, UInt64) -> Void)?
     var onFadeEdit: ((Int, UInt64, UInt64) -> Void)?
+    /// Контекстное меню клипа по правой кнопке: контроллер собирает действия
+    /// (цвет, громкость, дубль, split, delete) для выбранного индекса.
+    var onClipMenu: ((Int) -> NSMenu?)?
+    /// Горячие клавиши редактора клипов в фокусе волны: "s", "d", "delete".
+    var onClipHotkey: ((String) -> Void)?
     var onSelect: ((Int) -> Void)?
     private var gesture: (kind: Int, x: CGFloat, start: UInt64, offset: UInt64, length: UInt64, fadeIn: UInt64, fadeOut: UInt64)?
     var projectFrames: UInt64 = 0
@@ -60,7 +73,7 @@ final class WaveformView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.slider)
         setAccessibilityLabel("Позиция на аудиоволне")
-        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп.")
+        setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, Delete — удалить выбранный клип. Правая кнопка — меню клипа.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     private var lane: NSRect { NSRect(x: 14, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - 28), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
@@ -169,6 +182,16 @@ final class WaveformView: NSView {
         if event.keyCode == 53, let g = gesture {
             gesture = nil; let current=clips[selectedIndex]; clips[selectedIndex]=ClipGeometry(start:g.start,sourceOffset:g.offset,length:g.length,fadeIn:g.fadeIn,fadeOut:g.fadeOut,takeIndex:current.takeIndex,sourceFramesForTake:current.sourceFramesForTake,sourcePeaks:current.sourcePeaks); needsDisplay = true; return
         }
+        // Редакторские горячие клавиши работают только без модификаторов и при
+        // пустом тексте ввода: Cmd+S остаётся «Сохранить» в главном меню.
+        if gesture == nil, !event.modifierFlags.contains(.command), !clips.isEmpty {
+            if event.keyCode == 51 || event.keyCode == 117 { onClipHotkey?("delete"); return }
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "s": onClipHotkey?("s"); return
+            case "d": onClipHotkey?("d"); return
+            default: break
+            }
+        }
         switch event.keyCode {
         case 123: seek(playhead > 48000 ? playhead - 48000 : 0)
         case 124: seek(min(projectFrames, playhead + 48000))
@@ -177,6 +200,13 @@ final class WaveformView: NSView {
         case 49: onToggle?()
         default: super.keyDown(with: event)
         }
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let hit = clips.indices.last(where: { hitZone(for: $0, at: point) != .none }) else { return }
+        if hit != selectedIndex { selectedIndex = hit; onSelect?(hit); needsDisplay = true }
+        guard let menu = onClipMenu?(hit) else { return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
     override func accessibilityValue() -> Any? { String(format: "%.2f секунд", Double(playhead) / 48000) }
     override func accessibilityPerformIncrement() -> Bool { seek(min(projectFrames, playhead + 48000)); return true }
@@ -216,8 +246,9 @@ final class WaveformView: NSView {
         for (index,clip) in clips.enumerated() {
             let rect = clipRect(clip); let clipX=rect.minX; let clipWidth=rect.width
             let selected = index == selectedIndex; let hovered = index == hoveredIndex
+            let body = clip.color != 0 ? dawColorFromHex(clip.color) : trackAccent
             if selected { NSColor.systemMint.withAlphaComponent(0.10).setFill(); NSBezierPath(roundedRect: rect.insetBy(dx: -3, dy: -3), xRadius: 7, yRadius: 7).fill() }
-            (selected ? trackAccent.withAlphaComponent(0.82) : trackAccent.withAlphaComponent(hovered ? 0.48 : 0.30)).setFill()
+            (selected ? body.withAlphaComponent(0.82) : body.withAlphaComponent(hovered ? 0.48 : 0.30)).setFill()
             NSBezierPath(roundedRect:rect,xRadius:6,yRadius:6).fill()
             (selected ? NSColor.systemMint : NSColor(white:1,alpha:0.22)).withAlphaComponent(selected ? 0.95 : (hovered ? 0.55 : 0.25)).setStroke()
             let border = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6); border.lineWidth = selected ? 1.5 : 1; border.stroke()
@@ -237,7 +268,7 @@ final class WaveformView: NSView {
             let fadeOutX = clip.fadeOut > 0 ? clipX+clipWidth*CGFloat(Double(clip.length-clip.fadeOut)/Double(clip.length)) : clipX+clipWidth-min(20,clipWidth*0.18)
             let fadeInPath=NSBezierPath(); fadeInPath.move(to:NSPoint(x:clipX,y:rect.maxY)); fadeInPath.line(to:NSPoint(x:fadeInX,y:rect.minY)); fadeInPath.stroke()
             let fadeOutPath=NSBezierPath(); fadeOutPath.move(to:NSPoint(x:fadeOutX,y:rect.minY)); fadeOutPath.line(to:NSPoint(x:rect.maxX,y:rect.maxY)); fadeOutPath.stroke()
-            if selected || hovered { let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.white.withAlphaComponent(0.72)]; ("Клип \(index + 1)" as NSString).draw(at:NSPoint(x:rect.minX+8,y:rect.minY+7),withAttributes:attrs) }
+            if selected || hovered { let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.white.withAlphaComponent(0.72)]; let tag="Клип \(index + 1)\(clip.gainDb == 0 ? "" : String(format:" · %+.1f dB",clip.gainDb))"; (tag as NSString).draw(at:NSPoint(x:rect.minX+8,y:rect.minY+7),withAttributes:attrs) }
         }
         if !automationPoints.isEmpty {
             func automationY(_ gain:Double)->CGFloat{let visible=min(12,max(-60,gain));return lane.maxY-CGFloat((visible+60)/72)*lane.height}
