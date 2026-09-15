@@ -12,7 +12,7 @@
 
 Audio browser перечисляет до 1000 WAV из папки, которую пользователь явно выбрал через системную панель. My DAW не сканирует `Documents`, домашнюю папку или весь диск автоматически и не сохраняет фоновый доступ к выбранной папке. Поиск фильтрует имя файла и имя родительской папки; Add импортирует выбранный WAV как новую дорожку через `daw_import_wav`.
 
-Текущий import contract остаётся прежним: RIFF WAV, 48 kHz, mono/stereo, PCM16/24/32 или float32, до 60 секунд и 32 MiB. [Версия 1.34](61-audio-browser-preview.md) добавила read-only WAV audition через AVFoundation; более богатые media metadata и persistent favorites по-прежнему требуют отдельного probe/catalog API.
+Текущий import contract: RIFF PCM WAV mono/stereo, PCM16/24/32 или float32, 44,1 / 48 / 88,2 / 96 / 192 kHz, до 60 секунд и 32 MiB. На macOS частота приводится к внутренним 48 kHz до domain command, поэтому Browser Add и toolbar import дают одинаковый результат; детали ограничений и проверок описаны в [версии 1.35](62-variable-rate-wav-import.md). [Версия 1.34](61-audio-browser-preview.md) добавила read-only WAV audition через AVFoundation; более богатые media metadata и persistent favorites по-прежнему требуют отдельного probe/catalog API.
 
 ## Plug-in browser
 
@@ -22,6 +22,6 @@ Add направляет выбранный эффект в текущий track
 
 ## Границы среза
 
-Browser selection и раскрытая вкладка являются локальным состоянием UI и не входят в переносимый музыкальный проект. Native vendor editors, arbitrary sample-rate conversion и runtime plug-in sandbox не входят в этот срез. [1.24.0](51-pinned-headers-keyboard.md) добавил pinned track headers и единый keyboard command boundary.
+Browser selection и раскрытая вкладка являются локальным состоянием UI и не входят в переносимый музыкальный проект. Native vendor editors и runtime plug-in sandbox не входят в этот срез. Поддержка других codec/container, WAV extensible/RF64 и non-Apple resampling остаётся отдельной задачей. [1.24.0](51-pinned-headers-keyboard.md) добавил pinned track headers и единый keyboard command boundary.
 
 Выполнена compile/build проверка локального macOS bundle. QA, запуск приложения, прослушивание, hardware и сторонняя vendor matrix не выполнялись по текущему режиму разработки.

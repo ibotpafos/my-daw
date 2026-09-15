@@ -19,6 +19,21 @@ std::vector<unsigned char> wav() {
     for(size_t p=44;p<b.size();p+=2)put(p,8192,2);
     return b;
 }
+std::vector<unsigned char> wavAtRate(uint32_t rate, uint32_t frames, uint16_t channels = 1) {
+    const uint32_t align = channels * 2;
+    std::vector<unsigned char> b(44 + size_t(frames) * align);
+    std::memcpy(b.data(), "RIFF", 4); std::memcpy(b.data() + 8, "WAVEfmt ", 8); std::memcpy(b.data() + 36, "data", 4);
+    auto put=[&](size_t p,uint32_t v,int n){for(int i=0;i<n;++i)b[p+i]=static_cast<unsigned char>(v>>(8*i));};
+    put(4,uint32_t(b.size()-8),4); put(16,16,4); put(20,1,2); put(22,channels,2); put(24,rate,4);
+    put(28,rate*align,4); put(32,align,2); put(34,16,2); put(40,uint32_t(frames)*align,4);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        for (uint16_t channel = 0; channel < channels; ++channel) {
+            const int16_t sample = channels == 2 && channel == 1 ? -4096 : 8192;
+            put(44 + (size_t(frame) * channels + channel) * 2, static_cast<uint16_t>(sample), 2);
+        }
+    }
+    return b;
+}
 int main(){try{
     daw::CaptureBuffer capture(4); float captured[]={0.25f,-0.5f,NAN,20.0f,0.75f};
     capture.writeMono(captured,5); CHECK(capture.frames()==4 && capture.overflowed());
@@ -37,6 +52,28 @@ int main(){try{
     auto truncated=bytes; truncated.pop_back(); rejects([&]{daw::decodeWav(truncated);});
     auto wrongRate=bytes; wrongRate[24]=0x44; wrongRate[25]=0xac; rejects([&]{daw::decodeWav(wrongRate);});
     auto wrongAlign=bytes; wrongAlign[32]=7; rejects([&]{daw::decodeWav(wrongAlign);});
+    // All product-supported source rates become deterministic stereo 48 kHz frames.
+    for (uint32_t rate : {44100u, 48000u, 88200u, 96000u, 192000u}) {
+        const uint32_t sourceFrames = rate;
+#ifndef __APPLE__
+        if (rate != 48000) { rejects([&]{daw::decodeWav(wavAtRate(rate, sourceFrames));}); continue; }
+#endif
+        auto converted = daw::decodeWav(wavAtRate(rate, sourceFrames, rate == 96000 ? 2 : 1));
+        CHECK(converted->frames() == 48000);
+        for (float value : converted->samples()) CHECK(std::isfinite(value) && std::abs(value) <= 16);
+        const size_t middle = converted->frames() / 2;
+        if (rate == 96000) CHECK(converted->samples()[middle * 2] > 0 && converted->samples()[middle * 2 + 1] < 0);
+        else CHECK(converted->samples()[middle * 2] == converted->samples()[middle * 2 + 1]);
+    }
+    rejects([&]{daw::decodeWav(wavAtRate(32000, 320));});
+    rejects([&]{daw::decodeWav(wavAtRate(0, 1));});
+#ifdef __APPLE__
+    CHECK(daw::decodeWav(wavAtRate(192000, 1))->frames() == 1);
+#else
+    rejects([&]{daw::decodeWav(wavAtRate(192000, 1));});
+#endif
+    // Source duration is checked before conversion, including high-rate PCM.
+    rejects([&]{daw::decodeWav(wavAtRate(44100, 44100 * 60 + 1));});
     CHECK(clip->peaks().size()==512); for(auto peak:clip->peaks()) CHECK(peak==0.25f);
     std::vector<float> impulse(2000,0); impulse[1500]=0.5f;
     auto transient=std::make_shared<const daw::Clip>(std::move(impulse));

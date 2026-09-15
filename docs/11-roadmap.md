@@ -16,6 +16,8 @@
 
 [1.34.0](61-audio-browser-preview.md) добавляет B-018 browser audition: AVFoundation-плеер открывает только выбранный WAV из явно добавленной папки, не вызывает C bridge и не меняет transport, revision, Undo или draft. Смена выбора, папки, импорт, новый/открытый проект и завершение приложения останавливают preview. Unit-level controller test регистрируется как Apple CTest; ручной слуховой и VoiceOver smoke остаются отдельными gates.
 
+[1.35.0](62-variable-rate-wav-import.md) закрывает ограниченный import compatibility slice: macOS принимает mono/stereo PCM WAV 44,1 / 48 / 88,2 / 96 / 192 kHz и приводит их к каноническим 48 kHz до C++ domain/storage. Использован системный Apple AudioConverter за существующей границей импорта; 48 kHz остаётся direct fast path, проектный формат и realtime callback не меняются. CTest и macOS bundle QA описаны в отдельном документе; listening, physical device matrix и non-Apple resampler остаются отдельными gates.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.

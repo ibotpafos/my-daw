@@ -1153,7 +1153,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         stopBrowserAudioPreview()
         finishEditing()
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.wav]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "WAV 48 кГц, mono/stereo, PCM16/24/32 или float32. До 60 секунд."
+        panel.message = "PCM WAV mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Автоматическая конвертация в 48 кГц; до 60 секунд."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let name = String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120))
         if check(daw_import_wav(session, url.path, name, revision)) {
@@ -1170,7 +1170,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func selectTake(_ sender:NSPopUpButton){guard let id=trackIDs[sender.tag]else{return};selectedTakes[id]=sender.indexOfSelectedItem;refresh()}
     @objc func importTake(_ sender:NSButton){
         guard !isRecording,let id=trackIDs[sender.tag]else{return};finishEditing();stopAudio()
-        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери WAV-дубль. Он сохранится внутри дорожки и не изменит текущий comp."
+        let panel=NSOpenPanel();panel.allowedContentTypes=[.wav];panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.message="Выбери PCM WAV-дубль mono/stereo: 44,1 / 48 / 88,2 / 96 / 192 кГц. Он будет конвертирован в 48 кГц, сохранится внутри дорожки и не изменит текущий comp; до 60 секунд."
         guard panel.runModal() == .OK,let url=panel.url else{return}
         let name=String(url.deletingPathExtension().lastPathComponent.unicodeScalars.prefix(120));let start=rangeStart ?? currentTransportFrame() ?? 0
         var track=daw_track();track.struct_size=UInt32(MemoryLayout<daw_track>.size);guard check(daw_get_track(session,UInt32(sender.tag),&track))else{return}

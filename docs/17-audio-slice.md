@@ -18,11 +18,11 @@
 
 ## Форматы и лимиты
 
-- RIFF/WAVE, mono/stereo, **48 000 Hz**.
+- RIFF/WAVE, mono/stereo, **44 100 / 48 000 / 88 200 / 96 000 / 192 000 Hz**. Нестандартная для проекта частота приводится к 48 000 Hz вне realtime через системный Apple AudioConverter; 48 kHz использует прямой путь без resampling.
 - PCM signed 16/24/32-bit или IEEE float32.
 - До 60 секунд на клип, до 32 MiB входной WAV, до 8 аудиодорожек.
 - До 64 MiB декодированного PCM в текущем проекте; история удерживает не более 128 MiB уникального PCM (старые snapshots отбрасываются).
-- 44.1/96 kHz, WAV extensible, RF64, compressed WAV, MP3/FLAC и многоканальные файлы пока отклоняются с ошибкой. Автоматический resampling не реализован.
+- WAV extensible, RF64, compressed WAV, MP3/FLAC и многоканальные файлы пока отклоняются с ошибкой. На non-Apple build частоты, отличные от 48 kHz, также отклоняются: system AudioConverter — macOS adapter, а не новая кроссплатформенная codec dependency.
 
 Это ограниченный полностью RAM-resident прототип. Здесь **нет** disk read-ahead, streaming, записи микрофона и больших сессий. Импорт и файловые операции пока выполняются на main thread; интерфейс может задерживаться на больших файлах или медленном диске. Audio callback не обращается к диску.
 
@@ -70,4 +70,4 @@ python3 scripts/make-audio-fixture.py
 
 ## Дальше
 
-Приоритет: фоновый import/storage и waveform timeline, затем поддержка 44.1 kHz через качественный offline resampler, streaming/recovery и запись. Не считать этот срез выполнением полноценного S0: B-005/B-006 реализованы только для ограниченного output/RAM playback, SP-01 full-duplex и запись не закрыты.
+Приоритет: фоновый import/storage, streaming/recovery и запись. Поддержка bounded PCM WAV variable-rate import реализована отдельно в [версии 1.35](62-variable-rate-wav-import.md). Не считать этот срез выполнением полноценного S0: B-005/B-006 реализованы только для ограниченного output/RAM playback, SP-01 full-duplex и запись не закрыты.

@@ -1,4 +1,5 @@
 #include "audio/clip.hpp"
+#include "audio/clip_resampler.hpp"
 #include "domain/session.hpp"
 #include <bit>
 #include <algorithm>
@@ -10,6 +11,9 @@ namespace {
 uint32_t u32(const unsigned char* p) { return uint32_t(p[0]) | uint32_t(p[1])<<8 | uint32_t(p[2])<<16 | uint32_t(p[3])<<24; }
 uint16_t u16(const unsigned char* p) { return uint16_t(p[0]) | uint16_t(p[1])<<8; }
 bool tag(const unsigned char* p,const char* s) { return std::memcmp(p,s,4)==0; }
+bool supportedRate(uint32_t rate) {
+    return rate == 44100 || rate == 48000 || rate == 88200 || rate == 96000 || rate == 192000;
+}
 }
 Clip::Clip(std::vector<float> samples): samples_(std::move(samples)) {
     if (samples_.empty() || samples_.size()%2 || samples_.size()>48000*60*2) throw Error("Audio clip must be 0–60 seconds, stereo 48 kHz");
@@ -35,13 +39,13 @@ std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
     if(format.size()<16 || data.empty()) throw Error("WAV format or audio missing");
     unsigned encoding=u16(format.data()), channels=u16(format.data()+2), rate=u32(format.data()+4);
     unsigned align=u16(format.data()+12), bits=u16(format.data()+14);
-    if(rate!=48000) throw Error("This prototype imports 48 kHz WAV only; convert a copy to 48 kHz");
+    if(!supportedRate(rate)) throw Error("Supported WAV sample rates: 44.1, 48, 88.2, 96, or 192 kHz");
     if(channels!=1 && channels!=2) throw Error("WAV must be mono or stereo");
     if(!((encoding==1 && (bits==16 || bits==24 || bits==32)) || (encoding==3 && bits==32))) throw Error("Supported WAV: PCM16/24/32 or float32 (no extensible/compressed WAV yet)");
     unsigned width=bits/8;
     if(align!=channels*width || u32(format.data()+8)!=rate*align || data.size()%align) throw Error("Invalid WAV frame layout");
     size_t frames=data.size()/align;
-    if(!frames || frames>48000*60) throw Error("Import a WAV of at most 60 seconds");
+    if(!frames || frames>uint64_t(rate)*60) throw Error("Import a WAV of at most 60 seconds");
     std::vector<float> samples(frames*2);
     for(size_t f=0;f<frames;++f) for(unsigned ch=0;ch<2;++ch) {
         auto p=data.data()+f*align+(ch%channels)*width; float value;
@@ -51,7 +55,8 @@ std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
         else value=static_cast<float>(std::bit_cast<int32_t>(u32(p)))/2147483648.0f;
         samples[f*2+ch]=value;
     }
-    return std::make_shared<const Clip>(std::move(samples));
+    for (float value : samples) if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
+    return std::make_shared<const Clip>(resampleStereoTo48k(samples, rate));
 }
 std::shared_ptr<const Clip> readWav(const std::string& path) {
     std::ifstream file(path,std::ios::binary|std::ios::ate);

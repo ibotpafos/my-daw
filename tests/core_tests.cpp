@@ -1,14 +1,35 @@
 #include "domain/session.hpp"
+#include "audio/export.hpp"
 #include "plugins/plugin_descriptor.hpp"
 #include "daw.h"
 #include <sqlite3.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("Failed: " #x); } while(false)
 template<class Fn> void rejects(Fn fn) { bool rejected=false; try { fn(); } catch (...) { rejected=true; } CHECK(rejected); }
+static void put16(std::vector<unsigned char>& bytes,uint16_t value){bytes.push_back(static_cast<unsigned char>(value));bytes.push_back(static_cast<unsigned char>(value>>8));}
+static void put32(std::vector<unsigned char>& bytes,uint32_t value){for(unsigned shift=0;shift<32;shift+=8)bytes.push_back(static_cast<unsigned char>(value>>shift));}
+static uint32_t get32(const std::vector<unsigned char>& bytes,size_t offset){CHECK(offset+4<=bytes.size());return static_cast<uint32_t>(bytes[offset])|(static_cast<uint32_t>(bytes[offset+1])<<8)|(static_cast<uint32_t>(bytes[offset+2])<<16)|(static_cast<uint32_t>(bytes[offset+3])<<24);}
+static void writeFixtureWav(const std::filesystem::path& path,uint32_t sampleRate,bool nanSample=false){
+    constexpr uint16_t channels=2;const uint16_t bits=nanSample?32:16;const uint16_t format=nanSample?3:1;constexpr uint32_t frames=441;
+    const uint32_t bytesPerSample=bits/8;const uint32_t dataBytes=frames*channels*bytesPerSample;
+    std::vector<unsigned char> bytes;bytes.reserve(44+dataBytes);
+    bytes.insert(bytes.end(),{'R','I','F','F'});put32(bytes,36+dataBytes);bytes.insert(bytes.end(),{'W','A','V','E'});
+    bytes.insert(bytes.end(),{'f','m','t',' '});put32(bytes,16);put16(bytes,format);put16(bytes,channels);put32(bytes,sampleRate);put32(bytes,sampleRate*channels*bytesPerSample);put16(bytes,channels*bytesPerSample);put16(bytes,bits);
+    bytes.insert(bytes.end(),{'d','a','t','a'});put32(bytes,dataBytes);
+    for(uint32_t frame=0;frame<frames;++frame)for(uint16_t channel=0;channel<channels;++channel){
+        if(nanSample){const float sample=frame==0&&channel==0?std::numeric_limits<float>::quiet_NaN():0.125f;uint32_t encoded=0;std::memcpy(&encoded,&sample,sizeof(encoded));put32(bytes,encoded);}
+        else put16(bytes,static_cast<uint16_t>((static_cast<int>(frame%64)-32)*768));
+    }
+    std::ofstream stream(path,std::ios::binary);CHECK(stream.good());stream.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));CHECK(stream.good());
+}
 int main() { try {
     daw::Session s;
     s.add("Вокал 🎙",0); s.gain(1,-6,1); s.rename(1,"Lead",2);
@@ -118,6 +139,42 @@ int main() { try {
     CHECK(sqlite3_exec(db,"UPDATE tracks SET gain=200 WHERE position=0",nullptr,nullptr,nullptr)==SQLITE_OK); sqlite3_close(db);
     rejects([&]{daw::readDraft(path);}); CHECK(daw_open_draft(bridge.get(),path.c_str())==1);
     CHECK(daw_get_track(bridge.get(),0,&t)==0 && t.gain_db==-12);
+
+    // v35 accepts the supported 44.1 kHz PCM WAV family at the public C ABI
+    // boundary, converts it once into the fixed 48 kHz project representation,
+    // and never partially mutates a session when validation fails.
+    const auto rate441Path=cleanup.path/"44k1-fixture.wav";
+    const auto zeroRatePath=cleanup.path/"zero-rate.wav";
+    const auto nanPath=cleanup.path/"nan-fixture.wav";
+    writeFixtureWav(rate441Path,44100);writeFixtureWav(zeroRatePath,0);writeFixtureWav(nanPath,44100,true);
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> rateBridge(daw_create(),daw_destroy);CHECK(rateBridge);
+    daw_snapshot rateSnapshot{};rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);
+#ifdef __APPLE__
+    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"44.1 base",rateSnapshot.revision)==0);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==1&&rateSnapshot.track_count==1);
+    daw_track rateTrack{};rateTrack.struct_size=sizeof(rateTrack);CHECK(daw_get_track(rateBridge.get(),0,&rateTrack)==0&&rateTrack.audio_frames==480&&rateTrack.clip_count==1&&rateTrack.take_count==1);
+    daw_clip rateBaseClip{};rateBaseClip.struct_size=sizeof(rateBaseClip);CHECK(daw_get_clip(rateBridge.get(),rateTrack.id,0,&rateBaseClip)==0&&rateBaseClip.start==0&&rateBaseClip.source_offset==0&&rateBaseClip.length==480&&rateBaseClip.take_index==0);
+    CHECK(daw_import_take_wav(rateBridge.get(),rateTrack.id,rate441Path.c_str(),"44.1 take",240,rateSnapshot.revision)==0);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==2);
+    rateTrack={};rateTrack.struct_size=sizeof(rateTrack);CHECK(daw_get_track(rateBridge.get(),0,&rateTrack)==0&&rateTrack.audio_frames==480&&rateTrack.take_count==2);
+    daw_take convertedTake{};convertedTake.struct_size=sizeof(convertedTake);CHECK(daw_get_take(rateBridge.get(),rateTrack.id,1,&convertedTake)==0&&convertedTake.start==240&&convertedTake.frames==480&&std::string(convertedTake.name)=="44.1 take");
+    CHECK(daw_comp_range(rateBridge.get(),rateTrack.id,1,240,720,rateSnapshot.revision)==0);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==3);
+    rateTrack={};rateTrack.struct_size=sizeof(rateTrack);CHECK(daw_get_track(rateBridge.get(),0,&rateTrack)==0&&rateTrack.clip_count==2&&rateTrack.take_count==2);
+    daw_clip compLeft{};compLeft.struct_size=sizeof(compLeft);daw_clip compRight{};compRight.struct_size=sizeof(compRight);CHECK(daw_get_clip(rateBridge.get(),rateTrack.id,0,&compLeft)==0&&daw_get_clip(rateBridge.get(),rateTrack.id,1,&compRight)==0&&compLeft.start==0&&compLeft.length==240&&compLeft.take_index==0&&compRight.start==240&&compRight.length==480&&compRight.take_index==1);
+    const auto beforeRejectedRevision=rateSnapshot.revision;const auto beforeRejectedTrackCount=rateSnapshot.track_count;
+    CHECK(daw_import_wav(rateBridge.get(),zeroRatePath.c_str(),"invalid rate",beforeRejectedRevision)==1);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==beforeRejectedRevision&&rateSnapshot.track_count==beforeRejectedTrackCount);
+    CHECK(daw_import_take_wav(rateBridge.get(),rateTrack.id,nanPath.c_str(),"invalid nan",0,beforeRejectedRevision)==1);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==beforeRejectedRevision&&rateSnapshot.track_count==beforeRejectedTrackCount);
+    rateTrack={};rateTrack.struct_size=sizeof(rateTrack);CHECK(daw_get_track(rateBridge.get(),0,&rateTrack)==0&&rateTrack.audio_frames==480&&rateTrack.clip_count==2&&rateTrack.take_count==2);
+    daw_clip unchangedLeft{};unchangedLeft.struct_size=sizeof(unchangedLeft);daw_clip unchangedRight{};unchangedRight.struct_size=sizeof(unchangedRight);CHECK(daw_get_clip(rateBridge.get(),rateTrack.id,0,&unchangedLeft)==0&&daw_get_clip(rateBridge.get(),rateTrack.id,1,&unchangedRight)==0&&unchangedLeft.start==compLeft.start&&unchangedLeft.length==compLeft.length&&unchangedLeft.take_index==compLeft.take_index&&unchangedRight.start==compRight.start&&unchangedRight.length==compRight.length&&unchangedRight.take_index==compRight.take_index);
+    const auto rateDraftPath=(cleanup.path/"converted-rate.mydawdraft").string();CHECK(daw_save_draft(rateBridge.get(),rateDraftPath.c_str())==0);const auto rateRoundTrip=daw::readDraft(rateDraftPath);CHECK(rateRoundTrip.tracks.size()==1&&rateRoundTrip.tracks[0].audio&&rateRoundTrip.tracks[0].audio->frames()==480&&rateRoundTrip.tracks[0].takes.size()==1&&rateRoundTrip.tracks[0].takes[0].audio->frames()==480&&rateRoundTrip.tracks[0].regions.size()==2&&rateRoundTrip.tracks[0].regions[1].take==1);
+    const auto rateExportPath=(cleanup.path/"converted-rate.wav").string();daw::writeWav(rateRoundTrip,rateExportPath,daw::WavFormat::Float32);std::ifstream exported(rateExportPath,std::ios::binary);CHECK(exported.good());std::vector<unsigned char> exportedHeader(44);exported.read(reinterpret_cast<char*>(exportedHeader.data()),static_cast<std::streamsize>(exportedHeader.size()));CHECK(exported.gcount()==static_cast<std::streamsize>(exportedHeader.size())&&get32(exportedHeader,24)==48000);
+#else
+    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"unsupported non-Apple rate",rateSnapshot.revision)==1);
+    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);
+#endif
     daw::Session bounded; for(int i=0;i<256;++i) bounded.add("Track",bounded.state().revision);
     rejects([&]{bounded.add("Overflow",bounded.state().revision);});
     int undos=0; while(bounded.canUndo()){ bounded.undo(bounded.state().revision); ++undos; } CHECK(undos==128);
