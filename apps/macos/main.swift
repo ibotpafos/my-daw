@@ -1174,7 +1174,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let selectedTake=min(selectedTakes[track.id] ?? 0,max(0,Int(track.take_count)-1));selectedTakes[track.id]=selectedTake;takePopup.selectItem(at:selectedTake);takePopups[Int(index)]=takePopup
             let applyComp=button("В comp",#selector(applyComp(_:)));applyComp.tag=Int(index);applyComp.isEnabled=track.take_count>1
             var clips: [ClipGeometry] = []
-            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db,muted:clip.muted != 0,looped:clip.looped != 0)) } }
+            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db,muted:clip.muted != 0,looped:clip.looped != 0,pan:clip.pan)) } }
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
             let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
@@ -1832,7 +1832,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     // Общие палитры цветов клипа, дорожки и MIDI-клипа; значения — доменные
     // uint32 0xRRGGBB, 0 сбрасывает durable-цвет обратно к акценту по позиции.
     static let colorPalette: [(String,UInt32)] = [("Красный",0xE57373),("Оранжевый",0xFFB74D),("Жёлтый",0xFFF176),("Зелёный",0x81C784),("Бирюзовый",0x4DB6AC),("Синий",0x64B5F6),("Фиолетовый",0xBA68C8),("Розовый",0xF06292)]
-    final class ClipActionPayload { let trackID:UInt64; let clipIndex:Int; let color:UInt32; var targetTrack:UInt64 = 0; init(_ trackID:UInt64,_ clipIndex:Int,_ color:UInt32=0){self.trackID=trackID;self.clipIndex=clipIndex;self.color=color} }
+    final class ClipActionPayload { let trackID:UInt64; let clipIndex:Int; let color:UInt32; var targetTrack:UInt64 = 0; var panValue:Double = 0; init(_ trackID:UInt64,_ clipIndex:Int,_ color:UInt32=0){self.trackID=trackID;self.clipIndex=clipIndex;self.color=color} }
     func clipContextMenu(_ trackID:UInt64,_ clipIndex:Int)->NSMenu {
         let menu=NSMenu(); menu.autoenablesItems=false
         if let group=clipSelection[trackID],group.count>1 {
@@ -1852,6 +1852,12 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if check(daw_get_clip(session,trackID,UInt32(clipIndex),&state)) {
             let mute=NSMenuItem(title:"Мьют клипа (M)",action:#selector(toggleClipMuteFromMenu(_:)),keyEquivalent:""); mute.target=self; mute.representedObject=ClipActionPayload(trackID,clipIndex); mute.state=state.muted != 0 ? .on:.off; menu.addItem(mute)
             let loop=NSMenuItem(title:"Луп клипа (L)",action:#selector(toggleClipLoopFromMenu(_:)),keyEquivalent:""); loop.target=self; loop.representedObject=ClipActionPayload(trackID,clipIndex); loop.state=state.looped != 0 ? .on:.off; menu.addItem(loop)
+            let panRoot=NSMenuItem(title:"Панорама клипа",action:nil,keyEquivalent:""); let pans=NSMenu(title:"Панорама клипа"); pans.autoenablesItems=false
+            for (name,value) in [("Левый канал полностью",-1.0),("Левая половина",-0.5),("По центру",0.0),("Правая половина",0.5),("Правый канал полностью",1.0)] {
+                let item=NSMenuItem(title:name,action:#selector(pickClipPan(_:)),keyEquivalent:""); item.target=self; let payload=ClipActionPayload(trackID,clipIndex); payload.panValue=value; item.representedObject=payload
+                item.state = abs(state.pan-value)<1e-9 ? .on:.off; pans.addItem(item)
+            }
+            panRoot.submenu=pans; menu.addItem(panRoot)
         }
         menu.addItem(trackSubmenu(title:"Копировать на дорожку",action:#selector(pasteClipToFromMenu(_:)),source:trackID,clipIndex:clipIndex))
         menu.addItem(trackSubmenu(title:"Перенести на дорожку",action:#selector(moveClipToFromMenu(_:)),source:trackID,clipIndex:clipIndex))
@@ -1918,6 +1924,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         storageMessage(frames==0 ? "Преролл выключен." : "Преролл \(seconds) с — транспорт и клик начнутся раньше punch-in (запись в луп).")
     }
     @objc func deleteClipGroupFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
+    @objc func pickClipPan(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_clip_pan(session,p.trackID,UInt32(p.clipIndex),p.panValue,revision)){selectedClips[p.trackID]=p.clipIndex;refresh(); pollTransport()} }
     @objc func nudgeClipGroupLeft(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,-1) }
     @objc func nudgeClipGroupRight(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; nudgeClipGroup(p.trackID,1) }
     // MARK: мультиселект: Ctrl-клик тоггит группу, Option+стрелки сдвигают её на шаг сетки

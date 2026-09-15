@@ -240,6 +240,27 @@ int main(){try{
         CHECK(s.state().tracks[0].midiClips[0].color==0x0F0F0Fu&&s.state().tracks[0].midiClips[0].notes[1].start==48000);
     }
 
+    // ---- Clip pan: validation, silent no-op, carry across split/duplicate/edit ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));
+        s.importAt("Pan",clip,0,0);                                 // track 1, rev 1, one 2 s clip
+        s.setClipPan(1,0,-0.5,1);                                    // rev 2
+        CHECK(std::abs(s.state().tracks[0].regions[0].pan-(-0.5))<1e-12);
+        s.setClipPan(1,0,-0.5,2);                                    // same value writes nothing
+        CHECK(s.state().revision==2);
+        rejectsMessage("Clip pan outside -1..1",[&]{s.setClipPan(1,0,1.5,2);});
+        rejectsMessage("Clip pan outside -1..1",[&]{s.setClipPan(1,0,std::sqrt(-1.0),2);});
+        rejectsMessage("Audio clip not found",[&]{s.setClipPan(2,0,0.0,2);});
+        CHECK(s.state().revision==2);
+        s.undo(2);CHECK(std::abs(s.state().tracks[0].regions[0].pan)<1e-12);
+        s.redo(3);CHECK(std::abs(s.state().tracks[0].regions[0].pan+0.5)<1e-12);     // rev 4
+        s.splitClip(1,0,48000,4);                                    // rev 5 — both halves keep pan
+        CHECK(s.state().tracks[0].regions.size()==2&&std::abs(s.state().tracks[0].regions[0].pan+0.5)<1e-12&&std::abs(s.state().tracks[0].regions[1].pan+0.5)<1e-12);
+        s.duplicateClip(1,1,5);                                      // rev 6 — the copy carries pan
+        CHECK(std::abs(s.state().tracks[0].regions[2].pan+0.5)<1e-12);
+        s.editClip(1,2,600000,0,96000,6);                            // rev 7 — move keeps it too
+        CHECK(std::abs(s.state().tracks[0].regions[2].pan+0.5)<1e-12);
+    }
     // ---- Storage v19 round trip: clip/track color + per-region gain persist ----
     {   Session s;
         const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2,0.0f));
@@ -249,6 +270,7 @@ int main(){try{
         s.setClipGain(1,0,-9.0,3);                              // rev 4
         s.setClipMuted(1,0,true,4);                              // rev 5
         s.setClipLooped(1,0,true,5);                             // rev 6
+        s.setClipPan(1,0,0.75,6);                                // rev 7
         const auto path=dir/"cliptrack-roundtrip.mydawdraft";
         writeDraft(s.state(),path.string());
         const auto loaded=readDraft(path.string());
@@ -259,10 +281,11 @@ int main(){try{
         CHECK(std::abs(loaded.tracks[0].regions[0].gain-(-9.0))<1e-9);
         CHECK(loaded.tracks[0].regions[0].muted==true);
         CHECK(loaded.tracks[0].regions[0].looped==true);
+        CHECK(std::abs(loaded.tracks[0].regions[0].pan-0.75)<1e-12);   // v21: per-clip pan persists
         auto db=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(db,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==20);
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==21);
         sqlite3_finalize(version);
         sqlite3_close(db);
     }

@@ -163,6 +163,21 @@ int main(){try{
         rejects([&]{daw::Renderer dead;dead.prepare(muteState.state());});       // an all-muted project has nothing to play
         muteState.undo(4);CHECK(!muteState.state().tracks[0].regions[0].muted&&muteState.state().tracks[0].regions[1].muted);
     }
+    // Clip pan rides the voice with the unity-center linear law of track pan:
+    // hard side zeroes the other channel exactly, mid values scale one side.
+    {   daw::Session panState;panState.import("P",constantClip,0);
+        panState.setClipPan(1,0,-1.0,1);                                           // rev 2: hard left
+        daw::Renderer panRenderer;panRenderer.prepare(panState.state());panRenderer.playing=true;
+        std::vector<float> panLeft(1100),panRight(1100);panRenderer.render(panLeft.data(),panRight.data(),1100);
+        { const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,1000.0f);
+          CHECK(panRight[999]==0.0f&&std::abs(panLeft[999]-0.5f*smoothed)<0.00002f);
+          CHECK(panRight[400]==0.0f&&std::abs(panLeft[400]-0.5f*(1.0f-std::pow(1.0f-0.004166667f,401.0f)))<0.00002f); }
+        panState.setClipPan(1,0,0.25,2);                                           // rev 3: L x0.75, R x1
+        daw::Renderer pan2;pan2.prepare(panState.state());pan2.playing=true;
+        pan2.render(panLeft.data(),panRight.data(),1100);
+        { const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,1000.0f);
+          CHECK(std::abs(panLeft[999]-0.5f*0.75f*smoothed)<0.00002f&&std::abs(panRight[999]-0.5f*smoothed)<0.00002f); }
+    }
     // A looped region reads [sourceOffset, frames) repeatedly: past the slice
     // end the ramp restarts from zero instead of falling silent.
     {   std::vector<float> ramp;for(size_t frame=0;frame<1000;++frame){ramp.push_back(float(frame)*0.001f);ramp.push_back(float(frame)*0.001f);}

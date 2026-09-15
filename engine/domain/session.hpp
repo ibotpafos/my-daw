@@ -8,7 +8,7 @@
 #include <vector>
 namespace daw {
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
-struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; bool operator==(const Region&) const = default; };
+struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; double pan=0.0; bool operator==(const Region&) const = default; };
 struct Take { std::string name; uint64_t start=0; std::shared_ptr<const Clip> audio; bool operator==(const Take&) const = default; };
 struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operator==(const Send&) const = default; };
 // Ordered timeline points for the track fader. Frames are project frames at
@@ -232,6 +232,9 @@ public:
     // honestly rejects through validate().
     void setClipMuted(uint64_t id, uint32_t clipIndex, bool muted, uint64_t expected);
     void setClipLooped(uint64_t id, uint32_t clipIndex, bool looped, uint64_t expected);
+    // Stereo pan in normalized position -1..1 (0 = center), the same linear
+    // unity-center law as the track fader's pan.
+    void setClipPan(uint64_t id, uint32_t clipIndex, double pan, uint64_t expected);
     // Multi-selection group operations: one revision for the whole group.
     // deleteClips sorts/uniques indices and keeps the track non-empty through
     // validate(); nudgeClips translates selected regions together and re-sorts

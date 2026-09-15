@@ -261,6 +261,12 @@ int main(void) {
     if (daw_measure_wav(session, "/nonexistent/mydaw-tone.wav", &loudness) == 0) result |= 1;
     loudness.struct_size = sizeof(loudness) - 4;
     if (daw_measure_wav(session, "/tmp", &loudness) == 0) result |= 1;
+    /* Clip pan gates: MIDI tracks have no audio region to pan, the range
+     * check fires inside the domain, and nothing here spends a revision. */
+    daw_clip panned = {0}; panned.struct_size = sizeof(daw_clip);
+    if (daw_get_clip(session, 2, 0, &panned) == 0) result |= 1;
+    if (daw_set_clip_pan(session, 2, 0, 1.5, r + 3) == 0) result |= 1;
+    if (daw_set_clip_pan(session, 4, 0, -0.5, r + 3) == 0) result |= 1;
     /* Live master loudness: no running output means live=0 at the sentinel. */
     daw_master_loudness meter = {0}; meter.struct_size = sizeof(meter);
     if (daw_get_master_loudness(session, &meter) != 0 || meter.live != 0 || meter.momentary_lufs > -100.0f) result |= 1;

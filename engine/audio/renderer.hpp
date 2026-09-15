@@ -133,6 +133,8 @@ class Renderer {
     float gain = 1.0f;
     // Looped regions wrap reads inside [offset, offset+loopSpan); 0 is plain play.
     uint64_t loopSpan = 0;
+    // Clip pan coefficients (same linear law as track pan; center = 1/1).
+    float panLeft = 1.0f, panRight = 1.0f;
   };
   struct SendRoute {
     size_t track = 0, bus = 0;

@@ -13,6 +13,7 @@ struct ClipGeometry {
     var gainDb: Double = 0
     var muted: Bool = false
     var looped: Bool = false
+    var pan: Double = 0
 }
 
 /// Дurable 24-bit RGB из домена (0xRRGGBB); 0 означает «цвета нет» и
@@ -207,7 +208,7 @@ final class WaveformView: NSView {
     }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53, let g = gesture {
-            gesture = nil; let current=clips[selectedIndex]; clips[selectedIndex]=ClipGeometry(start:g.start,sourceOffset:g.offset,length:g.length,fadeIn:g.fadeIn,fadeOut:g.fadeOut,takeIndex:current.takeIndex,sourceFramesForTake:current.sourceFramesForTake,sourcePeaks:current.sourcePeaks,color:current.color,gainDb:current.gainDb,muted:current.muted,looped:current.looped); needsDisplay = true; return
+            gesture = nil; let current=clips[selectedIndex]; clips[selectedIndex]=ClipGeometry(start:g.start,sourceOffset:g.offset,length:g.length,fadeIn:g.fadeIn,fadeOut:g.fadeOut,takeIndex:current.takeIndex,sourceFramesForTake:current.sourceFramesForTake,sourcePeaks:current.sourcePeaks,color:current.color,gainDb:current.gainDb,muted:current.muted,looped:current.looped,pan:current.pan); needsDisplay = true; return
         }
         // Редакторские горячие клавиши работают только без модификаторов и при
         // пустом тексте ввода: Cmd+S остаётся «Сохранить» в главном меню.
@@ -300,7 +301,7 @@ final class WaveformView: NSView {
             let fadeOutX = clip.fadeOut > 0 ? clipX+clipWidth*CGFloat(Double(clip.length-clip.fadeOut)/Double(clip.length)) : clipX+clipWidth-min(20,clipWidth*0.18)
             let fadeInPath=NSBezierPath(); fadeInPath.move(to:NSPoint(x:clipX,y:rect.maxY)); fadeInPath.line(to:NSPoint(x:fadeInX,y:rect.minY)); fadeInPath.stroke()
             let fadeOutPath=NSBezierPath(); fadeOutPath.move(to:NSPoint(x:fadeOutX,y:rect.minY)); fadeOutPath.line(to:NSPoint(x:rect.maxX,y:rect.maxY)); fadeOutPath.stroke()
-            if selected || hovered { let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.white.withAlphaComponent(0.72)]; let tag="Клип \(index + 1)\(clip.looped ? " · ↻" : "")\(clip.muted ? " · MUTE" : "")\(clip.gainDb == 0 ? "" : String(format:" · %+.1f dB",clip.gainDb))"; (tag as NSString).draw(at:NSPoint(x:rect.minX+8,y:rect.minY+7),withAttributes:attrs) }
+            if selected || hovered { let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.white.withAlphaComponent(0.72)]; let tag="Клип \(index + 1)\(clip.looped ? " · ↻" : "")\(clip.muted ? " · MUTE" : "")\(clip.gainDb == 0 ? "" : String(format:" · %+.1f dB",clip.gainDb))\(clip.pan == 0 ? "" : String(format:" · P %@%d%%", clip.pan < 0 ? "L": "R", Int(abs(clip.pan) * 100 + 0.5)))"; (tag as NSString).draw(at:NSPoint(x:rect.minX+8,y:rect.minY+7),withAttributes:attrs) }
         }
         if !automationPoints.isEmpty {
             func automationY(_ gain:Double)->CGFloat{let visible=min(12,max(-60,gain));return lane.maxY-CGFloat((visible+60)/72)*lane.height}

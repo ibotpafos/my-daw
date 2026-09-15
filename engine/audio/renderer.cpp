@@ -438,9 +438,14 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
             region.take == 0 ? track.audio : track.takes[region.take - 1].audio;
         const uint64_t loopSpan =
             region.looped ? source->frames() - region.sourceOffset : 0;
+        // Clip pan folds into the voice with the same linear law as track
+        // pan (unity center), so panning never changes program level midway.
+        const double pan = region.pan < -1.0 ? -1.0 : (region.pan > 1.0 ? 1.0 : region.pan);
+        const float panLeft = pan > 0 ? float(1 - pan) : 1.0f;
+        const float panRight = pan < 0 ? float(1 + pan) : 1.0f;
         nextVoices.push_back({i, source, region.start, region.sourceOffset,
                               region.length, region.fadeIn, region.fadeOut,
-                              gain(region.gain), loopSpan});
+                              gain(region.gain), loopSpan, panLeft, panRight});
         end = std::max(end, region.start + region.length);
       }
     } else if (!track.midiClips.empty() || !track.inserts.empty()) {
@@ -1052,9 +1057,9 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
           // prepared off-thread so the callback only multiplies.
           envelope *= voice.gain;
           trackBlockLeft[voice.gainIndex * kRenderBlockFrames + f] +=
-              pcm[source * 2] * envelope;
+              pcm[source * 2] * envelope * voice.panLeft;
           trackBlockRight[voice.gainIndex * kRenderBlockFrames + f] +=
-              pcm[source * 2 + 1] * envelope;
+              pcm[source * 2 + 1] * envelope * voice.panRight;
         }
     }
     for (const auto track : activeGains) {

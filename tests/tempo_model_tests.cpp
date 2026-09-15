@@ -124,7 +124,7 @@ int main(){try{
         auto stamped=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(stamped,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==20);                                      // draft v20 stamps the write
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==21);                                      // draft v20 stamps the write
         sqlite3_finalize(version);
         CHECK(sqlite3_exec(stamped,"PRAGMA user_version=16;",nullptr,nullptr,nullptr)==SQLITE_OK);
         sqlite3_close(stamped);
