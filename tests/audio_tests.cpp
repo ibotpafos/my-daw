@@ -269,6 +269,79 @@ int main(){try{
         midiRender.render(seekLeft.data(),seekRight.data(),512);
         CHECK(midiRender.position==512 && midiRender.pluginErrors.load()==0);
     }
-    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap\n";
+    // Instrument-source arc: a MIDI-only track with an insert becomes audible.
+    struct TestInstrument final : daw::PreparedEffect {
+      struct Slot { bool on=false, releasing=false; uint32_t releaseAt=0; float amp=0; double step=0, phase=0; uint8_t pitch=0, channel=0; };
+      bool process(float *left, float *right, uint32_t frames, uint64_t,
+                   std::span<const daw::PreparedParameterEvent>,
+                   std::span<const daw::PreparedMidiEvent> midi) noexcept override {
+        size_t next=0;
+        for (uint32_t f=0;f<frames;++f) {
+          while (next<midi.size() && midi[next].sampleOffset<=f) {
+            const auto &e=midi[next++];
+            if (e.noteOff) { for (auto &v : voices) if (v.on&&!v.releasing&&v.pitch==e.pitch&&v.channel==e.channel) { v.releasing=true; v.releaseAt=f; } }
+            else if (e.velocity) {
+              Slot *slot=nullptr;
+              for (auto &v : voices) if (!v.on) { slot=&v; break; }
+              if (!slot) for (auto &v : voices) if (v.releasing) { slot=&v; break; }
+              if (slot) { slot->on=true; slot->releasing=false; slot->pitch=e.pitch; slot->channel=e.channel; slot->amp=float(e.velocity)/127.0f*0.5f; slot->phase=0;
+                slot->step=440.0*std::pow(2.0,(double(e.pitch)-69.0)/12.0)/48000.0; }
+            }
+          }
+          float mix=0;
+          for (auto &v : voices) {
+            if (!v.on) continue;
+            double env=1;
+            if (v.releasing) { env=1.0-double(f-v.releaseAt)/240.0; if (env<=0) { v.on=false; continue; } }
+            mix+=float(v.amp*env*std::sin(v.phase*6.283185307179586)); v.phase+=v.step;
+          }
+          left[f]+=mix; right[f]+=mix;
+        }
+        return true;
+      }
+      uint32_t latencyFrames() const noexcept override { return 0; }
+      std::array<Slot,16> voices{};
+    };
+    const auto synthFactory=[](const daw::PluginInsert &){ return std::unique_ptr<daw::PreparedEffect>(std::make_unique<TestInstrument>()); };
+    const auto peakOf=[&](const std::vector<float> &buffer,size_t from,size_t to){ float m=0; for(size_t i=from;i<to;++i)m=std::max(m,std::abs(buffer[i])); return m; };
+    {
+        daw::Session synth; synth.add("Synth",0);
+        synth.addMidiClip(1,daw::MidiClip{0,5000,{{0,4800,60,0,100}},0},synth.state().revision);
+        daw::PluginInsert insert; insert.name="Test synth"; insert.type=1; insert.subtype=2; insert.manufacturer=3;
+        synth.addTrackInsert(1,insert,synth.state().revision);
+        CHECK(synth.state().tracks[0].midiClips.size()==1 && !synth.state().tracks[0].audio);
+        daw::Renderer r; r.insertFactoryForTest=synthFactory; r.prepare(synth.state()); r.playing=true;
+        std::vector<float> l(5120),rr(5120); r.render(l.data(),rr.data(),5120);
+        CHECK(r.pluginErrors.load()==0);
+        CHECK(peakOf(l,500,4000)>0.15f);                    // note sounds while held
+        CHECK(peakOf(l,5050,5120)<0.02f);                   // off@4800 plus a 240-frame release tail
+        // Loop wrap kills the held note: cutoff at the wrap, silent after the tail.
+        daw::Session loopy; loopy.add("Loop",0);
+        loopy.addMidiClip(1,daw::MidiClip{0,4600,{{2500,2000,60,0,100}},0},loopy.state().revision);
+        daw::PluginInsert insert2; insert2.name="Test synth 2"; insert2.type=1; insert2.subtype=2; insert2.manufacturer=3;
+        loopy.addTrackInsert(1,insert2,loopy.state().revision);
+        daw::Renderer w; w.insertFactoryForTest=synthFactory; w.prepare(loopy.state(),0,0,3000); w.playing=true;
+        std::vector<float> wl(4600),wr(4600); w.render(wl.data(),wr.data(),4600);
+        CHECK(peakOf(wl,2600,2950)>0.15f && peakOf(wl,3400,4600)<0.02f && w.pluginErrors.load()==0);
+        // Empty track (no audio, no MIDI, no inserts) is still not a voice.
+        daw::Session empty; empty.add("Nothing",0);
+        daw::Renderer e; bool gate=false; std::string message;
+        try { e.prepare(empty.state()); } catch (const daw::Error &x) { gate=true; message=x.what(); } catch (...) { gate=true; }
+        CHECK(gate && message.find("Import audio or add a MIDI/instrument track")!=std::string::npos);
+        // Inserts-only track (no MIDI) is a voice and honestly renders silence.
+        daw::Session quiet; quiet.add("Silent chain",0);
+        daw::PluginInsert insert3; insert3.name="Test synth 3"; insert3.type=1; insert3.subtype=2; insert3.manufacturer=3;
+        quiet.addTrackInsert(1,insert3,quiet.state().revision);
+        int built=0; daw::Renderer q; q.insertFactoryForTest=[&](const daw::PluginInsert &p){ ++built; return synthFactory(p); };
+        q.prepare(quiet.state()); q.playing=true;
+        std::vector<float> ql(1024),qr(1024); q.render(ql.data(),qr.data(),1024);
+        CHECK(built==1 && q.pluginErrors.load()==0 && peakOf(ql,0,1024)==0.0f);
+        // Regression: a plain audio track is unaffected.
+        daw::Session audio; audio.import("Audio",clip,audio.state().revision);
+        daw::Renderer a; a.prepare(audio.state()); a.playing=true;
+        std::vector<float> al(512),ar(512); a.render(al.data(),ar.data(),512);
+        CHECK(a.position==512 && al[300]>0.15f && al[480]>0.2f); // gain ramp smooths from zero
+    }
+    std::cout<<"PASS: WAV bounds/formats, PCM persistence, cached peaks, sample-accurate seek/loop, seek revision invariance, gain/smoothing, EOF silence, clipping, stop, audio undo/redo, import limits, 400 malformed headers, MIDI plan offsets/carry/loop-wrap, instrument voice with release and loop cutoffs\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

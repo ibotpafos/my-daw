@@ -79,6 +79,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     private let importButton = NSButton(title: "Import", target: nil, action: nil)
     private let addButton = NSButton(title: "Add", target: nil, action: nil)
     private let previewStatus = NSTextField(labelWithString: "Выберите аудиофайл для предпрослушивания.")
+    private let pluginHint = NSTextField(labelWithString: "Инструменты: experimental. AU-инструменты помечены; bridge не сообщает тип инструмента для VST3.")
     private let volume = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
     private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
     private let channelName = NSTextField(string: "")
@@ -147,6 +148,8 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         preview.target = self; preview.action = #selector(previewSelectedAudio); preview.bezelStyle = .texturedRounded; preview.font = DAWDesignTokens.Typography.caption
         stopPreview.target = self; stopPreview.action = #selector(stopAudioPreview); stopPreview.bezelStyle = .texturedRounded; stopPreview.font = DAWDesignTokens.Typography.caption
         previewStatus.font = DAWDesignTokens.Typography.caption; previewStatus.textColor = DAWDesignTokens.Color.secondaryText; previewStatus.lineBreakMode = .byTruncatingTail
+        pluginHint.font = DAWDesignTokens.Typography.caption; pluginHint.textColor = DAWDesignTokens.Color.warning; pluginHint.lineBreakMode = .byTruncatingTail
+        pluginHint.setAccessibilityLabel("Предупреждение об экспериментальных инструментах")
         reloadInspector()
     }
 
@@ -193,6 +196,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         guard tabs.selectedSegment == InspectorBrowserTab.browser.rawValue else { return }
         titleLabel.stringValue = "BROWSER"; titleLabel.textColor = .secondaryLabelColor
         table.reloadData()
+        pluginHint.isHidden = browserKind.selectedSegment != InspectorBrowserKind.plugins.rawValue
         updatePreviewControls()
         updateImportControls()
     }
@@ -201,7 +205,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         let commands = NSStackView(views: [addFolderButton, importButton, addButton]); commands.spacing = 6
         let scanners = NSStackView(views: [button("Scan AU", #selector(scanAU)), button("Scan VST3", #selector(scanVST3))]); scanners.spacing = 6
         let previewCommands = NSStackView(views: [preview, stopPreview]); previewCommands.spacing = 6
-        body.addArrangedSubview(browserKind); body.addArrangedSubview(search); body.addArrangedSubview(commands); body.addArrangedSubview(previewCommands); body.addArrangedSubview(previewStatus); body.addArrangedSubview(scanners); body.addArrangedSubview(tableScroll)
+        body.addArrangedSubview(browserKind); body.addArrangedSubview(search); body.addArrangedSubview(commands); body.addArrangedSubview(previewCommands); body.addArrangedSubview(previewStatus); body.addArrangedSubview(pluginHint); body.addArrangedSubview(scanners); body.addArrangedSubview(tableScroll)
         browserKind.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; search.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true; tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
         table.reloadData()
         updatePreviewControls()

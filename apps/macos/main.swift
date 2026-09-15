@@ -159,6 +159,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var tempo = 120
     var transportTimer: Timer?
     var hasAudio = false
+    var hasMidiContent = false
     var waveforms: [WaveformView] = []
     var isPlaying = false
     var isRecording = false
@@ -683,7 +684,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func refreshBrowserCatalog() {
         browserPluginTargets.removeAll();var items:[InspectorBrowserItem]=[]
-        for plugin in auCatalog {let item=InspectorBrowserItem(title:plugin.name,detail:"Audio Unit",available:true);browserPluginTargets[item.id] = .audioUnit(type:plugin.type,subtype:plugin.subtype,manufacturer:plugin.manufacturer);items.append(item)}
+        for plugin in auCatalog {let isInstrument = plugin.subtype == 0x61616D69 || plugin.subtype == 0x61756961 /* aami, auia */;let item=InspectorBrowserItem(title:plugin.name,detail:isInstrument ? "Audio Unit · инструмент · experimental":"Audio Unit",available:true);browserPluginTargets[item.id] = .audioUnit(type:plugin.type,subtype:plugin.subtype,manufacturer:plugin.manufacturer);items.append(item)}
         for plugin in vst3Catalog {let item=InspectorBrowserItem(title:plugin.name,detail:plugin.vendor.isEmpty ? "VST3":"VST3 · \(plugin.vendor)",available:plugin.available);browserPluginTargets[item.id] = .vst3(index:plugin.index);items.append(item)}
         inspectorBrowser.pluginItems=items.sorted{$0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending}
     }
@@ -758,7 +759,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         for view in consoleRows.arrangedSubviews { consoleRows.removeArrangedSubview(view); view.removeFromSuperview() }
         mixerKinds.removeAll()
         var mixerStrips:[MixerStripModel]=[]
-        trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();insertRuntimeBadges.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; waveforms.removeAll()
+        trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();insertRuntimeBadges.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; hasMidiContent = false; waveforms.removeAll()
         for busIndex in 0..<snapshot.bus_count {var bus=daw_bus();bus.struct_size=UInt32(MemoryLayout<daw_bus>.size);guard check(daw_get_bus(session,busIndex,&bus))else{return};let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};orderedBuses.append((bus.id,name))}
         var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
         guard check(daw_get_transport(session, &transport)) else { return }
@@ -776,6 +777,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let name = withUnsafeBytes(of: track.name) { bytes in String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self) }
             trackIDs[Int(index)] = track.id
             if track.audio_frames > 0 { hasAudio = true }
+            var midiClipCount: UInt32 = 0; if track.audio_frames == 0 { _ = daw_get_midi_clip_count(session, track.id, &midiClipCount); if midiClipCount > 0 { hasMidiContent = true } }
             let accent=trackAccent(Int(index));let number = label(String(format: "%02d", index + 1), size: 12, color: accent)
             number.widthAnchor.constraint(equalToConstant: 26).isActive = true
             let field = NSTextField(string: name); field.tag = Int(index); field.delegate = self
@@ -803,7 +805,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var clips: [ClipGeometry] = []
             if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks)) } }
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
-            let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : "Без аудио", size: 11, color: .secondaryLabelColor)
+            let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
             let edit = button("Клип…", #selector(editClipPanel(_:))); edit.tag = Int(index); edit.isEnabled = track.audio_frames > 0
             let arm=button("R",#selector(toggleArm(_:)));arm.tag=Int(index);arm.state=armedTrackID==track.id ? .on:.off;arm.contentTintColor=armedTrackID==track.id ? .systemRed:.secondaryLabelColor;arm.isEnabled=track.audio_frames>0;arm.setAccessibilityLabel("Записывать новые дубли в \(name)");arm.widthAnchor.constraint(equalToConstant:30).isActive=true
@@ -822,6 +824,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let detailGroup=NSStackView();detailGroup.orientation = .vertical;detailGroup.alignment = .leading;detailGroup.spacing=2
             let routingRow=NSStackView(views:[label(String(format:"TRACK %02d",index+1),size:10,color:accent),label(name,size:11,color:.labelColor),takePopup,importTake,applyComp,label("OUT",size:10,color:.tertiaryLabelColor),output,addSend,flexibleSpace()]);routingRow.spacing=7;routingRow.edgeInsets=NSEdgeInsets(top:5,left:10,bottom:6,right:10);routingRow.wantsLayer=true;routingRow.layer?.backgroundColor=NSColor(white:1,alpha:0.02).cgColor
             detailGroup.addArrangedSubview(routingRow);routingRow.widthAnchor.constraint(equalTo:detailGroup.widthAnchor).isActive=true
+            let midiBadge=label("♫ MIDI",size:10,color:.systemPurple);midiBadge.isHidden = !(track.audio_frames == 0 && midiClipCount > 0);routingRow.insertArrangedSubview(midiBadge, at: 2);midiBadge.setAccessibilityLabel("Инструментальная MIDI-дорожка")
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_TRACK),ownerID:track.id,title:name);detailGroup.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:detailGroup.widthAnchor).isActive=true
             for sendIndex in 0..<track.send_count {
                 var send=daw_send();send.struct_size=UInt32(MemoryLayout<daw_send>.size);guard check(daw_get_send(session,track.id,sendIndex,&send))else{return}
@@ -1232,7 +1235,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard check(daw_get_transport(session, &t)) else {
             var output=daw_output_status();output.struct_size=UInt32(MemoryLayout<daw_output_status>.size);_ = daw_get_output_status(session,&output)
             switch output.state { case 3: transportLabel.stringValue="Аудиовыход изменён или отключён · нажми Play";case 4:transportLabel.stringValue="Аудиовыход завис · нажми Play";case 5:transportLabel.stringValue="Ошибка аудиобуфера · нажми Play";case 7:transportLabel.stringValue="Не удалось подготовить плагины · проверь insert";default:transportLabel.stringValue="Вывод остановлен из-за ошибки устройства" }
-            playButton.isEnabled = hasAudio; stopButton.isEnabled = false; return
+            playButton.isEnabled = hasAudio || hasMidiContent; stopButton.isEnabled = false; return
         }
         var output=daw_output_status();output.struct_size=UInt32(MemoryLayout<daw_output_status>.size);_ = daw_get_output_status(session,&output)
         if output.state == Int32(DAW_OUTPUT_PREPARING) {
@@ -1242,19 +1245,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             return
         }
         if output.state == Int32(DAW_OUTPUT_PREPARATION_FAILED) {
-            isPlaying=false;playButton.isEnabled=hasAudio;stopButton.isEnabled=false
+            isPlaying=false;playButton.isEnabled=hasAudio || hasMidiContent;stopButton.isEnabled=false
             transportLabel.stringValue="Не удалось подготовить плагины · нажми Play после исправления insert"
             return
         }
         isPlaying = t.playing != 0
         for wave in waveforms { wave.playhead = t.frame }
-        playButton.isEnabled = hasAudio && t.playing == 0; stopButton.isEnabled = t.playing != 0
+        playButton.isEnabled = (hasAudio || hasMidiContent) && t.playing == 0; stopButton.isEnabled = t.playing != 0
         if t.duration > 0 {
             let state = t.playing != 0 ? "Играет" : "Остановлено"
             let warning = t.plugin_errors > 0 ? " · Plug-in error: dry fallback" : (t.clipped_frames > 0 ? " · Перегрузка: уменьши уровни" : "")
             let latency=t.output_latency_frames>0 ? String(format:" · latency %.2f ms",Double(t.output_latency_frames)/48.0):""
             transportLabel.stringValue = String(format: "%@  %.1f / %.1f с%@%@", state, Double(t.frame) / 48000, Double(t.duration) / 48000, latency,warning)
-        } else { transportLabel.stringValue = hasAudio ? "Готово к воспроизведению · системный аудиовыход" : "Импортируй WAV/AIFF, чтобы услышать проект" }
+        } else { transportLabel.stringValue = (hasAudio || hasMidiContent) ? "Готово к воспроизведению · системный аудиовыход" : "Импортируй WAV/AIFF или добавь MIDI-дорожку с инструментом" }
     }
     func beginBackgroundImport(_ intent: BackgroundImportIntent) {
         guard !isRecording else { return }
@@ -1487,7 +1490,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         refresh()
         selectedMixerID = newID
         updateMixerInspector(newID)
-        status.stringValue = "MIDI-дорожка добавлена · клип на 10 с · ⌘Z отменяет"
+        status.stringValue = "MIDI дорожка: добавьте ноты и инструмент · ⌘Z отменяет"
     }
     @objc func addBus() { guard !isRecording else{return};finishEditing();if check(daw_add_bus(session,"Bus \(orderedBuses.count + 1)",revision)){refresh()} }
     @objc func addMasterAU(_ sender:NSPopUpButton){guard !isRecording,sender.indexOfSelectedItem>0 else{return};let index=sender.indexOfSelectedItem-1;guard index<auCatalog.count else{return};let item=auCatalog[index];_=daw_stop(session);if check(daw_add_master_au(session,item.type,item.subtype,item.manufacturer,revision)){sender.selectItem(at:0);refresh();pollTransport()}else{sender.selectItem(at:0)}}

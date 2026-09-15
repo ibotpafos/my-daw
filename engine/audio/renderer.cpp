@@ -275,25 +275,37 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
 
   std::vector<Voice> nextVoices;
   std::vector<size_t> nextActive;
+  size_t instrumentVoices = 0;
   uint64_t end = 0;
   for (size_t i = 0; i < state.tracks.size(); ++i) {
     const auto &track = state.tracks[i];
-    if (!track.audio)
-      continue;
-    nextActive.push_back(i);
-    for (const auto &region : track.regions) {
-      const auto source =
-          region.take == 0 ? track.audio : track.takes[region.take - 1].audio;
-      nextVoices.push_back({i, source, region.start, region.sourceOffset,
-                            region.length, region.fadeIn, region.fadeOut});
-      end = std::max(end, region.start + region.length);
+    if (track.audio) {
+      nextActive.push_back(i);
+      for (const auto &region : track.regions) {
+        const auto source =
+            region.take == 0 ? track.audio : track.takes[region.take - 1].audio;
+        nextVoices.push_back({i, source, region.start, region.sourceOffset,
+                              region.length, region.fadeIn, region.fadeOut});
+        end = std::max(end, region.start + region.length);
+      }
+    } else if (!track.midiClips.empty() || !track.inserts.empty()) {
+      // Instrument voice: a track without audio media but with MIDI to play
+      // or an insert chain to host gets a rendered slot — the per-block
+      // zero-filled track buffer passes through the track chain, and the
+      // track's MIDI plan modulates it (an instrument insert turns the
+      // silence into sound). Bypassed or non-producing inserts honestly
+      // render silence. A track with neither clips nor inserts is not a
+      // voice and stays out of the graph.
+      nextActive.push_back(i);
+      ++instrumentVoices;
     }
+    for (const auto &clip : track.midiClips)
+      end = std::max(end, clip.start + clip.length);
   }
-  if (nextVoices.empty())
-    throw Error("Import a WAV before playback");
-  // MIDI plans are built for every track ordinal; silent audio-less tracks
-  // stay inactive until an instrument source arc makes them renderable, so
-  // the plan is assembled here and consumed only by active track chains.
+  if (nextVoices.empty() && instrumentVoices == 0)
+    throw Error("Import audio or add a MIDI/instrument track");
+  // MIDI plans are built for every track ordinal; only active track chains
+  // (audio or instrument voices) drain them during render().
   std::vector<MidiTrackPlan> nextMidiPlans(state.tracks.size());
   for (size_t i = 0; i < state.tracks.size(); ++i)
     if (!state.tracks[i].midiClips.empty())
@@ -370,8 +382,10 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
           }
           std::unique_ptr<PreparedEffect> effect;
           try {
-            effect = isVst3Insert(insert) ? prepareVst3Effect(insert)
-                                          : prepareAudioUnit(insert);
+            effect = insertFactoryForTest
+                         ? insertFactoryForTest(insert)
+                         : (isVst3Insert(insert) ? prepareVst3Effect(insert)
+                                                 : prepareAudioUnit(insert));
           } catch (...) {
             ++unavailable;
             nextRuntimeStatuses.push_back(

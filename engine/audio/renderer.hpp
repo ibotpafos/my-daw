@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <functional>
 namespace daw {
 // Runtime-only latency supplied by graph nodes outside the renderer. It is
 // deliberately separate from State; Renderer adds the measured latency of
@@ -277,6 +278,11 @@ public:
                            PreparedEffectRuntimeStatus &out) const noexcept;
   // Call from the output stop path to clear visible telemetry immediately.
   void resetMeters() noexcept { clearMeters(); }
+  // Control-thread test seam: when set, prepare() instantiates inserts with
+  // this factory instead of the real AU/VST3 host paths. Production leaves it
+  // null; the audio callback never reads it.
+  std::function<std::unique_ptr<PreparedEffect>(const PluginInsert &)>
+      insertFactoryForTest;
   // Exactly one live touch may be active. The override is runtime-only and
   // does not mutate persisted automation lanes or plug-in state.
   bool beginPluginParameterTouch(uint64_t pluginID, uint32_t parameterID,

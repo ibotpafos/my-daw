@@ -79,7 +79,9 @@ int main(void) {
     daw_midi_note bad_note = notes[0]; bad_note.pitch = 128;
     if (daw_add_midi_clip(session, 2, &clip, &bad_note, 1, 10) == 0) result |= 1;
     if (daw_get_midi_clip(session, 2, 0, &bad, 0, read_notes, DAW_MIDI_NOTES_PER_CALL + 1, &written) == 0) result |= 1;
-    if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 1) result |= 1;
+    /* Undo(9) left a MIDI-only session; since the instrument-voice rule (MIDI clips or
+       inserts make a track renderable) such a project previews as silent, not error. */
+    if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 0) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }
