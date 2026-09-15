@@ -62,4 +62,17 @@ std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
                                                uint64_t startFrame,
                                                uint64_t endFrame,
                                                ExportOptions);
+// Per-track stems: one WAV per audible track — the snapshot is synthesized
+// with solo on that track (mute/solo/automation/inserts ride along), master
+// gain flattens to unity and the master chain is bypassed so summing stems
+// back into a session reproduces the mix up to master processing. Silent
+// tracks (user-muted or empty) honestly produce no file. The full project
+// range renders from frame zero; every stem keeps its own tail policy.
+void writeStems(const State &snapshot, const std::string &directory,
+                WavFormat format, ExportOptions = {},
+                ExportResult *progress = nullptr);
+std::shared_ptr<ExportResult> startStemExport(State snapshot,
+                                               std::string directory,
+                                               WavFormat format,
+                                               ExportOptions = {});
 } // namespace daw

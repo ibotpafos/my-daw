@@ -77,7 +77,24 @@ int main(){try{
     bool releasedExportComplete=false;for(int i=0;i<1000&&!releasedExportComplete;++i){try{releasedExportComplete=daw::readWav(releasedExportPath)->frames()==1000;}catch(...){std::this_thread::sleep_for(std::chrono::milliseconds(5));}}
     CHECK(releasedExportComplete);
     CHECK(!daw_begin_export(bridge.get(),bridgePath.c_str(),99));
+    // Stems: one pre-master WAV per audible track, silent tracks skipped, honest rejects.
+    {   std::vector<float> leadSamples(2000,0.5f),padSamples(2000,-0.25f);
+        auto lead=std::make_shared<const daw::Clip>(std::move(leadSamples)),pad=std::make_shared<const daw::Clip>(std::move(padSamples));
+        daw::Session stems;stems.import("Lead/Vox",lead,0);stems.import("Pad",pad,1);stems.import("Skipped",lead,2);stems.mute(3,true,3);stems.masterGain(-2,4);
+        auto stemRoot=root/"stems";std::filesystem::create_directories(stemRoot);
+        rejects([&]{daw::writeStems(stems.state(),(root/"no-such-dir").string(),daw::WavFormat::Float32);});
+        daw::writeStems(stems.state(),stemRoot.string(),daw::WavFormat::Float32);
+        auto stemA=daw::readWav((stemRoot/"01 - Lead_Vox.wav").string()),stemB=daw::readWav((stemRoot/"02 - Pad.wav").string());
+        CHECK(stemA->frames()==1000&&stemB->frames()==1000);
+        CHECK(!std::filesystem::exists(stemRoot/"03 - Skipped.wav"));
+        for(size_t i=0;i<1000;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(stemA->samples()[i*2]-0.5f*smoothed)<0.00002f&&std::abs(stemB->samples()[i*2]+0.25f*smoothed)<0.00002f);}
+        auto mixPath=(root/"stems-mix.wav").string();daw::writeWav(stems.state(),mixPath,daw::WavFormat::Float32);auto mix=daw::readWav(mixPath);
+        const auto master=std::pow(10.0,-2.0/20.0);
+        for(size_t i=700;i<1000;++i){const auto sum=(stemA->samples()[i]+stemB->samples()[i])*float(master);CHECK(std::abs(mix->samples()[i]-sum)<0.01f);}  // fader smoothers converge: tail agrees with the sum of stems
+        daw::Session quiet;quiet.import("Q",pad,0);quiet.mute(1,true,1);
+        rejects([&]{daw::writeStems(quiet.state(),stemRoot.string(),daw::WavFormat::Float32);});
+    }
     const auto inspected=daw::inspectExportTail(session.state(),{daw::ExportTailMode::ManualLimit,48000});
     CHECK(inspected.finiteTailFrames==0&&!inspected.infiniteTailDetected&&inspected.selectedTailFrames==0);
-    std::cout<<"PASS: tail classification/policy, full/range playback parity, PCM24 TPDF tolerance, WAV headers, atomic cancel, async C bridge\n";return 0;
+    std::cout<<"PASS: tail classification/policy, full/range playback parity, PCM24 TPDF tolerance, WAV headers, atomic cancel, per-track stems, async C bridge\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

@@ -294,6 +294,39 @@ extension DraftApp {
         exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
         updateStorageStatus()
     }
+    @objc func exportStems() {
+        guard !exportBusy else { storageMessage("Экспорт уже выполняется."); return }
+        if isRecording { finishRecording(); guard !isRecording else { return } }
+        finishEditing()
+        let defaults = UserDefaults.standard
+        let storedModeRaw = defaults.integer(forKey: "export.tail.mode.v1")
+        let storedLimitRaw = defaults.integer(forKey: "export.tail.limitSeconds.v1")
+        let storedMode = UInt32(max(0, storedModeRaw))
+        let storedLimit = UInt32(max(0, storedLimitRaw))
+        var initialOptions = daw_export_options(); initialOptions.struct_size = UInt32(MemoryLayout<daw_export_options>.size); initialOptions.version = UInt32(DAW_EXPORT_OPTIONS_VERSION)
+        initialOptions.tail_mode = storedMode >= UInt32(DAW_EXPORT_TAIL_AUTOMATIC) && storedMode <= UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT) ? storedMode : UInt32(DAW_EXPORT_TAIL_AUTOMATIC)
+        initialOptions.manual_tail_frames = [2, 5, 15, 30].contains(Int(storedLimit)) ? storedLimit * 48_000 : 30 * 48_000
+        var tailSummary = daw_export_tail_summary(); tailSummary.struct_size = UInt32(MemoryLayout<daw_export_tail_summary>.size)
+        guard check(daw_get_export_tail_summary(session, &initialOptions, &tailSummary)) else { return }
+        let tailDialog = WavExportTailDialog(storedMode: initialOptions.tail_mode, storedLimitSeconds: initialOptions.manual_tail_frames / 48_000, summary: tailSummary)
+        let choice = NSAlert(); choice.messageText = "Экспорт стемов"
+        choice.informativeText = "Весь проект, по WAV-файлу на слышимую дорожку: мастер-гейн и мастер-цепочка не применяются (сумма стемов даёт микс до мастера). Замьюченные и пустые дорожки пропускаются."
+        choice.accessoryView = tailDialog.view
+        choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
+        let response = choice.runModal()
+        guard response != .alertThirdButtonReturn else { return }
+        let format: Int32 = response == .alertSecondButtonReturn ? 2 : 1
+        var options = tailDialog.options; tailDialog.persist()
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        if let currentURL { panel.directoryURL = currentURL.deletingLastPathComponent() }
+        panel.message = "Папка для стемов — файлы получат имена «01 − дорожка.wav», «02 − …»"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let job = daw_begin_stem_export(session, url.path, format, &options)
+        guard let job else { _ = check(1); return }
+        exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
+        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
+        updateStorageStatus()
+    }
     @objc func exportDawproject() {
         guard !exportBusy else { storageMessage("Экспорт уже выполняется."); return }
         if isRecording { finishRecording(); guard !isRecording else { return } }

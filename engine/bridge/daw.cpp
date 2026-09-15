@@ -997,6 +997,11 @@ daw_export_job* daw_begin_export_range_with_options(daw_session* s,const char* p
         auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExportRange(s->model.state(),required(path),exportFormat(format),startFrame,endFrame,exportOptions(options));job=handle.release();
     });return job;
 }
+daw_export_job* daw_begin_stem_export(daw_session* s,const char* directory,int32_t format,const daw_export_options* options) {
+    daw_export_job* job=nullptr;guard(s,[&]{
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startStemExport(s->model.state(),required(directory),exportFormat(format),exportOptions(options));job=handle.release();
+    });return job;
+}
 int daw_poll_export(daw_export_job* job,daw_export_status* out) {
     if(!job||!out||out->struct_size!=sizeof(daw_export_status))return 1;auto& result=*job->result;
     out->status=result.status.load(std::memory_order_acquire);out->revision=result.revision;out->rendered_frames=result.renderedFrames.load(std::memory_order_acquire);out->total_frames=result.totalFrames;

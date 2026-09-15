@@ -60,6 +60,10 @@ daw_export_job* daw_begin_export_range(daw_session*,const char* path,int32_t for
 int daw_get_export_tail_summary(daw_session*,const daw_export_options*,daw_export_tail_summary*);
 daw_export_job* daw_begin_export_with_options(daw_session*,const char* path,int32_t format,const daw_export_options*);
 daw_export_job* daw_begin_export_range_with_options(daw_session*,const char* path,int32_t format,uint64_t start_frame,uint64_t end_frame,const daw_export_options*);
+/* Per-track stem export: one pre-master WAV per audible track into an existing
+ * directory ("NN - name.wav"). Silent (user-muted or empty) tracks produce no
+ * file; progress aggregates across stems and cancel lands between files. */
+daw_export_job* daw_begin_stem_export(daw_session*,const char* directory,int32_t format,const daw_export_options*);
 int daw_poll_export(daw_export_job*,daw_export_status*);
 void daw_cancel_export(daw_export_job*);
 void daw_release_export(daw_export_job*);

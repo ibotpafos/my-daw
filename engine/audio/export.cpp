@@ -360,4 +360,127 @@ std::shared_ptr<ExportResult> startExport(State snapshot, std::string path,
   return startExportRange(std::move(snapshot), std::move(path), format, 0,
                           renderer.duration(), options);
 }
+
+namespace {
+bool stemSafeName(std::size_t index, const std::string &name,
+                  std::string &out) {
+  std::string clean;
+  for (const char c : name) {
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == ' ' || c == '-' ||
+                    c == '_' || c == '.';
+    clean.push_back(ok ? c : '_');
+  }
+  while (!clean.empty() && clean.back() == ' ') clean.pop_back();
+  while (!clean.empty() && clean.front() == ' ') clean.erase(clean.begin());
+  if (clean.empty()) clean = "Track";
+  char prefix[8];
+  std::snprintf(prefix, sizeof(prefix), "%02zu", index + 1);
+  out = std::string(prefix) + " - " + clean + ".wav";
+  return true;
+}
+State stemSnapshot(const State &source, std::size_t track) {
+  State copy = source;
+  for (std::size_t i = 0; i < copy.tracks.size(); ++i)
+    copy.tracks[i].solo = (i == track);
+  copy.masterGain = 0;                       // unity: summing stems restores gain once
+  copy.masterGainAutomation.clear();         // no lane = plain smoothed fader path
+  copy.masterInserts.clear();                // stems are pre-master by convention
+  return copy;
+}
+// Probe one stem: false when the track is user-muted, holds no material,
+// or every one of its region clips is muted — silent tracks produce no file.
+bool stemDuration(const State &snapshot, std::size_t track,
+                  uint64_t &out) {
+  const auto &source = snapshot.tracks[track];
+  if (source.muted || (!source.audio && source.midiClips.empty() &&
+                       source.inserts.empty()))
+    return false;
+  if (source.audio) {
+    bool anyAudible = false;
+    for (const auto &region : source.regions)
+      if (!region.muted)
+        anyAudible = true;
+    if (!anyAudible && source.midiClips.empty() && source.inserts.empty())
+      return false;
+  }
+  try {
+    Renderer probe;
+    probe.prepare(stemSnapshot(snapshot, track));
+    out = probe.duration();
+  } catch (const Error &) {
+    return false;
+  }
+  return out > 0;
+}
+} // namespace
+
+void writeStems(const State &snapshot, const std::string &directory,
+                WavFormat format, ExportOptions options,
+                ExportResult *progress) {
+  if (directory.empty())
+    throw Error("Choose a stems directory");
+  std::error_code fs;
+  if (!std::filesystem::is_directory(directory, fs))
+    throw Error("Stems directory not found");
+  uint64_t written = 0;
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < snapshot.tracks.size(); ++i) {
+    uint64_t duration = 0;
+    if (!stemDuration(snapshot, i, duration))
+      continue;
+    std::string file;
+    stemSafeName(i, snapshot.tracks[i].name, file);
+    writeWavRange(stemSnapshot(snapshot, i),
+                  (std::filesystem::path(directory) / file).string(), format, 0,
+                  duration, options, nullptr);
+    written += duration;
+    ++count;
+    if (progress) {
+      progress->renderedFrames.store(written, std::memory_order_release);
+      if (progress->cancel.load(std::memory_order_acquire))
+        throw ExportCanceled{};
+    }
+  }
+  if (count == 0)
+    throw Error("No audible track to export");
+}
+
+std::shared_ptr<ExportResult> startStemExport(State snapshot,
+                                               std::string directory,
+                                               WavFormat format,
+                                               ExportOptions options) {
+  if (directory.empty())
+    throw Error("Choose a stems directory");
+  uint64_t total = 0;
+  for (std::size_t i = 0; i < snapshot.tracks.size(); ++i) {
+    uint64_t duration = 0;
+    if (stemDuration(snapshot, i, duration))
+      total += duration;
+  }
+  if (total == 0)
+    throw Error("No audible track to export");
+  auto permit = tryAcquireBackgroundJob();
+  if (!permit)
+    throw Error("Background job capacity reached");
+  auto result = std::make_shared<ExportResult>(snapshot.revision, total);
+  std::thread([snapshot = std::move(snapshot), directory = std::move(directory),
+               format, options, result, permit = std::move(permit)] {
+    (void)permit;
+    try {
+      writeStems(snapshot, directory, format, options, result.get());
+      result->status.store(1, std::memory_order_release);
+    } catch (const ExportCanceled &) {
+      result->status.store(3, std::memory_order_release);
+    } catch (const std::exception &error) {
+      std::snprintf(result->error, sizeof(result->error), "%s", error.what());
+      result->status.store(2, std::memory_order_release);
+    } catch (...) {
+      std::snprintf(result->error, sizeof(result->error),
+                    "Unknown export error");
+      result->status.store(2, std::memory_order_release);
+    }
+  }).detach();
+  return result;
+}
 } // namespace daw
