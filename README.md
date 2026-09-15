@@ -20,6 +20,8 @@
 4. [Первая версия](docs/02-mvp.md) — требования с критериями готовности.
 5. [План реализации](docs/11-roadmap.md) и [первый цикл разработки](docs/12-development.md).
 
+Правила подготовки веток, проверок и pull request описаны в [CONTRIBUTING.md](CONTRIBUTING.md). Лицензия пока не выбрана; текущее предложение и dependency policy находятся в [open-source policy](docs/13-open-source.md).
+
 ## Целевое решение в одном экране
 
 | Область | Базовый выбор |
