@@ -8,7 +8,7 @@
 #include <vector>
 namespace daw {
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
-struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; bool operator==(const Region&) const = default; };
+struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool operator==(const Region&) const = default; };
 struct Take { std::string name; uint64_t start=0; std::shared_ptr<const Clip> audio; bool operator==(const Take&) const = default; };
 struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operator==(const Send&) const = default; };
 // Ordered timeline points for the track fader. Frames are project frames at
@@ -53,7 +53,7 @@ constexpr uint64_t kMaxMidiNoteLength = 10ULL * 48000;
 constexpr size_t kMaxMidiClipsPerTrack = 64;
 constexpr size_t kMaxMidiNotesPerProject = 65536;
 struct MidiNote { uint64_t start=0, length=0; uint8_t pitch=0, channel=0, velocity=0; bool operator==(const MidiNote&) const = default; };
-struct MidiClip { uint64_t start=0, length=0; std::vector<MidiNote> notes; int track=-1; bool operator==(const MidiClip&) const = default; };
+struct MidiClip { uint64_t start=0, length=0; std::vector<MidiNote> notes; int track=-1; uint32_t color=0; bool operator==(const MidiClip&) const = default; };
 // Project tempo/time-signature maps. Both lanes are ordered by project frame
 // (48 kHz, bounded by kMaxMidiFrame), never duplicate a frame, and always keep
 // their primary point at frame 0 (120 BPM, 4/4). Frames are absolute timeline
@@ -78,7 +78,7 @@ constexpr size_t kMaxMarkersPerProject=256;
 struct Marker { uint64_t frame=0; std::string name; bool operator==(const Marker&) const = default; };
 struct PluginInsert { uint64_t id=0; uint32_t type=0, subtype=0, manufacturer=0; std::string name; bool bypassed=false; uint32_t latencyFrames=0; std::vector<uint8_t> state; std::vector<PluginParameterAutomationLane> parameterAutomation; PluginHostingMode hostingMode=PluginHostingMode::InProcess; bool operator==(const PluginInsert&) const = default; };
 bool isVst3PluginInsert(const PluginInsert& plugin) noexcept;
-struct Track { uint64_t id; std::string name; double gain; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
+struct Track { uint64_t id; std::string name; double gain; uint32_t color = 0; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
 struct Bus { uint64_t id=0; std::string name; double gain=0; double pan=0; bool muted=false; uint64_t outputBus=0; std::vector<AutomationPoint> gainAutomation; std::vector<PluginInsert> inserts; bool operator==(const Bus&) const = default; };
 struct State {
     uint64_t revision = 0;
@@ -136,6 +136,14 @@ public:
     void pan(uint64_t id, double value, uint64_t expected);
     void mute(uint64_t id, bool value, uint64_t expected);
     void solo(uint64_t id, bool value, uint64_t expected);
+    // Track mute/solo/color/gain/duplicate follow the audio-clip convention:
+    // expected revision, silent no-op when the target value is already identical,
+    // and one snapshot-based undo entry per committed command.
+    void setTrackMuted(uint64_t id, bool muted, uint64_t expected);
+    void setTrackSolo(uint64_t id, bool solo, uint64_t expected);
+    void setTrackColor(uint64_t id, uint32_t color, uint64_t expected);
+    void setTrackGain(uint64_t id, double gainDb, uint64_t expected);
+    uint64_t duplicateTrack(uint64_t id, uint64_t expected);
     void masterGain(double value, uint64_t expected);
     void addBus(const std::string& name,uint64_t expected);
     void renameBus(uint64_t id,const std::string& name,uint64_t expected);
@@ -214,6 +222,13 @@ public:
     void moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected);
     void trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t expected);
     void splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected);
+    // Clip and MIDI-clip property commands: expected revision, silent no-op when
+    // the target value is already identical, one snapshot-based undo entry.
+    void setClipColor(uint64_t id, uint32_t clipIndex, uint32_t color, uint64_t expected);
+    void setClipGain(uint64_t id, uint32_t clipIndex, double gainDb, uint64_t expected);
+    void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
+    void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
+    void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);
     // Tempo/time-signature map commands follow the automation convention:
     // expected revision, upsert replaces a same-frame point, an identical
     // value is a silent no-op, and the primary frame-0 point cannot be

@@ -277,7 +277,7 @@ void Session::commit(State next) {
 }
 void Session::add(const std::string& name, uint64_t expected) {
     check(expected); State next = current;
-    next.tracks.push_back({next.nextID++, name, 0, {}, {},0,false,false,0,{},0,{},{},{},{},{}}); commit(std::move(next));
+    next.tracks.push_back({next.nextID++, name, 0.0, 0u, {}, {}, 0.0, false, false, 0, {}, 0, {}, {}, {}, {}, {}}); commit(std::move(next));
 }
 void Session::removeTrack(uint64_t id, uint64_t expected) {
     check(expected);
@@ -310,7 +310,7 @@ void Session::import(const std::string& name, std::shared_ptr<const Clip> clip, 
 }
 void Session::importAt(const std::string& name, std::shared_ptr<const Clip> clip, uint64_t start, uint64_t expected) {
     check(expected); if(!clip) throw Error("Missing clip");
-    auto frames=clip->frames(); State next=current; next.tracks.push_back({next.nextID++,name,0,std::move(clip),{{start,0,frames,0,0}},0,false,false,start,{},0,{},{},{},{},{}});commit(std::move(next));
+    auto frames=clip->frames(); State next=current; next.tracks.push_back({next.nextID++,name,0.0,0u,std::move(clip),{{start,0,frames,0,0}},0.0,false,false,start,{},0,{},{},{},{},{}});commit(std::move(next));
 }
 void Session::rename(uint64_t id, const std::string& name, uint64_t expected) {
     check(expected); State next = current;
@@ -329,6 +329,11 @@ void Session::gain(uint64_t id, double value, uint64_t expected) {
 void Session::pan(uint64_t id,double value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->pan==value)return;it->pan=value;commit(std::move(next));}
 void Session::mute(uint64_t id,bool value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->muted==value)return;it->muted=value;commit(std::move(next));}
 void Session::solo(uint64_t id,bool value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->solo==value)return;it->solo=value;commit(std::move(next));}
+void Session::setTrackMuted(uint64_t id,bool muted,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->muted==muted)return;it->muted=muted;commit(std::move(next));}
+void Session::setTrackSolo(uint64_t id,bool solo,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->solo==solo)return;it->solo=solo;commit(std::move(next));}
+void Session::setTrackColor(uint64_t id,uint32_t color,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->color==color)return;it->color=color;commit(std::move(next));}
+void Session::setTrackGain(uint64_t id,double gainDb,uint64_t expected){check(expected);if(!std::isfinite(gainDb)||gainDb<-60.0||gainDb>12.0)throw Error("Track gain outside -60..12 dB");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->gain==gainDb)return;it->gain=gainDb;commit(std::move(next));}
+uint64_t Session::duplicateTrack(uint64_t id,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(next.tracks.size()>=256)throw Error("Project supports at most 256 tracks");Track copy=*it;copy.id=next.nextID++;copy.name=it->name+" copy";const uint64_t newId=copy.id;next.tracks.push_back(std::move(copy));commit(std::move(next));return newId;}
 void Session::masterGain(double value,uint64_t expected){check(expected);if(current.masterGain==value)return;State next=current;next.masterGain=value;commit(std::move(next));}
 void Session::addBus(const std::string& name,uint64_t expected){check(expected);State next=current;next.buses.push_back({next.nextID++,name,0,0,false,0,{},{}});commit(std::move(next));}
 void Session::renameBus(uint64_t id,const std::string& name,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->name==name)return;it->name=name;commit(std::move(next));}
@@ -613,7 +618,7 @@ void Session::trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uin
         if(absolute<newStart||absoluteEnd>newStart+newLength)continue;
         auto moved=note; moved.start=absolute-newStart; kept.push_back(moved);
     }
-    clip={newStart,newLength,std::move(kept),clip.track}; commit(std::move(next));
+    clip={newStart,newLength,std::move(kept),clip.track,clip.color}; commit(std::move(next));
 }
 void Session::splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected) {
     check(expected); State next=current; auto scope=findMidiTrack(next,trackID,index);
@@ -626,10 +631,15 @@ void Session::splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uin
         else if(note.start>=leftLength){auto moved=note;moved.start-=leftLength;right.push_back(moved);}
         else throw Error("A MIDI note cannot cross the split position");
     }
-    scope.track->midiClips[index]={original.start,leftLength,std::move(left),original.track};
-    scope.track->midiClips.insert(scope.track->midiClips.begin()+index+1,{atFrame,rightLength,std::move(right),original.track});
+    scope.track->midiClips[index]={original.start,leftLength,std::move(left),original.track,original.color};
+    scope.track->midiClips.insert(scope.track->midiClips.begin()+index+1,{atFrame,rightLength,std::move(right),original.track,original.color});
     commit(std::move(next));
 }
+void Session::setClipColor(uint64_t id,uint32_t clipIndex,uint32_t color,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.color==color)return;region.color=color;commit(std::move(next));}
+void Session::setClipGain(uint64_t id,uint32_t clipIndex,double gainDb,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");if(!std::isfinite(gainDb)||gainDb<-60.0||gainDb>12.0)throw Error("Clip gain outside -60..12 dB");auto& region=it->regions[clipIndex];if(region.gain==gainDb)return;region.gain=gainDb;commit(std::move(next));}
+void Session::setMidiClipColor(uint64_t trackID,uint32_t index,uint32_t color,uint64_t expected){check(expected);State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];if(clip.color==color)return;clip.color=color;commit(std::move(next));}
+void Session::transposeMidiClip(uint64_t trackID,uint32_t index,int8_t semitones,uint64_t expected){check(expected);if(semitones==0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const int v=static_cast<int>(note.pitch)+semitones;const uint8_t p=v<0?0:(v>127?127:static_cast<uint8_t>(v));if(p!=note.pitch)changed=true;note.pitch=p;}if(!changed)return;commit(std::move(next));}
+void Session::quantizeMidiClip(uint64_t trackID,uint32_t index,double gridBeats,uint64_t expected){check(expected);if(gridBeats<=0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const double beats=next.beatsAtFrame(note.start);const double snapped=std::round(beats/gridBeats)*gridBeats;const uint64_t frame=next.frameAtBeats(snapped);if(frame!=note.start)changed=true;note.start=frame;}if(!changed)return;commit(std::move(next));}
 namespace {
 // Frames per beat at a tempo: 60/bpm seconds at the fixed 48 kHz project rate.
 constexpr long double framesPerBeat(double bpm) noexcept { return 2880000.0L/static_cast<long double>(bpm); }

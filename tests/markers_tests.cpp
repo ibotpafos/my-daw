@@ -113,7 +113,7 @@ int main(){try{
         CHECK(m.state().revision==259&&m.state().markers.size()==256);
     }
 
-    // ---- Storage: v18 round trip with RU names, v17 fallback, corruption ----
+    // ---- Storage: v19 round trip with RU names, v17/v18 fallback, corruption ----
     {   Session w; w.add("Wired",0);
         w.addMarker(0,"Начало",1);
         w.addMarker(480000,"Куплет 1",2);
@@ -126,7 +126,7 @@ int main(){try{
         auto stamped=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(stamped,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==18);
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==19);
         sqlite3_finalize(version);
         CHECK(sqlite3_exec(stamped,"INSERT INTO markers VALUES(480000,'dup');",nullptr,nullptr,nullptr)!=SQLITE_OK);  // the key itself blocks a duplicate
         CHECK(sqlite3_exec(stamped,"PRAGMA user_version=17;",nullptr,nullptr,nullptr)==SQLITE_OK);
@@ -135,7 +135,7 @@ int main(){try{
         CHECK(legacy.markers.empty());
         CHECK(legacy.tempo==w.state().tempo&&legacy.tracks==w.state().tracks);
 
-        Session z; z.add("Quiet",0);                                             // an empty lane round-trips through v18
+        Session z; z.add("Quiet",0);                                             // an empty lane round-trips through v19
         const auto quietPath=dir/"markers-empty.mydawdraft";
         writeDraft(z.state(),quietPath.string());
         const auto quiet=readDraft(quietPath.string());
@@ -166,6 +166,6 @@ int main(){try{
         CHECK(fixed.markers==w.state().markers);                                  // the reader's ORDER BY normalises the lane
     }
 
-    std::cout << "PASS: marker model: optional strictly-ordered locator lane reusing the 1-120 character name rule, three revision-checked commands with duplicate-frame rejects and silent no-op renames, undo/redo, writeDraft/readDraft round trip at schema v18 with v17 default-empty fallback, primary-key uniqueness and 256-marker caps" << std::endl;
+    std::cout << "PASS: marker model: optional strictly-ordered locator lane reusing the 1-120 character name rule, three revision-checked commands with duplicate-frame rejects and silent no-op renames, undo/redo, writeDraft/readDraft round trip at schema v19 with v17/v18 default-empty fallback, primary-key uniqueness and 256-marker caps" << std::endl;
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}

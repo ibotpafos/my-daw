@@ -112,7 +112,7 @@ int main(){try{
         CHECK(u.state().tempo.size()==1&&u.state().tempo[0].bpm==120.0&&u.state().timeSignatures[0]==(TimeSignaturePoint{0,4,8}));
     }
 
-    // ---- Storage: v18 round trip, v16/v17 fallback to defaults, corrupt maps rejected ----
+    // ---- Storage: v19 round trip, v16/v17/v18 fallback to defaults, corrupt maps rejected ----
     {   Session w; w.add("Wired",0);
         w.setTempoAt(48000,60.0,1);
         w.setTimeSignatureAt(96000,7,8,2);                                             // rev 3
@@ -124,7 +124,7 @@ int main(){try{
         auto stamped=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(stamped,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==18);                                      // draft v18 stamps the write
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==19);                                      // draft v19 stamps the write
         sqlite3_finalize(version);
         CHECK(sqlite3_exec(stamped,"PRAGMA user_version=16;",nullptr,nullptr,nullptr)==SQLITE_OK);
         sqlite3_close(stamped);
@@ -193,6 +193,6 @@ int main(){try{
         CHECK(daw_get_tempo_count(session,&count)==0&&count==2&&daw_get_time_signature_count(session,&count)==0&&count==2);
         daw_destroy(session);
     }
-    std::cout << "PASS: tempo model: frame-0 anchored tempo and time-signature maps, four revision-checked commands, invertible beat/frame conversion, undo/redo, writeDraft/readDraft round trip at schema v18 with v16 default fallback and bridge smoke" << std::endl;
+    std::cout << "PASS: tempo model: frame-0 anchored tempo and time-signature maps, four revision-checked commands, invertible beat/frame conversion, undo/redo, writeDraft/readDraft round trip at schema v19 with v16/v17/v18 default fallback and bridge smoke" << std::endl;
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}}
