@@ -1702,7 +1702,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func markerMenu(_ marker: ProjectMarker) -> NSMenu {
         let menu = NSMenu(); menu.autoenablesItems = false
-        for (title, selector) in [("Перейти к маркеру", #selector(markerSeekAction(_:))), ("Переименовать…", #selector(markerRenameAction(_:))), ("Удалить маркер", #selector(markerDeleteAction(_:)))] {
+        for (title, selector) in [("Перейти к маркеру", #selector(markerSeekAction(_:))), ("Цикл отсюда до следующего", #selector(markerLoopAction(_:))), ("Переименовать…", #selector(markerRenameAction(_:))), ("Удалить маркер", #selector(markerDeleteAction(_:)))] {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; item.representedObject = marker; menu.addItem(item)
         }
         return menu
@@ -1722,6 +1722,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard let marker = sender.representedObject as? ProjectMarker, !isRecording else { return }
         finishEditing()
         if check(daw_remove_marker(session, marker.frame, revision)) { refresh(); pollTransport() }
+    }
+    @objc func markerLoopAction(_ sender: NSMenuItem) {
+        guard let marker = sender.representedObject as? ProjectMarker, !isRecording else { return }
+        finishEditing()
+        guard let next = timelineRuler.markers.map({ $0.frame }).filter({ $0 > marker.frame }).min() else {
+            storageMessage("Нет маркера правее — добавь его, чтобы задать конец цикла."); return
+        }
+        if check(daw_set_loop(session, 1, marker.frame, next)) { rangeStart = marker.frame; rangeEnd = next; loopEnabled = true; updateTimelineTools(); pollTransport() }
     }
     @objc func menuAddMarkerAtPlayhead() { promptAddMarker(playheadFrame) }
     @objc func changeTempo(_ sender:NSStepper) { commitTempo(Double(sender.integerValue)) }
