@@ -385,6 +385,25 @@ int daw_get_midi_clip_count(daw_session*, uint64_t track_id, uint32_t* count);
  * *written reports notes copied for this page. Pass notes=NULL/capacity=0 to
  * query metadata only. capacity above DAW_MIDI_NOTES_PER_CALL is an error. */
 int daw_get_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, daw_midi_clip* out, uint32_t note_offset, daw_midi_note* notes, uint32_t capacity, uint32_t* written);
+/* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0
+ * anchored (120 BPM, 4/4), at most 64 points each. Upsert replaces a point at
+ * the same frame; an identical value is a successful no-op without a revision.
+ * The first (frame-0) point cannot be removed. The bridge pre-validates ABI
+ * shape and obvious value ranges; ordering, timeline and capacity rules stay
+ * inside the domain. */
+enum { DAW_TEMPO_POINT_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t frame; double bpm; } daw_tempo_point;
+enum { DAW_TIME_SIGNATURE_POINT_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; uint64_t frame; uint8_t numerator; uint8_t denominator; } daw_time_signature_point;
+int daw_set_tempo(daw_session*, uint64_t frame, double bpm, uint64_t expected_revision);
+int daw_remove_tempo(daw_session*, uint64_t frame, uint64_t expected_revision);
+int daw_set_time_signature(daw_session*, uint64_t frame, uint32_t numerator, uint32_t denominator, uint64_t expected_revision);
+int daw_remove_time_signature(daw_session*, uint64_t frame, uint64_t expected_revision);
+/* Indexes are vector positions in frame order; count covers the whole map. */
+int daw_get_tempo_count(daw_session*, uint32_t* count);
+int daw_get_tempo_point(daw_session*, uint32_t index, daw_tempo_point* out);
+int daw_get_time_signature_count(daw_session*, uint32_t* count);
+int daw_get_time_signature_point(daw_session*, uint32_t index, daw_time_signature_point* out);
 /* Preview is read-only. Pass changes=NULL/capacity=0 to query change_count.
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);

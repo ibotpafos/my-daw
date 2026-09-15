@@ -65,7 +65,7 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
     if(observer) observer(1);
     {
         auto db = open(":memory:", SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
-        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=16; BEGIN IMMEDIATE;"
+        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=17; BEGIN IMMEDIATE;"
             "CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, next_id INTEGER NOT NULL, master_gain REAL NOT NULL);"
             "CREATE TABLE tracks(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pcm BLOB, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), solo INTEGER NOT NULL CHECK(solo IN(0,1)), base_start INTEGER NOT NULL, output_bus INTEGER NOT NULL);"
             "CREATE TABLE takes(track_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, take_start INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(track_id,position));"
@@ -79,7 +79,9 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
             "CREATE TABLE channel_plugins(owner_kind INTEGER NOT NULL CHECK(owner_kind IN(1,2,3)), owner_id INTEGER NOT NULL, position INTEGER NOT NULL, id INTEGER UNIQUE NOT NULL, type INTEGER NOT NULL, subtype INTEGER NOT NULL, manufacturer INTEGER NOT NULL, name TEXT NOT NULL, bypassed INTEGER NOT NULL CHECK(bypassed IN(0,1)), latency_frames INTEGER NOT NULL, state BLOB NOT NULL, hosting_mode INTEGER NOT NULL CHECK(hosting_mode IN(1,2)), PRIMARY KEY(owner_kind,owner_id,position));"
             "CREATE TABLE plugin_parameter_automation(plugin_id INTEGER NOT NULL, parameter_id INTEGER NOT NULL, lane_position INTEGER NOT NULL, point_position INTEGER NOT NULL, frame INTEGER NOT NULL, normalized_value REAL NOT NULL, name TEXT NOT NULL, PRIMARY KEY(plugin_id,lane_position,point_position), UNIQUE(plugin_id,parameter_id,frame));"
             "CREATE TABLE midi_clips(track_id INTEGER NOT NULL, position INTEGER NOT NULL, start INTEGER NOT NULL, length INTEGER NOT NULL, lane INTEGER NOT NULL, PRIMARY KEY(track_id,position));"
-            "CREATE TABLE midi_notes(track_id INTEGER NOT NULL, clip_position INTEGER NOT NULL, position INTEGER NOT NULL, start INTEGER NOT NULL, length INTEGER NOT NULL, pitch INTEGER NOT NULL, channel INTEGER NOT NULL, velocity INTEGER NOT NULL, PRIMARY KEY(track_id,clip_position,position));");
+            "CREATE TABLE midi_notes(track_id INTEGER NOT NULL, clip_position INTEGER NOT NULL, position INTEGER NOT NULL, start INTEGER NOT NULL, length INTEGER NOT NULL, pitch INTEGER NOT NULL, channel INTEGER NOT NULL, velocity INTEGER NOT NULL, PRIMARY KEY(track_id,clip_position,position));"
+            "CREATE TABLE tempo_points(frame INTEGER PRIMARY KEY, bpm REAL NOT NULL);"
+            "CREATE TABLE time_signature_points(frame INTEGER PRIMARY KEY, numerator INTEGER NOT NULL, denominator INTEGER NOT NULL);");
         auto meta = prepare(db.get(), "INSERT INTO metadata VALUES(1,?,?,?)");
         sqlite3_bind_int64(meta.get(), 1, static_cast<int64_t>(state.revision));
         sqlite3_bind_int64(meta.get(), 2, static_cast<int64_t>(state.nextID));sqlite3_bind_double(meta.get(),3,state.masterGain); done(meta.get());
@@ -126,6 +128,10 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
         auto midiClipRow=prepare(db.get(),"INSERT INTO midi_clips VALUES(?,?,?,?,?)");
         auto midiNoteRow=prepare(db.get(),"INSERT INTO midi_notes VALUES(?,?,?,?,?,?,?,?)");
         for(const auto& track:state.tracks)for(size_t position=0;position<track.midiClips.size();++position){const auto& clip=track.midiClips[position];sqlite3_reset(midiClipRow.get());sqlite3_clear_bindings(midiClipRow.get());sqlite3_bind_int64(midiClipRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(midiClipRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(midiClipRow.get(),3,static_cast<int64_t>(clip.start));sqlite3_bind_int64(midiClipRow.get(),4,static_cast<int64_t>(clip.length));sqlite3_bind_int64(midiClipRow.get(),5,clip.track);done(midiClipRow.get());for(size_t notePosition=0;notePosition<clip.notes.size();++notePosition){const auto& note=clip.notes[notePosition];sqlite3_reset(midiNoteRow.get());sqlite3_clear_bindings(midiNoteRow.get());sqlite3_bind_int64(midiNoteRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(midiNoteRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(midiNoteRow.get(),3,static_cast<int64_t>(notePosition));sqlite3_bind_int64(midiNoteRow.get(),4,static_cast<int64_t>(note.start));sqlite3_bind_int64(midiNoteRow.get(),5,static_cast<int64_t>(note.length));sqlite3_bind_int64(midiNoteRow.get(),6,note.pitch);sqlite3_bind_int64(midiNoteRow.get(),7,note.channel);sqlite3_bind_int64(midiNoteRow.get(),8,note.velocity);done(midiNoteRow.get());}}
+        auto tempoRow=prepare(db.get(),"INSERT INTO tempo_points VALUES(?,?)");
+        for(const auto& point:state.tempo){sqlite3_reset(tempoRow.get());sqlite3_clear_bindings(tempoRow.get());sqlite3_bind_int64(tempoRow.get(),1,static_cast<int64_t>(point.frame));sqlite3_bind_double(tempoRow.get(),2,point.bpm);done(tempoRow.get());}
+        auto timeSignatureRow=prepare(db.get(),"INSERT INTO time_signature_points VALUES(?,?,?)");
+        for(const auto& point:state.timeSignatures){sqlite3_reset(timeSignatureRow.get());sqlite3_clear_bindings(timeSignatureRow.get());sqlite3_bind_int64(timeSignatureRow.get(),1,static_cast<int64_t>(point.frame));sqlite3_bind_int64(timeSignatureRow.get(),2,point.numerator);sqlite3_bind_int64(timeSignatureRow.get(),3,point.denominator);done(timeSignatureRow.get());}
         sql(db.get(), "COMMIT");
         sqlite3_int64 size=0;
         std::unique_ptr<unsigned char,decltype(&sqlite3_free)> image(sqlite3_serialize(db.get(),"main",&size,0),sqlite3_free);
@@ -157,7 +163,7 @@ State readDraft(const std::string& path) {
     auto version = prepare(db.get(), "PRAGMA user_version");
     if (sqlite3_step(version.get()) != SQLITE_ROW) throw Error("Missing draft version");
     auto formatVersion=integer(version.get(),0);
-    if(formatVersion<1 || formatVersion>16) throw Error("Unsupported draft version");
+    if(formatVersion<1 || formatVersion>17) throw Error("Unsupported draft version");
     auto integrity = prepare(db.get(), "PRAGMA quick_check");
     if (sqlite3_step(integrity.get()) != SQLITE_ROW || string(integrity.get(), 0) != "ok") throw Error("Damaged draft database");
     auto meta = prepare(db.get(),formatVersion>=7?"SELECT singleton,revision,next_id,master_gain FROM metadata":"SELECT singleton,revision,next_id,0 FROM metadata");
@@ -263,6 +269,26 @@ State readDraft(const std::string& path) {
         auto midiNotes=prepare(db.get(),"SELECT track_id,clip_position,position,start,length,pitch,channel,velocity FROM midi_notes ORDER BY track_id,clip_position,position");size_t totalNotes=0;
         while((rc=sqlite3_step(midiNotes.get()))==SQLITE_ROW){const auto trackID=static_cast<uint64_t>(integer(midiNotes.get(),0));auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==state.tracks.end())throw Error("MIDI note owner not found");const auto clipPosition=integer(midiNotes.get(),1),notePosition=integer(midiNotes.get(),2);if(clipPosition<0||clipPosition>=static_cast<int64_t>(track->midiClips.size()))throw Error("Invalid draft MIDI note order");auto& clip=track->midiClips[static_cast<size_t>(clipPosition)];if(notePosition!=static_cast<int64_t>(clip.notes.size()))throw Error("Invalid draft MIDI note order");const auto pitch=integer(midiNotes.get(),5),channel=integer(midiNotes.get(),6),velocity=integer(midiNotes.get(),7);if(pitch<0||pitch>127||channel<0||channel>15||velocity<1||velocity>127)throw Error("Invalid MIDI note fields");if(totalNotes>=kMaxMidiNotesPerProject)throw Error("MIDI notes exceed project limit");++totalNotes;clip.notes.push_back({static_cast<uint64_t>(integer(midiNotes.get(),3)),static_cast<uint64_t>(integer(midiNotes.get(),4)),static_cast<uint8_t>(pitch),static_cast<uint8_t>(channel),static_cast<uint8_t>(velocity)});}
         if(rc!=SQLITE_DONE)throw Error("Cannot read draft MIDI notes");
+    }
+    if(formatVersion>=17){
+        // v17 files own their maps: the reader clears the defaults, accepts
+        // whatever the tables contain in frame order, and lets validate()
+        // reject malformed ranges, sizes or a missing frame-0 anchor.
+        state.tempo.clear();
+        auto tempo=prepare(db.get(),"SELECT frame,bpm FROM tempo_points ORDER BY frame");
+        while((rc=sqlite3_step(tempo.get()))==SQLITE_ROW){
+            if(sqlite3_column_type(tempo.get(),1)!=SQLITE_FLOAT&&sqlite3_column_type(tempo.get(),1)!=SQLITE_INTEGER)throw Error("Invalid tempo value");
+            state.tempo.push_back({static_cast<uint64_t>(integer(tempo.get(),0)),sqlite3_column_double(tempo.get(),1)});
+        }
+        if(rc!=SQLITE_DONE)throw Error("Cannot read draft tempo points");
+        state.timeSignatures.clear();
+        auto timeSignatures=prepare(db.get(),"SELECT frame,numerator,denominator FROM time_signature_points ORDER BY frame");
+        while((rc=sqlite3_step(timeSignatures.get()))==SQLITE_ROW){
+            const auto numerator=integer(timeSignatures.get(),1),denominator=integer(timeSignatures.get(),2);
+            if(numerator<0||numerator>255||denominator<0||denominator>255)throw Error("Invalid time signature fields");
+            state.timeSignatures.push_back({static_cast<uint64_t>(integer(timeSignatures.get(),0)),static_cast<uint8_t>(numerator),static_cast<uint8_t>(denominator)});
+        }
+        if(rc!=SQLITE_DONE)throw Error("Cannot read draft time signature points");
     }
     validate(state); return state;
 }

@@ -679,6 +679,31 @@ int daw_get_midi_clip(daw_session* s,uint64_t trackID,uint32_t clipIndex,daw_mid
         if(written)*written=copied;
         return;}
     throw daw::Error("Track not found");});}
+/* Tempo and time-signature ABI sanity mirrors the MIDI block: obvious shape
+ * and range rejections happen before the domain owns the command. Changing a
+ * map alters the timeline, so a stale playback preparation is cancelled.
+ * exactly like the automation-point commands. */
+int daw_set_tempo(daw_session* s,uint64_t frame,double bpm,uint64_t rev){return guard(s,[&]{
+    if(!std::isfinite(bpm))throw daw::Error("Tempo must be finite");
+    s->model.setTempoAt(frame,bpm,rev);cancelStalePlaybackPreparation(s);});}
+int daw_remove_tempo(daw_session* s,uint64_t frame,uint64_t rev){return guard(s,[&]{s->model.removeTempo(frame,rev);cancelStalePlaybackPreparation(s);});}
+int daw_set_time_signature(daw_session* s,uint64_t frame,uint32_t numerator,uint32_t denominator,uint64_t rev){return guard(s,[&]{
+    if(numerator<1||numerator>32)throw daw::Error("Time signature numerator must be 1..32");
+    if(denominator!=1&&denominator!=2&&denominator!=4&&denominator!=8&&denominator!=16&&denominator!=32)throw daw::Error("Time signature denominator must be one of 1, 2, 4, 8, 16 or 32");
+    s->model.setTimeSignatureAt(frame,static_cast<uint8_t>(numerator),static_cast<uint8_t>(denominator),rev);cancelStalePlaybackPreparation(s);});}
+int daw_remove_time_signature(daw_session* s,uint64_t frame,uint64_t rev){return guard(s,[&]{s->model.removeTimeSignature(frame,rev);cancelStalePlaybackPreparation(s);});}
+int daw_get_tempo_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing tempo count output");*count=static_cast<uint32_t>(s->model.state().tempo.size());});}
+int daw_get_tempo_point(daw_session* s,uint32_t index,daw_tempo_point* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_tempo_point))throw daw::Error("Tempo point ABI mismatch");
+    const auto& tempo=s->model.state().tempo;
+    if(index>=tempo.size())throw daw::Error("Tempo point index out of range");
+    *out={};out->struct_size=sizeof(daw_tempo_point);out->version=DAW_TEMPO_POINT_VERSION;out->frame=tempo[index].frame;out->bpm=tempo[index].bpm;});}
+int daw_get_time_signature_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing time signature count output");*count=static_cast<uint32_t>(s->model.state().timeSignatures.size());});}
+int daw_get_time_signature_point(daw_session* s,uint32_t index,daw_time_signature_point* out){return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_time_signature_point))throw daw::Error("Time signature ABI mismatch");
+    const auto& signatures=s->model.state().timeSignatures;
+    if(index>=signatures.size())throw daw::Error("Time signature index out of range");
+    *out={};out->struct_size=sizeof(daw_time_signature_point);out->version=DAW_TIME_SIGNATURE_POINT_VERSION;out->frame=signatures[index].frame;out->numerator=signatures[index].numerator;out->denominator=signatures[index].denominator;});}
 int daw_undo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.undo(rev); resetTransport(s);}); }
 int daw_redo(daw_session* s,uint64_t rev) { return guard(s,[&]{s->model.redo(rev); resetTransport(s);}); }
 daw_save_job* daw_begin_save(daw_session* s,const char* path) {

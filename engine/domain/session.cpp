@@ -140,6 +140,28 @@ void validate(const State& state) {
     }
     if(!std::isfinite(state.masterGain)||state.masterGain < -120||state.masterGain > 24)throw Error("Master gain outside -120…24 dB");
     validateAutomation(state.masterGainAutomation,-120,24,"Master gain");
+    // Tempo and time-signature maps: sorted unique frames below the shared
+    // project timeline limit, bounded size, and an anchored primary point.
+    if(state.tempo.size()>kMaxTempoPointsPerProject)throw Error("Too many tempo points");
+    if(state.timeSignatures.size()>kMaxTimeSignaturePointsPerProject)throw Error("Too many time signature points");
+    if(state.tempo.empty()||state.tempo.front().frame!=0)throw Error("The tempo map must start at frame 0");
+    if(state.timeSignatures.empty()||state.timeSignatures.front().frame!=0)throw Error("The time signature map must start at frame 0");
+    {
+        uint64_t tempoPrevious=0,signaturePrevious=0;bool tempoFirst=true,signatureFirst=true;
+        for(const auto& point:state.tempo){
+            if(point.frame>=kMaxMidiFrame)throw Error("Tempo point exceeds the project timeline limit");
+            if(!std::isfinite(point.bpm)||point.bpm<=kMinTempoBpm||point.bpm>kMaxTempoBpm)throw Error("Tempo outside 20…999 BPM");
+            if(!tempoFirst&&point.frame<=tempoPrevious)throw Error("Tempo frames must be strictly ordered");
+            tempoPrevious=point.frame;tempoFirst=false;
+        }
+        for(const auto& point:state.timeSignatures){
+            if(point.frame>=kMaxMidiFrame)throw Error("Time signature point exceeds the project timeline limit");
+            if(point.numerator<1||point.numerator>32)throw Error("Time signature numerator outside 1…32");
+            if(!isTimeSignatureDenominator(point.denominator))throw Error("Time signature denominator must be one of 1, 2, 4, 8, 16 or 32");
+            if(!signatureFirst&&point.frame<=signaturePrevious)throw Error("Time signature frames must be strictly ordered");
+            signaturePrevious=point.frame;signatureFirst=false;
+        }
+    }
     if(audioCount>8||audioAssets>32 || audioBytes>64*1024*1024) throw Error("Prototype supports 8 audio tracks, 32 takes and 64 MiB decoded audio");
     if(state.buses.size()>16)throw Error("Project supports at most 16 buses");
     std::set<uint64_t> busIDs;
@@ -582,6 +604,81 @@ void Session::splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uin
     scope.track->midiClips[index]={original.start,leftLength,std::move(left),original.track};
     scope.track->midiClips.insert(scope.track->midiClips.begin()+index+1,{atFrame,rightLength,std::move(right),original.track});
     commit(std::move(next));
+}
+namespace {
+// Frames per beat at a tempo: 60/bpm seconds at the fixed 48 kHz project rate.
+constexpr long double framesPerBeat(double bpm) noexcept { return 2880000.0L/static_cast<long double>(bpm); }
+// Upsert helpers mirror upsertAutomation: given a sorted lane they keep it
+// sorted by inserting at the lower_bound slot.
+bool upsertTempo(std::vector<TempoPoint>& points,uint64_t frame,double bpm){
+    auto point=std::lower_bound(points.begin(),points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
+    if(point!=points.end()&&point->frame==frame){if(point->bpm==bpm)return false;point->bpm=bpm;return true;}
+    points.insert(point,{frame,bpm});return true;
+}
+bool upsertTimeSignature(std::vector<TimeSignaturePoint>& points,uint64_t frame,uint8_t numerator,uint8_t denominator){
+    auto point=std::lower_bound(points.begin(),points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
+    if(point!=points.end()&&point->frame==frame){if(point->numerator==numerator&&point->denominator==denominator)return false;point->numerator=numerator;point->denominator=denominator;return true;}
+    points.insert(point,{frame,numerator,denominator});return true;
+}
+}
+double State::bpmAtFrame(uint64_t frame) const {
+    if(tempo.empty())return kDefaultTempoBpm; // defensive; validated states start at frame 0
+    const auto point=std::upper_bound(tempo.begin(),tempo.end(),frame,[](uint64_t target,const TempoPoint& item){return target<item.frame;});
+    if(point==tempo.begin())return tempo.front().bpm;
+    return std::prev(point)->bpm;
+}
+double State::beatsAtFrame(uint64_t frame) const {
+    static const std::vector<TempoPoint> fallback{{0,kDefaultTempoBpm}};
+    const auto& lane=tempo.empty()?fallback:tempo;
+    long double beats=0;size_t index=0;
+    for(;index+1<lane.size()&&lane[index+1].frame<=frame;++index)
+        beats+=static_cast<long double>(lane[index+1].frame-lane[index].frame)*lane[index].bpm/2880000.0L;
+    beats+=static_cast<long double>(frame-lane[index].frame)*lane[index].bpm/2880000.0L;
+    return static_cast<double>(beats);
+}
+uint64_t State::frameAtBeats(double beats) const {
+    if(!std::isfinite(beats)||beats<0)throw Error("Beat position must be finite and non-negative");
+    static const std::vector<TempoPoint> fallback{{0,kDefaultTempoBpm}};
+    const auto& lane=tempo.empty()?fallback:tempo;
+    long double remaining=static_cast<long double>(beats);
+    for(size_t index=0;;++index){
+        const auto perBeat=framesPerBeat(lane[index].bpm);
+        if(index+1<lane.size()){
+            const auto segment=static_cast<long double>(lane[index+1].frame-lane[index].frame)/perBeat;
+            if(remaining==segment)return lane[index+1].frame; // an exact boundary lands on the next point
+            if(remaining>segment){remaining-=segment;continue;}
+        }
+        const auto frame=static_cast<long double>(lane[index].frame)+remaining*perBeat;
+        if(frame>=static_cast<long double>(kMaxMidiFrame))throw Error("Beat position exceeds the project timeline limit");
+        return static_cast<uint64_t>(std::llroundl(frame));
+    }
+}
+void Session::setTempoAt(uint64_t frame,double bpm,uint64_t expected){
+    check(expected);
+    if(frame>=kMaxMidiFrame)throw Error("Tempo point exceeds the project timeline limit");
+    if(!std::isfinite(bpm)||bpm<=kMinTempoBpm||bpm>kMaxTempoBpm)throw Error("Tempo outside 20…999 BPM");
+    State next=current;if(!upsertTempo(next.tempo,frame,bpm))return;commit(std::move(next));
+}
+void Session::removeTempo(uint64_t frame,uint64_t expected){
+    check(expected);State next=current;
+    auto point=std::lower_bound(next.tempo.begin(),next.tempo.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
+    if(point==next.tempo.end()||point->frame!=frame)throw Error("Tempo point not found");
+    if(point==next.tempo.begin())throw Error("The first tempo point cannot be removed");
+    next.tempo.erase(point);commit(std::move(next));
+}
+void Session::setTimeSignatureAt(uint64_t frame,uint8_t numerator,uint8_t denominator,uint64_t expected){
+    check(expected);
+    if(frame>=kMaxMidiFrame)throw Error("Time signature point exceeds the project timeline limit");
+    if(numerator<1||numerator>32)throw Error("Time signature numerator outside 1…32");
+    if(!isTimeSignatureDenominator(denominator))throw Error("Time signature denominator must be one of 1, 2, 4, 8, 16 or 32");
+    State next=current;if(!upsertTimeSignature(next.timeSignatures,frame,numerator,denominator))return;commit(std::move(next));
+}
+void Session::removeTimeSignature(uint64_t frame,uint64_t expected){
+    check(expected);State next=current;
+    auto point=std::lower_bound(next.timeSignatures.begin(),next.timeSignatures.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
+    if(point==next.timeSignatures.end()||point->frame!=frame)throw Error("Time signature point not found");
+    if(point==next.timeSignatures.begin())throw Error("The first time signature point cannot be removed");
+    next.timeSignatures.erase(point);commit(std::move(next));
 }
 void Session::addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip> clip,uint64_t start,uint64_t expected){std::vector<Take> additions;additions.push_back({name,start,std::move(clip)});addTakes(id,std::move(additions),expected);}
 void Session::addTakes(uint64_t id,std::vector<Take> additions,uint64_t expected){check(expected);if(additions.empty())throw Error("No takes to add");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");if(additions.size()>15-it->takes.size())throw Error("Track supports at most 16 takes");for(auto& take:additions){validateName(take.name);if(!take.audio)throw Error("Missing take audio");it->takes.push_back(std::move(take));}commit(std::move(next));}

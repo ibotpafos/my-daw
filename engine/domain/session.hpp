@@ -54,11 +54,50 @@ constexpr size_t kMaxMidiClipsPerTrack = 64;
 constexpr size_t kMaxMidiNotesPerProject = 65536;
 struct MidiNote { uint64_t start=0, length=0; uint8_t pitch=0, channel=0, velocity=0; bool operator==(const MidiNote&) const = default; };
 struct MidiClip { uint64_t start=0, length=0; std::vector<MidiNote> notes; int track=-1; bool operator==(const MidiClip&) const = default; };
+// Project tempo/time-signature maps. Both lanes are ordered by project frame
+// (48 kHz, bounded by kMaxMidiFrame), never duplicate a frame, and always keep
+// their primary point at frame 0 (120 BPM, 4/4). Frames are absolute timeline
+// positions; a point holds effect until the next point or session end.
+constexpr double kMinTempoBpm=20.0, kMaxTempoBpm=999.0; // valid range is (20, 999]
+constexpr double kDefaultTempoBpm=120.0;
+constexpr size_t kMaxTempoPointsPerProject=64;
+constexpr size_t kMaxTimeSignaturePointsPerProject=64;
+constexpr uint8_t kDefaultTimeSignatureNumerator=4, kDefaultTimeSignatureDenominator=8;
+struct TempoPoint { uint64_t frame=0; double bpm=kDefaultTempoBpm; bool operator==(const TempoPoint&) const = default; };
+struct TimeSignaturePoint { uint64_t frame=0; uint8_t numerator=kDefaultTimeSignatureNumerator, denominator=kDefaultTimeSignatureDenominator; bool operator==(const TimeSignaturePoint&) const = default; };
+// Time signatures use power-of-two note values: 1, 2, 4, 8, 16 or 32.
+constexpr bool isTimeSignatureDenominator(uint8_t denominator) noexcept {
+    return denominator!=0 && (denominator & (denominator-1))==0 && denominator<=32;
+}
 struct PluginInsert { uint64_t id=0; uint32_t type=0, subtype=0, manufacturer=0; std::string name; bool bypassed=false; uint32_t latencyFrames=0; std::vector<uint8_t> state; std::vector<PluginParameterAutomationLane> parameterAutomation; PluginHostingMode hostingMode=PluginHostingMode::InProcess; bool operator==(const PluginInsert&) const = default; };
 bool isVst3PluginInsert(const PluginInsert& plugin) noexcept;
 struct Track { uint64_t id; std::string name; double gain; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
 struct Bus { uint64_t id=0; std::string name; double gain=0; double pan=0; bool muted=false; uint64_t outputBus=0; std::vector<AutomationPoint> gainAutomation; std::vector<PluginInsert> inserts; bool operator==(const Bus&) const = default; };
-struct State { uint64_t revision = 0; uint64_t nextID = 1; std::vector<Track> tracks; double masterGain=0; std::vector<AutomationPoint> masterGainAutomation; std::vector<Bus> buses; std::vector<PluginInsert> masterInserts; };
+struct State {
+    uint64_t revision = 0;
+    uint64_t nextID = 1;
+    std::vector<Track> tracks;
+    double masterGain=0;
+    std::vector<AutomationPoint> masterGainAutomation;
+    std::vector<Bus> buses;
+    std::vector<PluginInsert> masterInserts;
+    // Every project carries at least the primary frame-0 point; validate()
+    // rejects empty or unsorted lanes, so the beat converters below never
+    // have to model a "no tempo" case beyond their defensive defaults.
+    std::vector<TempoPoint> tempo{{0,kDefaultTempoBpm}};
+    std::vector<TimeSignaturePoint> timeSignatures{{0,kDefaultTimeSignatureNumerator,kDefaultTimeSignatureDenominator}};
+    // Beat positions count whole quarter notes from frame 0 across the tempo
+    // map: one beat spans 60/bpm seconds at the fixed 48 kHz project rate.
+    // Conversion accumulates per-segment durations in long double and rounds
+    // once, so at the kMaxMidiFrame limit (2^40 frames ≈ 36.5 hours) the
+    // round-trip error stays under one frame (well below 1 ms); every frame
+    // integer is exactly representable in double along the whole timeline.
+    double bpmAtFrame(uint64_t frame) const;
+    double beatsAtFrame(uint64_t frame) const;
+    // The inverse of beatsAtFrame, rounded to the nearest frame. Negative,
+    // non-finite, or past-timeline beat positions throw Error.
+    uint64_t frameAtBeats(double beats) const;
+};
 void validateName(const std::string& name);
 void validate(const State& state);
 std::vector<WorkflowOperation> prepareVocalTracks(const State& state,
@@ -155,6 +194,14 @@ public:
     void moveMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t expected);
     void trimMidiClip(uint64_t trackID,uint32_t index,uint64_t newStart,uint64_t newLength,uint64_t expected);
     void splitMidiClip(uint64_t trackID,uint32_t index,uint64_t atFrame,uint64_t expected);
+    // Tempo/time-signature map commands follow the automation convention:
+    // expected revision, upsert replaces a same-frame point, an identical
+    // value is a silent no-op, and the primary frame-0 point cannot be
+    // removed because the project must always carry one tempo and one meter.
+    void setTempoAt(uint64_t frame,double bpm,uint64_t expected);
+    void removeTempo(uint64_t frame,uint64_t expected);
+    void setTimeSignatureAt(uint64_t frame,uint8_t numerator,uint8_t denominator,uint64_t expected);
+    void removeTimeSignature(uint64_t frame,uint64_t expected);
     void addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip>,uint64_t start,uint64_t expected);
     void addTakes(uint64_t id,std::vector<Take> takes,uint64_t expected);
     void compRange(uint64_t id,uint32_t take,uint64_t start,uint64_t length,uint64_t expected);
