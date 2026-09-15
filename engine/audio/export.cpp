@@ -19,6 +19,38 @@ std::string replacementDirectory(const std::string &target);
 #endif
 namespace {
 struct ExportCanceled final {};
+constexpr uint32_t kMaximumManualTailFrames = 48000 * 30;
+void validateExportOptions(const ExportOptions &options) {
+  switch (options.tailMode) {
+  case ExportTailMode::Automatic:
+  case ExportTailMode::None:
+    return;
+  case ExportTailMode::ManualLimit:
+    if (options.manualTailFrames <= kMaximumManualTailFrames)
+      return;
+    throw Error("Manual tail limit exceeds 30 seconds");
+  }
+  throw Error("Unknown export tail mode");
+}
+ExportTailSummary resolveExportTailImpl(const GraphTailSummary &tail,
+                                        ExportOptions options) {
+  validateExportOptions(options);
+  uint32_t infiniteFrames = 0;
+  if (tail.hasInfiniteTail) {
+    switch (options.tailMode) {
+    case ExportTailMode::Automatic:
+      infiniteFrames = kMaximumManualTailFrames;
+      break;
+    case ExportTailMode::None:
+      break;
+    case ExportTailMode::ManualLimit:
+      infiniteFrames = options.manualTailFrames;
+      break;
+    }
+  }
+  return {tail.finiteFrames, std::max(tail.finiteFrames, infiniteFrames),
+          tail.hasInfiniteTail};
+}
 void put16(unsigned char *p, uint16_t value) {
   p[0] = static_cast<unsigned char>(value);
   p[1] = static_cast<unsigned char>(value >> 8);
@@ -88,21 +120,40 @@ int32_t pcm24(float sample, uint32_t &random) {
 }
 } // namespace
 
+ExportTailSummary resolveExportTail(const GraphTailSummary &tail,
+                                    ExportOptions options) {
+  return resolveExportTailImpl(tail, options);
+}
+
+ExportTailSummary inspectExportTail(const State &snapshot, ExportOptions options,
+                                    uint64_t startFrame) {
+  Renderer renderer;
+  renderer.prepare(snapshot, startFrame);
+  return resolveExportTail(renderer.tailSummary(), options);
+}
+
 void writeWavRange(const State &snapshot, const std::string &path,
                    WavFormat format, uint64_t startFrame, uint64_t endFrame,
                    ExportResult *progress) {
+  writeWavRange(snapshot, path, format, startFrame, endFrame, {}, progress);
+}
+
+void writeWavRange(const State &snapshot, const std::string &path,
+                   WavFormat format, uint64_t startFrame, uint64_t endFrame,
+                   ExportOptions options, ExportResult *progress) {
   if (path.empty())
     throw Error("Choose an export path");
   if (format != WavFormat::PCM24 && format != WavFormat::Float32)
     throw Error("Unsupported WAV export format");
+  validateExportOptions(options);
   Renderer renderer;
   renderer.prepare(snapshot, startFrame);
   auto duration = renderer.duration();
   if (startFrame >= endFrame || endFrame > duration)
     throw Error("Invalid WAV export range");
   const auto requested = endFrame - startFrame;
-  auto declaredTail = renderer.declaredTailFrames();
-  auto total = requested + declaredTail;
+  auto tail = resolveExportTail(renderer.tailSummary(), options);
+  auto total = requested + tail.selectedTailFrames;
   if (requested > 48000 * 600)
     throw Error("Export exceeds 10 minutes");
   // A delayed master chain must see the project from frame zero. Discard its
@@ -113,8 +164,8 @@ void writeWavRange(const State &snapshot, const std::string &path,
   if (compensateLatency) {
     renderer.prepare(snapshot, 0);
     latency = renderer.masterLatencyFrames();
-    declaredTail = renderer.declaredTailFrames();
-    total = requested + declaredTail;
+    tail = resolveExportTail(renderer.tailSummary(), options);
+    total = requested + tail.selectedTailFrames;
   }
   auto parent = std::filesystem::path(path).parent_path();
   if (parent.empty())
@@ -214,7 +265,7 @@ void writeWavRange(const State &snapshot, const std::string &path,
     consume(count);
     inputDone += count;
   }
-  const uint64_t tailFrames = latency + declaredTail;
+  const uint64_t tailFrames = latency + tail.selectedTailFrames;
   uint64_t tailDone = 0;
   while (tailDone < tailFrames) {
     if (progress && progress->cancel.load(std::memory_order_acquire))
@@ -240,29 +291,47 @@ void writeWavRange(const State &snapshot, const std::string &path,
 
 void writeWav(const State &snapshot, const std::string &path, WavFormat format,
               ExportResult *progress) {
+  writeWav(snapshot, path, format, {}, progress);
+}
+
+void writeWav(const State &snapshot, const std::string &path, WavFormat format,
+              ExportOptions options, ExportResult *progress) {
   Renderer renderer;
   renderer.prepare(snapshot);
-  writeWavRange(snapshot, path, format, 0, renderer.duration(), progress);
+  writeWavRange(snapshot, path, format, 0, renderer.duration(), options,
+                progress);
 }
 
 std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
                                                WavFormat format,
                                                uint64_t startFrame,
                                                uint64_t endFrame) {
+  return startExportRange(std::move(snapshot), std::move(path), format,
+                          startFrame, endFrame, {});
+}
+
+std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
+                                               WavFormat format,
+                                               uint64_t startFrame,
+                                               uint64_t endFrame,
+                                               ExportOptions options) {
   Renderer renderer;
   renderer.prepare(snapshot, startFrame);
   if (startFrame >= endFrame || endFrame > renderer.duration())
     throw Error("Invalid WAV export range");
+  const auto tail = resolveExportTail(renderer.tailSummary(), options);
   auto permit = tryAcquireBackgroundJob();
   if (!permit)
     throw Error("Background job capacity reached");
   auto result =
-      std::make_shared<ExportResult>(snapshot.revision, endFrame - startFrame + renderer.declaredTailFrames());
+      std::make_shared<ExportResult>(snapshot.revision,
+                                     endFrame - startFrame + tail.selectedTailFrames);
   std::thread([snapshot = std::move(snapshot), path = std::move(path), format,
-               startFrame, endFrame, result, permit = std::move(permit)] {
+               startFrame, endFrame, options, result, permit = std::move(permit)] {
     (void)permit;
     try {
-      writeWavRange(snapshot, path, format, startFrame, endFrame, result.get());
+      writeWavRange(snapshot, path, format, startFrame, endFrame, options,
+                    result.get());
       result->status.store(1, std::memory_order_release);
     } catch (const ExportCanceled &) {
       result->status.store(3, std::memory_order_release);
@@ -280,9 +349,15 @@ std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
 
 std::shared_ptr<ExportResult> startExport(State snapshot, std::string path,
                                           WavFormat format) {
+  return startExport(std::move(snapshot), std::move(path), format, {});
+}
+
+std::shared_ptr<ExportResult> startExport(State snapshot, std::string path,
+                                          WavFormat format,
+                                          ExportOptions options) {
   Renderer renderer;
   renderer.prepare(snapshot);
   return startExportRange(std::move(snapshot), std::move(path), format, 0,
-                          renderer.duration());
+                          renderer.duration(), options);
 }
 } // namespace daw

@@ -195,6 +195,31 @@ void rebuildOutputAfterAutomationCommit(daw_session* s){
     if(resume){if(s->loopEnabled&&s->selectedFrame>=s->loopEnd)s->selectedFrame=s->loopStart;beginPlaybackPreparation(s);}
 }
 const char* required(const char* s) { if (!s) throw daw::Error("Missing text argument"); return s; }
+daw::WavFormat exportFormat(int32_t format) {
+    if(format==1)return daw::WavFormat::PCM24;
+    if(format==2)return daw::WavFormat::Float32;
+    throw daw::Error("Unsupported WAV export format");
+}
+daw::ExportOptions exportOptions(const daw_export_options* raw) {
+    if(!raw||raw->struct_size!=sizeof(daw_export_options)||raw->version!=DAW_EXPORT_OPTIONS_VERSION)
+        throw daw::Error("Invalid export options");
+    daw::ExportOptions result;
+    switch(raw->tail_mode) {
+    case DAW_EXPORT_TAIL_AUTOMATIC: result.tailMode=daw::ExportTailMode::Automatic;break;
+    case DAW_EXPORT_TAIL_NONE: result.tailMode=daw::ExportTailMode::None;break;
+    case DAW_EXPORT_TAIL_MANUAL_LIMIT: result.tailMode=daw::ExportTailMode::ManualLimit;break;
+    default: throw daw::Error("Unsupported export tail mode");
+    }
+    result.manualTailFrames=raw->manual_tail_frames;
+    return result;
+}
+void writeExportTailSummary(const daw::ExportTailSummary& summary,daw_export_tail_summary* out) {
+    if(!out||out->struct_size!=sizeof(daw_export_tail_summary))throw daw::Error("Invalid export tail summary");
+    out->version=DAW_EXPORT_TAIL_SUMMARY_VERSION;
+    out->finite_tail_frames=summary.finiteTailFrames;
+    out->selected_tail_frames=summary.selectedTailFrames;
+    out->infinite_tail_detected=summary.infiniteTailDetected?1:0;
+}
 bool recordingActive(const daw_session* s){return s->input||s->duplex;}
 constexpr daw::AutomationTarget automationTarget(int32_t target){
     switch(target){case DAW_AUTOMATION_TRACK_VOLUME:return daw::AutomationTarget::TrackVolume;case DAW_AUTOMATION_TRACK_PAN:return daw::AutomationTarget::TrackPan;case DAW_AUTOMATION_BUS_GAIN:return daw::AutomationTarget::BusGain;case DAW_AUTOMATION_MASTER_GAIN:return daw::AutomationTarget::MasterGain;default:throw daw::Error("Unsupported automation target");}
@@ -607,20 +632,30 @@ int daw_poll_save(daw_save_job* job,daw_save_status* out) {
 void daw_release_save(daw_save_job* job) { delete job; }
 daw_export_job* daw_begin_export(daw_session* s,const char* path,int32_t format) {
     daw_export_job* job=nullptr;guard(s,[&]{
-        daw::WavFormat wavFormat;
-        if(format==1) wavFormat=daw::WavFormat::PCM24;
-        else if(format==2) wavFormat=daw::WavFormat::Float32;
-        else throw daw::Error("Unsupported WAV export format");
-        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExport(s->model.state(),required(path),wavFormat);job=handle.release();
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExport(s->model.state(),required(path),exportFormat(format));job=handle.release();
     });return job;
 }
 daw_export_job* daw_begin_export_range(daw_session* s,const char* path,int32_t format,uint64_t startFrame,uint64_t endFrame) {
     daw_export_job* job=nullptr;guard(s,[&]{
-        daw::WavFormat wavFormat;
-        if(format==1) wavFormat=daw::WavFormat::PCM24;
-        else if(format==2) wavFormat=daw::WavFormat::Float32;
-        else throw daw::Error("Unsupported WAV export format");
-        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExportRange(s->model.state(),required(path),wavFormat,startFrame,endFrame);job=handle.release();
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExportRange(s->model.state(),required(path),exportFormat(format),startFrame,endFrame);job=handle.release();
+    });return job;
+}
+int daw_get_export_tail_summary(daw_session* s,const daw_export_options* options,daw_export_tail_summary* out) {
+    return guard(s,[&]{
+        const auto parsedOptions=exportOptions(options);
+        if(!out||out->struct_size!=sizeof(daw_export_tail_summary))throw daw::Error("Invalid export tail summary");
+        const auto summary=daw::inspectExportTail(s->model.state(),parsedOptions);
+        writeExportTailSummary(summary,out);
+    });
+}
+daw_export_job* daw_begin_export_with_options(daw_session* s,const char* path,int32_t format,const daw_export_options* options) {
+    daw_export_job* job=nullptr;guard(s,[&]{
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExport(s->model.state(),required(path),exportFormat(format),exportOptions(options));job=handle.release();
+    });return job;
+}
+daw_export_job* daw_begin_export_range_with_options(daw_session* s,const char* path,int32_t format,uint64_t startFrame,uint64_t endFrame,const daw_export_options* options) {
+    daw_export_job* job=nullptr;guard(s,[&]{
+        auto handle=std::make_unique<daw_export_job>();handle->result=daw::startExportRange(s->model.state(),required(path),exportFormat(format),startFrame,endFrame,exportOptions(options));job=handle.release();
     });return job;
 }
 int daw_poll_export(daw_export_job* job,daw_export_status* out) {

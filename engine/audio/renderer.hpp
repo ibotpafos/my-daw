@@ -1,6 +1,7 @@
 #pragma once
 #include "audio/effect.hpp"
 #include "domain/session.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 namespace daw {
@@ -12,6 +13,17 @@ struct GraphLatencyPlan {
   std::vector<uint32_t> trackNodeFrames;
   std::vector<uint32_t> busNodeFrames;
 };
+// The graph keeps the finite and unbounded parts of a plug-in tail separate.
+// `finiteFrames` is bounded by the renderer's 30-second safety ceiling.
+struct GraphTailSummary {
+  uint32_t finiteFrames = 0;
+  bool hasInfiniteTail = false;
+  bool operator==(const GraphTailSummary &) const = default;
+};
+GraphTailSummary serialTail(GraphTailSummary left,
+                            GraphTailSummary right) noexcept;
+GraphTailSummary parallelTail(GraphTailSummary left,
+                              GraphTailSummary right) noexcept;
 // One RT reader. prepare/reset only after output unit is stopped and
 // uninitialized. Gain/telemetry atomics are the only concurrently accessed
 // mutable state.
@@ -103,7 +115,8 @@ class Renderer {
   uint32_t preparedTrackCount = 0, preparedBusCount = 0;
   std::atomic<float> masterGain{1};
   float smoothMaster = 1;
-  std::atomic<uint32_t> masterLatency{0}, declaredTail{0};
+  std::atomic<uint32_t> masterLatency{0}, declaredFiniteTail{0};
+  std::atomic<bool> declaredInfiniteTail{false};
   // cursor is the input/timeline cursor. Audible position trails it by the
   // published graph latency and is tracked independently for transport UI.
   uint64_t cursor = 0, length = 0, loopBegin = 0, loopEnd = 0, processTime = 0,
@@ -145,10 +158,17 @@ public:
   uint32_t masterLatencyFrames() const noexcept {
     return masterLatency.load(std::memory_order_acquire);
   }
-    // Bounded finite decay after compensated graph latency. It follows the
-    // longest routed serial tail path; infinite declarations are capped.
+  // Legacy automatic view: finite decay plus an unbounded declaration is
+  // bounded to the historic 30-second ceiling.
   uint32_t declaredTailFrames() const noexcept {
-    return declaredTail.load(std::memory_order_acquire);
+    const auto finite = declaredFiniteTail.load(std::memory_order_acquire);
+    return declaredInfiniteTail.load(std::memory_order_acquire)
+               ? std::max(finite, uint32_t{48000 * 30})
+               : finite;
+  }
+  GraphTailSummary tailSummary() const noexcept {
+    return {declaredFiniteTail.load(std::memory_order_acquire),
+            declaredInfiniteTail.load(std::memory_order_acquire)};
   }
   uint64_t audiblePositionFrames() const noexcept {
     return audiblePosition.load(std::memory_order_acquire);

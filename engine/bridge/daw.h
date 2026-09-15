@@ -27,11 +27,38 @@ daw_save_job* daw_begin_save(daw_session*, const char* path);
 int daw_poll_save(daw_save_job*, daw_save_status*);
 void daw_release_save(daw_save_job*);
 typedef struct { uint32_t struct_size; int32_t status; uint64_t revision; uint64_t rendered_frames; uint64_t total_frames; char error[512]; } daw_export_status;
+/* Export-tail selection is intentionally per job, not part of the durable
+ * project.  Automatic preserves the historic bounded VST3-tail behavior;
+ * None omits only an infinite VST3 component while retaining finite tails;
+ * ManualLimit limits only that infinite component to manual_tail_frames.
+ * Every caller must supply this versioned structure to the *_with_options APIs. */
+enum { DAW_EXPORT_OPTIONS_VERSION = 1 };
+enum { DAW_EXPORT_TAIL_AUTOMATIC = 1, DAW_EXPORT_TAIL_NONE = 2, DAW_EXPORT_TAIL_MANUAL_LIMIT = 3 };
+typedef struct {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t tail_mode;
+    uint32_t manual_tail_frames;
+} daw_export_options;
+/* A non-mutating preview of the frozen-current project's tail under one
+ * options value.  finite_tail_frames excludes an infinite VST3 component;
+ * selected_tail_frames is the value this export job will append. */
+enum { DAW_EXPORT_TAIL_SUMMARY_VERSION = 1 };
+typedef struct {
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t finite_tail_frames;
+    uint32_t selected_tail_frames;
+    int32_t infinite_tail_detected;
+} daw_export_tail_summary;
 /* format: 1=stereo PCM24 with deterministic TPDF dither, 2=stereo float32.
  * Poll status: 0 running, 1 successful, 2 failed, 3 canceled. The worker owns
  * a frozen snapshot and publishes the final path only after fsync + rename. */
 daw_export_job* daw_begin_export(daw_session*,const char* path,int32_t format);
 daw_export_job* daw_begin_export_range(daw_session*,const char* path,int32_t format,uint64_t start_frame,uint64_t end_frame);
+int daw_get_export_tail_summary(daw_session*,const daw_export_options*,daw_export_tail_summary*);
+daw_export_job* daw_begin_export_with_options(daw_session*,const char* path,int32_t format,const daw_export_options*);
+daw_export_job* daw_begin_export_range_with_options(daw_session*,const char* path,int32_t format,uint64_t start_frame,uint64_t end_frame,const daw_export_options*);
 int daw_poll_export(daw_export_job*,daw_export_status*);
 void daw_cancel_export(daw_export_job*);
 void daw_release_export(daw_export_job*);

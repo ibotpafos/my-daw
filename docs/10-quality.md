@@ -28,12 +28,12 @@ Fixtures генерируются с фиксированным seed; реаль
 ## Проверки по уровням
 
 1. **Domain:** split/trim bounds, Undo round-trip, stale revision, idempotency, batch atomicity, cycle rejection.
-2. **DSP:** impulse/frequency response, gain/pan, fades, discontinuity, NaN/Inf, denormals, channel layouts, variable block sizes, sample-offset automation.
+2. **DSP:** impulse/frequency response, gain/pan, fades, discontinuity, NaN/Inf, denormals, channel layouts, variable block sizes, sample-offset automation, finite/infinite plug-in tail declarations и tail drain limits.
 3. **Engine integration:** loop wrap, seek during play, EOF, buffer underrun, delay compensation с несколькими путями, plan retirement и queue-full.
 4. **Storage:** crash между file rename и DB commit, disk full, corrupt media, Save As, WAL backup, future format, migration rollback.
 5. **Host:** matrix из hosting spec, plugin missing/crash/hang/state restore.
 6. **Physical:** USB disconnect, sample-rate change, sleep/wake, loopback latency, 30-minute recording, 2-hour playback soak.
-7. **UX/listening:** RU/EN shortcuts, VoiceOver, small display, A/B vocal edits, loudness-matched comparisons.
+7. **UX/listening:** RU/EN shortcuts, VoiceOver, small display, A/B vocal edits, loudness-matched comparisons, WAV tail policy (automatic/no-tail/2/5/15/30 seconds), range copy и отмена export.
 
 ASan/UBSan и TSan запускать отдельными jobs. Instrumented builds не подходят для итогового realtime performance report. No-data-loss утверждается только для проверенного failure mode.
 

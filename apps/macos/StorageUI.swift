@@ -2,6 +2,91 @@ import AppKit
 import Darwin
 
 @MainActor
+private final class WavExportTailDialog: NSObject {
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 430, height: 84))
+    private let mode = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let limit = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let explanation = NSTextField(wrappingLabelWithString: "")
+    private let finiteTailFrames: UInt32
+    private let infiniteTail: Bool
+
+    init(storedMode: UInt32, storedLimitSeconds: UInt32, summary: daw_export_tail_summary) {
+        finiteTailFrames = summary.finite_tail_frames
+        infiniteTail = summary.infinite_tail_detected != 0
+        super.init()
+        mode.addItems(withTitles: ["Автоматически", "Только конечный", "Ограничить"])
+        mode.selectItem(at: Int(max(1, min(3, storedMode))) - 1)
+        mode.target = self; mode.action = #selector(updateExplanation)
+        mode.setAccessibilityLabel("Хвост после диапазона")
+        mode.setAccessibilityHelp("Автоматически сохраняет конечный хвост и применяет безопасный предел к бесконечному. Второй вариант исключает только бесконечный хвост. Ограничить задаёт его предел после диапазона.")
+
+        limit.addItems(withTitles: ["2 с", "5 с", "15 с", "30 с"])
+        let preset = [2, 5, 15, 30]
+        limit.selectItem(at: preset.firstIndex(of: Int(storedLimitSeconds)) ?? 3)
+        limit.target = self; limit.action = #selector(updateExplanation)
+        limit.setAccessibilityLabel("Предел хвоста")
+        limit.setAccessibilityHelp("Длительность хвоста после выбранного диапазона: 2, 5, 15 или 30 секунд.")
+
+        let modeRow = NSStackView(views: [NSTextField(labelWithString: "Хвост после диапазона"), mode, limit])
+        modeRow.spacing = 8; modeRow.alignment = .centerY
+        explanation.font = .systemFont(ofSize: 11); explanation.textColor = .secondaryLabelColor
+        explanation.maximumNumberOfLines = 2
+        let content = NSStackView(views: [modeRow, explanation])
+        content.orientation = .vertical; content.spacing = 6; content.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor), content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            content.topAnchor.constraint(equalTo: view.topAnchor), content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            mode.widthAnchor.constraint(equalToConstant: 142), limit.widthAnchor.constraint(equalToConstant: 76)
+        ])
+        updateExplanation()
+    }
+
+    @objc private func updateExplanation() {
+        let isManual = mode.indexOfSelectedItem == 2
+        limit.isEnabled = isManual
+        if mode.indexOfSelectedItem == 1 {
+            explanation.stringValue = finiteTailFrames == 0 ? "Бесконечный хвост не будет добавлен; WAV завершится в конце области после компенсации задержки." : String(format: "Бесконечный хвост не будет добавлен; конечный хвост эффектов %.1f с сохранится.", Double(finiteTailFrames) / 48_000)
+        } else if isManual {
+            explanation.stringValue = infiniteTail ? "После области будет обработано до \(limitSeconds) с тишины для бесконечного хвоста. Конечный хвост сохранится." : "Бесконечный хвост не обнаружен; выбранный предел не обрезает конечный спад."
+        } else if infiniteTail {
+            explanation.stringValue = "Плагин объявил бесконечный хвост. Автоматический экспорт использует безопасный конечный предел."
+        } else if finiteTailFrames == 0 {
+            explanation.stringValue = "Подключённые эффекты не объявили дополнительный хвост."
+        } else {
+            explanation.stringValue = String(format: "Будет добавлен конечный хвост эффектов: %.1f с.", Double(finiteTailFrames) / 48_000)
+        }
+    }
+
+    private var limitSeconds: Int { [2, 5, 15, 30][max(0, min(3, limit.indexOfSelectedItem))] }
+    var options: daw_export_options {
+        var value = daw_export_options()
+        value.struct_size = UInt32(MemoryLayout<daw_export_options>.size)
+        value.version = UInt32(DAW_EXPORT_OPTIONS_VERSION)
+        switch mode.indexOfSelectedItem {
+        case 1: value.tail_mode = UInt32(DAW_EXPORT_TAIL_NONE)
+        case 2: value.tail_mode = UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT); value.manual_tail_frames = UInt32(limitSeconds * 48_000)
+        default: value.tail_mode = UInt32(DAW_EXPORT_TAIL_AUTOMATIC)
+        }
+        return value
+    }
+
+    func persist() {
+        let defaults = UserDefaults.standard
+        defaults.set(options.tail_mode, forKey: "export.tail.mode.v1")
+        defaults.set(limitSeconds, forKey: "export.tail.limitSeconds.v1")
+    }
+
+    var savePanelMessage: String {
+        switch mode.indexOfSelectedItem {
+        case 1: return "Экспортируется зафиксированный снимок без бесконечного хвоста; конечный хвост сохранится. Можно продолжать редактирование."
+        case 2: return "Экспортируется зафиксированный снимок с пределом бесконечного хвоста \(limitSeconds) с; конечный хвост сохранится. Можно продолжать редактирование."
+        default: return infiniteTail ? "Экспортируется зафиксированный снимок с автоматическим безопасным пределом бесконечного хвоста. Можно продолжать редактирование." : "Экспортируется зафиксированный снимок с объявленным хвостом эффектов. Можно продолжать редактирование."
+        }
+    }
+}
+
+@MainActor
 extension DraftApp {
     func storageMessage(_ text: String) {
         let alert = NSAlert(); alert.messageText = text; alert.runModal()
@@ -57,21 +142,34 @@ extension DraftApp {
         if isRecording { finishRecording(); guard !isRecording else { return } }
         finishEditing()
         guard hasAudio else { storageMessage("Добавь или запиши аудио перед экспортом."); return }
-        let choice = NSAlert(); choice.messageText = "Формат WAV"
+        let defaults = UserDefaults.standard
+        let storedModeRaw = defaults.integer(forKey: "export.tail.mode.v1")
+        let storedLimitRaw = defaults.integer(forKey: "export.tail.limitSeconds.v1")
+        let storedMode = UInt32(max(0, storedModeRaw))
+        let storedLimit = UInt32(max(0, storedLimitRaw))
+        var initialOptions = daw_export_options(); initialOptions.struct_size = UInt32(MemoryLayout<daw_export_options>.size); initialOptions.version = UInt32(DAW_EXPORT_OPTIONS_VERSION)
+        initialOptions.tail_mode = storedMode >= UInt32(DAW_EXPORT_TAIL_AUTOMATIC) && storedMode <= UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT) ? storedMode : UInt32(DAW_EXPORT_TAIL_AUTOMATIC)
+        initialOptions.manual_tail_frames = [2, 5, 15, 30].contains(Int(storedLimit)) ? storedLimit * 48_000 : 30 * 48_000
+        var tailSummary = daw_export_tail_summary(); tailSummary.struct_size = UInt32(MemoryLayout<daw_export_tail_summary>.size)
+        guard check(daw_get_export_tail_summary(session, &initialOptions, &tailSummary)) else { return }
+        let tailDialog = WavExportTailDialog(storedMode: initialOptions.tail_mode, storedLimitSeconds: initialOptions.manual_tail_frames / 48_000, summary: tailSummary)
+        let choice = NSAlert(); choice.messageText = "Экспорт WAV"
         let scope = rangeEnd != nil ? rangeLabel.stringValue : "весь проект"
         choice.informativeText = "Область: \(scope). 24-bit подходит для сведения и обмена. Float32 сохраняет результат рендера без целочисленного квантования."
+        choice.accessoryView = tailDialog.view
         choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
         let response = choice.runModal()
         guard response != .alertThirdButtonReturn else { return }
         let format: Int32 = response == .alertSecondButtonReturn ? 2 : 1
+        var options = tailDialog.options; tailDialog.persist()
         let panel = NSSavePanel(); panel.allowedContentTypes = [.wav]
         if let currentURL { panel.directoryURL = currentURL.deletingLastPathComponent() }
         panel.nameFieldStringValue = "\(currentURL?.deletingPathExtension().lastPathComponent ?? "Микс").wav"
-        panel.message = rangeEnd != nil ? "Экспортируется выбранный диапазон из зафиксированного снимка. Можно продолжать редактирование." : "Экспортируется весь проект из зафиксированного снимка. Можно продолжать редактирование."
+        panel.message = tailDialog.savePanelMessage
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let job: OpaquePointer?
-        if let start=rangeStart,let end=rangeEnd { job=daw_begin_export_range(session,url.path,format,start,end) }
-        else { job=daw_begin_export(session,url.path,format) }
+        if let start=rangeStart,let end=rangeEnd { job=daw_begin_export_range_with_options(session,url.path,format,start,end,&options) }
+        else { job=daw_begin_export_with_options(session,url.path,format,&options) }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
         exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false

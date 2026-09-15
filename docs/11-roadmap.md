@@ -12,6 +12,8 @@
 
 [1.32.0](59-vst3-remote-parameter-editor.md) частично продолжил B-012: isolated VST3 использует one-shot control helper для generic `list`/`snapshot`/`set`, с MDVS+fingerprint revalidation, session metadata cache и одной revision на успешный set. Playback останавливается и готовится заново; UI использует тот же generic dialog с noncontinuous slider. Self-hosted fake-helper test покрывает success, malformed reply, crash, nonzero exit и timeout/reaping. Это не live audio worker и не vendor editor; реальные vendor VST3, compatibility matrix и listening остаются открытыми.
 
+[1.33.0](60-infinite-tail-export-policy.md) завершает policy-срез B-013: WAV export различает finite и infinite declarations и даёт выбрать automatic bounded tail, finite-only либо 2/5/15/30-секундный предел. Политика живёт в локальных export preferences, не меняет проект и не подменяет legacy C ABI. Engine/bridge CTest и arm64 app build прошли; tail dialog ещё требует повторного визуального/VoiceOver smoke после сбоя Accessibility backend. Physical presentation timestamp и listening acceptance по-прежнему отдельные gates.
+
 ## Последовательность
 
 Работа идёт законченными вертикальными срезами. Сроки ниже — ориентиры для планирования небольшой команды с C++ audio и macOS опытом; это не обещание календарной даты. Если такой экспертизы нет, сначала обучающие spikes и переоценка.
@@ -55,7 +57,7 @@ Spikes одноразовые или изолированные; их нельз
 | B-010 | P1 | B-007, B-008 | **Реализация готова к physical gate:** take lanes, comp, playback loop и AUHAL loop recording; latency/recovery v2/physical proof ещё нужны |
 | B-011 | P1 | B-006 | **Native prototype готов:** buses/sends, DAG validation, realtime plan, UI и format v9; Tracktion parity переносится в B-012 |
 | B-012 | P1 | B-011, SP-05 | **Частично реализован editor proxy:** AU/VST3 inserts на track/bus/master, scan/cache, parameters/state, missing fallback, routing parity, строгий AUv3 OOP runtime, managed VST3 runtime isolation и isolated VST3 one-shot generic parameter control path; vendor editors и compatibility matrix реальных plug-ins ещё открыты |
-| B-013 | P1 | B-012 | **Основной code scope готов:** channel и plug-in Read/Touch/Latch gestures, durable sample-offset AU/VST3 parameter lanes, atomic Undo, graph PDC, latency-compensated audible playhead и finite VST3 tail; hardware presentation timestamp и infinite-tail policy ещё нужны |
+| B-013 | P1 | B-012 | **Основной code scope готов:** channel и plug-in Read/Touch/Latch gestures, durable sample-offset AU/VST3 parameter lanes, atomic Undo, graph PDC, latency-compensated audible playhead, finite tail и user policy для infinite tail; hardware presentation timestamp и listening acceptance ещё нужны |
 | B-014 | P1 | B-003 | **Prototype готов:** bundled manifest, typed preview и atomic one-revision commit через public C boundary |
 | B-015 | P2 | B-014, B-010 | **Code scope готов:** selected Lead/Doubles, peak/RMS suggestions, preview и atomic apply; listening evidence ещё требуется |
 | B-016 | P2 | B-009, B-013 | **Code scope готов:** DAWproject 1.0 XML/ZIP, media/AU/VST3 state, routing, channel и plug-in parameter automation, loss report; import matrix ещё не прогонялась |

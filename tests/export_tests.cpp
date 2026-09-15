@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 #include <unistd.h>
@@ -15,6 +16,27 @@
 template<class Fn>void rejects(Fn fn){bool bad=false;try{fn();}catch(...){bad=true;}CHECK(bad);}
 
 int main(){try{
+    struct TailProbe final : daw::PreparedEffect {
+        uint32_t value;
+        explicit TailProbe(uint32_t frames):value(frames){}
+        bool process(float*,float*,uint32_t,uint64_t,std::span<const daw::PreparedParameterEvent>) noexcept override{return true;}
+        uint32_t latencyFrames() const noexcept override{return 0;}
+        uint32_t tailFrames() const noexcept override{return value;}
+    };
+    const auto finite=TailProbe(19).tail(), infinite=TailProbe(std::numeric_limits<uint32_t>::max()).tail();
+    CHECK(finite.finiteFrames==19&&!finite.infinite);
+    CHECK(infinite.finiteFrames==0&&infinite.infinite);
+    const auto serial=daw::serialTail({19,false},{23,true});
+    CHECK(serial.finiteFrames==42&&serial.hasInfiniteTail);
+    const auto parallel=daw::parallelTail({42,true},{73,false});
+    CHECK(parallel.finiteFrames==73&&parallel.hasInfiniteTail);
+    const auto automatic=daw::resolveExportTail(parallel,{});
+    CHECK(automatic.finiteTailFrames==73&&automatic.infiniteTailDetected&&automatic.selectedTailFrames==48000*30);
+    const auto noInfinite=daw::resolveExportTail(parallel,{daw::ExportTailMode::None,0});
+    CHECK(noInfinite.selectedTailFrames==73);
+    const auto manual=daw::resolveExportTail({73,true},{daw::ExportTailMode::ManualLimit,48000});
+    CHECK(manual.selectedTailFrames==48000);
+    rejects([&]{(void)daw::resolveExportTail({0,true},{daw::ExportTailMode::ManualLimit,48000*30+1});});
     auto root=std::filesystem::temp_directory_path()/("mydaw-export-"+std::to_string(getpid()));std::filesystem::create_directories(root);
     struct Cleanup{std::filesystem::path p;~Cleanup(){std::filesystem::remove_all(p);}}cleanup{root};
     std::vector<float> samples(2000);for(size_t i=0;i<samples.size()/2;++i){samples[i*2]=float(i%37)/40.0f;samples[i*2+1]=-float(i%29)/32.0f;}
@@ -43,6 +65,9 @@ int main(){try{
     auto bridgePath=(root/"bridge.wav").string();std::unique_ptr<daw_export_job,decltype(&daw_release_export)> job(daw_begin_export(bridge.get(),bridgePath.c_str(),2),daw_release_export);CHECK(job);
     daw_export_status status{};status.struct_size=sizeof(status);for(int i=0;i<200;++i){CHECK(daw_poll_export(job.get(),&status)==0);if(status.status)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
     CHECK(status.status==1&&status.revision==session.state().revision&&status.rendered_frames==1000&&status.total_frames==1000&&daw::readWav(bridgePath)->samples()==decodedFloat->samples());
+    daw_export_options bridgeOptions{};bridgeOptions.struct_size=sizeof(bridgeOptions);bridgeOptions.version=DAW_EXPORT_OPTIONS_VERSION;bridgeOptions.tail_mode=DAW_EXPORT_TAIL_MANUAL_LIMIT;bridgeOptions.manual_tail_frames=48000;
+    daw_export_tail_summary bridgeTail{};bridgeTail.struct_size=sizeof(bridgeTail);CHECK(daw_get_export_tail_summary(bridge.get(),&bridgeOptions,&bridgeTail)==0&&bridgeTail.version==DAW_EXPORT_TAIL_SUMMARY_VERSION&&bridgeTail.finite_tail_frames==0&&bridgeTail.selected_tail_frames==0&&!bridgeTail.infinite_tail_detected);
+    auto optionsPath=(root/"bridge-options.wav").string();std::unique_ptr<daw_export_job,decltype(&daw_release_export)> optionsJob(daw_begin_export_with_options(bridge.get(),optionsPath.c_str(),2,&bridgeOptions),daw_release_export);CHECK(optionsJob);status={};status.struct_size=sizeof(status);for(int i=0;i<200;++i){CHECK(daw_poll_export(optionsJob.get(),&status)==0);if(status.status)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}CHECK(status.status==1&&status.total_frames==1000&&daw::readWav(optionsPath)->frames()==1000);
     auto bridgeRangePath=(root/"bridge-range.wav").string();std::unique_ptr<daw_export_job,decltype(&daw_release_export)> rangeJob(daw_begin_export_range(bridge.get(),bridgeRangePath.c_str(),2,200,700),daw_release_export);CHECK(rangeJob);
     status={};status.struct_size=sizeof(status);for(int i=0;i<200;++i){CHECK(daw_poll_export(rangeJob.get(),&status)==0);if(status.status)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
     CHECK(status.status==1&&status.total_frames==500&&daw::readWav(bridgeRangePath)->samples()==decodedRange->samples());
@@ -52,5 +77,7 @@ int main(){try{
     bool releasedExportComplete=false;for(int i=0;i<1000&&!releasedExportComplete;++i){try{releasedExportComplete=daw::readWav(releasedExportPath)->frames()==1000;}catch(...){std::this_thread::sleep_for(std::chrono::milliseconds(5));}}
     CHECK(releasedExportComplete);
     CHECK(!daw_begin_export(bridge.get(),bridgePath.c_str(),99));
-    std::cout<<"PASS: full/range playback parity, PCM24 TPDF tolerance, WAV headers, atomic cancel, async C bridge\n";return 0;
+    const auto inspected=daw::inspectExportTail(session.state(),{daw::ExportTailMode::ManualLimit,48000});
+    CHECK(inspected.finiteTailFrames==0&&!inspected.infiniteTailDetected&&inspected.selectedTailFrames==0);
+    std::cout<<"PASS: tail classification/policy, full/range playback parity, PCM24 TPDF tolerance, WAV headers, atomic cancel, async C bridge\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

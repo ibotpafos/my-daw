@@ -12,6 +12,13 @@ _Static_assert(DAW_INSERT_RUNTIME_UNPREPARED == 0 && DAW_INSERT_RUNTIME_ACTIVE_I
 _Static_assert(DAW_INSERT_RUNTIME_FAULT_NONE == 0 && DAW_INSERT_RUNTIME_FAULT_PREPARE_FAILED == 1 && DAW_INSERT_RUNTIME_FAULT_RESTART_REQUIRED == 2 && DAW_INSERT_RUNTIME_FAULT_DEADLINE_MISSED == 3 && DAW_INSERT_RUNTIME_FAULT_PROTOCOL_ERROR == 4 && DAW_INSERT_RUNTIME_FAULT_HELPER_EXITED == 5, "runtime fault ABI values");
 _Static_assert(offsetof(daw_insert_runtime_status, struct_size) == 0, "runtime status prefix");
 _Static_assert(sizeof(daw_insert_runtime_status) == 20, "runtime status ABI size");
+_Static_assert(DAW_EXPORT_OPTIONS_VERSION == 1, "export options ABI version");
+_Static_assert(DAW_EXPORT_TAIL_AUTOMATIC == 1 && DAW_EXPORT_TAIL_NONE == 2 && DAW_EXPORT_TAIL_MANUAL_LIMIT == 3, "export tail ABI values");
+_Static_assert(DAW_EXPORT_TAIL_SUMMARY_VERSION == 1, "export tail summary ABI version");
+_Static_assert(offsetof(daw_export_options, struct_size) == 0, "export options prefix");
+_Static_assert(sizeof(daw_export_options) == 16, "export options ABI size");
+_Static_assert(offsetof(daw_export_tail_summary, struct_size) == 0, "export tail summary prefix");
+_Static_assert(sizeof(daw_export_tail_summary) == 20, "export tail summary ABI size");
 int main(void) {
     daw_session* session = daw_create();
     if (!session) return 1;
@@ -25,10 +32,13 @@ int main(void) {
     daw_plugin plugin = {0}; plugin.struct_size = sizeof(plugin);
     daw_insert_hosting_status hosting = {0}; hosting.struct_size = sizeof(hosting);
     daw_insert_runtime_status runtime = {0}; runtime.struct_size = sizeof(runtime);
+    daw_export_options export_options = {0}; export_options.struct_size = sizeof(export_options); export_options.version = DAW_EXPORT_OPTIONS_VERSION; export_options.tail_mode = DAW_EXPORT_TAIL_AUTOMATIC;
+    daw_export_tail_summary tail_summary = {0}; tail_summary.struct_size = sizeof(tail_summary);
     int result = daw_get_snapshot(session, &snapshot);
     result |= daw_get_recording(session, &recording);
     result |= daw_get_output_status(session, &output_status);
     result |= daw_set_loop(session, 0, 0, 0);
+    if (daw_get_export_tail_summary(session, &export_options, &tail_summary) != 1) result |= 1;
     daw_destroy(session);
     return result || snapshot.track_count != 0 || component.struct_size == 0 || plugin.struct_size == 0 || hosting.struct_size == 0 || runtime.struct_size == 0;
 }

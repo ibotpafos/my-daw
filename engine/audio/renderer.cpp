@@ -17,6 +17,20 @@ float gain(double db) noexcept {
 }
 } // namespace
 
+GraphTailSummary serialTail(GraphTailSummary left,
+                            GraphTailSummary right) noexcept {
+  const auto finite = uint64_t(left.finiteFrames) + right.finiteFrames;
+  return {static_cast<uint32_t>(std::min<uint64_t>(
+              finite, kMaximumDeclaredTailFrames)),
+          left.hasInfiniteTail || right.hasInfiniteTail};
+}
+
+GraphTailSummary parallelTail(GraphTailSummary left,
+                              GraphTailSummary right) noexcept {
+  return {std::max(left.finiteFrames, right.finiteFrames),
+          left.hasInfiniteTail || right.hasInfiniteTail};
+}
+
 void Renderer::PdcDelay::configure(uint32_t frames) {
   if (frames > kMaximumPdcEdgeFrames)
     throw Error("PDC edge delay exceeds 10 seconds");
@@ -396,16 +410,15 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   const auto masterInsertLatency =
       makeChain(state.masterInserts, nextMasterEffects, nextMasterAutomation, nextMasterEffectIDs);
   const auto chainTail = [](const auto &chain) {
-    uint64_t total = 0;
+    GraphTailSummary result;
     for (const auto &effect : chain) {
-      const auto tail = effect->tailFrames();
-      if (tail >= kMaximumDeclaredTailFrames || total > kMaximumDeclaredTailFrames - tail)
-        return kMaximumDeclaredTailFrames;
-      total += tail;
+      const auto tail = effect->tail();
+      result = serialTail(result, {tail.finiteFrames, tail.infinite});
     }
-    return static_cast<uint32_t>(total);
+    return result;
   };
-  std::vector<uint32_t> trackEffectTail(state.tracks.size()), busEffectTail(state.buses.size());
+  std::vector<GraphTailSummary> trackEffectTail(state.tracks.size()),
+      busEffectTail(state.buses.size());
   for (size_t i = 0; i < state.tracks.size(); ++i) trackEffectTail[i] = chainTail(nextTrackEffects[i]);
   for (size_t i = 0; i < state.buses.size(); ++i) busEffectTail[i] = chainTail(nextBusEffects[i]);
   const auto masterEffectTail = chainTail(nextMasterEffects);
@@ -454,28 +467,36 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
             std::max(busIncoming[static_cast<size_t>(output)], busLatency[i]);
       }
     }
-  const auto addTail = [](uint32_t incoming, uint32_t node) {
-    return incoming > kMaximumDeclaredTailFrames - node ? kMaximumDeclaredTailFrames : incoming + node;
-  };
-  std::vector<uint32_t> trackTail(state.tracks.size()), busIncomingTail(state.buses.size()), busTail(state.buses.size());
+  std::vector<GraphTailSummary> trackTail(state.tracks.size()),
+      busIncomingTail(state.buses.size()), busTail(state.buses.size());
   for (size_t i = 0; i < state.tracks.size(); ++i)
     if (trackProduces[i]) {
       trackTail[i] = trackEffectTail[i];
       const auto output = nextTrackOutputs[i];
-      if (output >= 0) busIncomingTail[static_cast<size_t>(output)] = std::max(busIncomingTail[static_cast<size_t>(output)], trackTail[i]);
+      if (output >= 0)
+        busIncomingTail[static_cast<size_t>(output)] = parallelTail(
+            busIncomingTail[static_cast<size_t>(output)], trackTail[i]);
     }
   for (const auto &send : nextSends)
-    if (trackProduces[send.track]) busIncomingTail[send.bus] = std::max(busIncomingTail[send.bus], trackTail[send.track]);
+    if (trackProduces[send.track])
+      busIncomingTail[send.bus] = parallelTail(busIncomingTail[send.bus],
+                                                trackTail[send.track]);
   for (const auto i : nextBusOrder)
     if (busProduces[i]) {
-      busTail[i] = addTail(busIncomingTail[i], busEffectTail[i]);
+      busTail[i] = serialTail(busIncomingTail[i], busEffectTail[i]);
       const auto output = nextBusOutputs[i];
-      if (output >= 0) busIncomingTail[static_cast<size_t>(output)] = std::max(busIncomingTail[static_cast<size_t>(output)], busTail[i]);
+      if (output >= 0)
+        busIncomingTail[static_cast<size_t>(output)] = parallelTail(
+            busIncomingTail[static_cast<size_t>(output)], busTail[i]);
     }
-  uint32_t rootTail = 0;
-  for (size_t i = 0; i < state.tracks.size(); ++i) if (trackProduces[i] && nextTrackOutputs[i] < 0) rootTail = std::max(rootTail, trackTail[i]);
-  for (size_t i = 0; i < state.buses.size(); ++i) if (busProduces[i] && nextBusOutputs[i] < 0) rootTail = std::max(rootTail, busTail[i]);
-  const uint32_t declaredTailValue = addTail(rootTail, masterEffectTail);
+  GraphTailSummary rootTail;
+  for (size_t i = 0; i < state.tracks.size(); ++i)
+    if (trackProduces[i] && nextTrackOutputs[i] < 0)
+      rootTail = parallelTail(rootTail, trackTail[i]);
+  for (size_t i = 0; i < state.buses.size(); ++i)
+    if (busProduces[i] && nextBusOutputs[i] < 0)
+      rootTail = parallelTail(rootTail, busTail[i]);
+  const auto declaredTailValue = serialTail(rootTail, masterEffectTail);
   uint32_t masterPdcLatency = 0;
   for (size_t i = 0; i < state.tracks.size(); ++i)
     if (trackProduces[i] && nextTrackOutputs[i] < 0)
@@ -609,7 +630,10 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
     throw Error("Total graph latency exceeds limit");
   masterLatency.store(static_cast<uint32_t>(publishedLatency),
                       std::memory_order_release);
-  declaredTail.store(declaredTailValue, std::memory_order_release);
+  declaredFiniteTail.store(declaredTailValue.finiteFrames,
+                            std::memory_order_release);
+  declaredInfiniteTail.store(declaredTailValue.hasInfiniteTail,
+                             std::memory_order_release);
   updateMix(state);
   smoothMaster = masterGain.load(std::memory_order_relaxed);
 }

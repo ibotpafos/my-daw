@@ -24,7 +24,7 @@ Missing или bypassed insert не блокирует playback: lane остаё
 
 ## Finite tail export
 
-Renderer кэширует finite tail активных prepared VST3 effects. Для последовательной chain tail складывается с последующими участками пути; для параллельных track/bus routes выбирается максимальный путь до master. Значение ограничено 30 секундами; VST3 infinite-tail sentinel не создаёт бесконечный job и насыщается этим пределом. Текущий Audio Unit host не получает сопоставимую декларацию tail и публикует для AU ноль.
+Renderer кэширует finite tail активных prepared VST3 effects. Для последовательной chain tail складывается с последующими участками пути; для параллельных track/bus routes выбирается максимальный путь до master. VST3 infinite-tail sentinel не создаёт бесконечный job: с 1.33 его происхождение сохраняется до export policy, где пользователь выбирает automatic bounded tail, исключение infinite component либо конечный предел для него. Текущий Audio Unit host не получает сопоставимую декларацию tail и публикует для AU ноль.
 
 Range export сначала обрабатывает нужный timeline и компенсирует graph latency, затем подаёт тишину через весь graph на объявленную finite tail. WAV header и progress total включают appended tail frames, поэтому reverb/delay decay не обрезается концом выбранного диапазона. Сам requested musical range остаётся исходной частью файла перед tail.
 
@@ -32,6 +32,6 @@ Range export сначала обрабатывает нужный timeline и к
 
 Экспорт связывает lanes с parameter ID соответствующего device на его Channel и сохраняет normalized Points. Импорт совместимости в сторонние DAW остаётся отдельной matrix: разные hosts могут по-разному сопоставлять vendor parameter IDs и curves.
 
-Runtime effects пока загружаются в процесс приложения. [1.20.0](47-plugin-touch-audible-playhead.md) добавил realtime playhead offset и Touch/Latch gestures непосредственно для plug-in controls. Следующие hardening-срезы: process isolation, vendor editors, Audio Unit tail policy, infinite-tail user policy, hardware presentation timestamp и physical/vendor compatibility matrix.
+Runtime effects пока загружаются в процесс приложения. [1.20.0](47-plugin-touch-audible-playhead.md) добавил realtime playhead offset и Touch/Latch gestures непосредственно для plug-in controls. [1.33.0](60-infinite-tail-export-policy.md) добавляет user policy для infinite tail. Следующие hardening-срезы: vendor editors, Audio Unit tail declaration, hardware presentation timestamp и physical/vendor compatibility matrix.
 
-В этом срезе выполняется только compile/build проверка. QA, запуск приложения, прослушивание, hardware и сторонние vendor plugins не выполняются по текущему режиму разработки.
+Для продолжения 1.33 Debug build и полный CTest проходят 8/8; option-aware bridge path проверен реальным WAV без plug-in tail. Сборка macOS запускается, но tail dialog ещё требует повторного visual/VoiceOver smoke после таймаута Accessibility backend. Прослушивание, hardware и сторонние vendor plugins не проверены.

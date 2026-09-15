@@ -90,6 +90,12 @@ int main() { try {
     CHECK(daw_open_draft(bridge.get(),path.c_str())==0);
     daw_snapshot snap{}; snap.struct_size=sizeof(snap); CHECK(daw_get_snapshot(bridge.get(),&snap)==0);
     CHECK(snap.revision==s.state().revision && !snap.can_undo);
+    daw_export_options automaticTail{};automaticTail.struct_size=sizeof(automaticTail);automaticTail.version=DAW_EXPORT_OPTIONS_VERSION;automaticTail.tail_mode=DAW_EXPORT_TAIL_AUTOMATIC;
+    daw_export_tail_summary tailSummary{};tailSummary.struct_size=sizeof(tailSummary);CHECK(daw_get_export_tail_summary(bridge.get(),&automaticTail,&tailSummary)==1);
+    daw_snapshot tailSnapshot{};tailSnapshot.struct_size=sizeof(tailSnapshot);CHECK(daw_get_snapshot(bridge.get(),&tailSnapshot)==0&&tailSnapshot.revision==snap.revision);
+    daw_export_options noTail=automaticTail;noTail.tail_mode=DAW_EXPORT_TAIL_NONE;tailSummary={};tailSummary.struct_size=sizeof(tailSummary);CHECK(daw_get_export_tail_summary(bridge.get(),&noTail,&tailSummary)==1);
+    daw_export_options manualTail=automaticTail;manualTail.tail_mode=DAW_EXPORT_TAIL_MANUAL_LIMIT;manualTail.manual_tail_frames=48000;tailSummary={};tailSummary.struct_size=sizeof(tailSummary);CHECK(daw_get_export_tail_summary(bridge.get(),&manualTail,&tailSummary)==1);
+    daw_export_options badTail=automaticTail;badTail.tail_mode=99;CHECK(daw_get_export_tail_summary(bridge.get(),&badTail,&tailSummary)==1);badTail=manualTail;badTail.manual_tail_frames=48000*30+1;CHECK(daw_get_export_tail_summary(bridge.get(),&badTail,&tailSummary)==1);badTail=automaticTail;badTail.struct_size=sizeof(badTail)-1;CHECK(daw_get_export_tail_summary(bridge.get(),&badTail,&tailSummary)==1);tailSummary.struct_size=sizeof(tailSummary)-1;CHECK(daw_get_export_tail_summary(bridge.get(),&automaticTail,&tailSummary)==1);tailSummary.struct_size=sizeof(tailSummary);tailSnapshot={};tailSnapshot.struct_size=sizeof(tailSnapshot);CHECK(daw_get_snapshot(bridge.get(),&tailSnapshot)==0&&tailSnapshot.revision==snap.revision);
     CHECK(daw_set_gain(bridge.get(),1,100,snap.revision)==1);
     char error[512]; daw_error(bridge.get(),error,sizeof(error)); CHECK(error[0]);
     CHECK(daw_open_draft(bridge.get(),"/nonexistent/mydawdraft")==1);

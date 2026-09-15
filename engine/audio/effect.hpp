@@ -1,6 +1,7 @@
 #pragma once
 #include "domain/session.hpp"
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -39,6 +40,14 @@ struct PreparedEffectRuntimeStatus {
   uint32_t extraPipelineLatencyFrames = 0;
   uint32_t faultCode = 0;
 };
+// `IAudioProcessor::getTailSamples()` uses UINT32_MAX for kInfiniteTail.
+// Keep that distinction at the host boundary instead of turning it into a
+// large finite duration: offline export needs an explicit user policy for an
+// unbounded processor.
+struct EffectTail {
+  uint32_t finiteFrames = 0;
+  bool infinite = false;
+};
 class PreparedEffect {
 public:
   virtual ~PreparedEffect() = default;
@@ -50,9 +59,15 @@ public:
   // The initialized instance's algorithmic delay at the configured sample rate.
   // This is queried once on the control thread and is safe to cache for RT use.
   virtual uint32_t latencyFrames() const noexcept = 0;
-  // Finite VST3 tail length captured after activation. Existing AU effects
-  // default to zero until their host reports a comparable value.
+  // Raw VST3 tail declaration captured after activation, including the
+  // UINT32_MAX infinite sentinel. Existing AU effects default to zero until
+  // their host reports a comparable value.
   virtual uint32_t tailFrames() const noexcept { return 0; }
+  virtual EffectTail tail() const noexcept {
+    const auto frames = tailFrames();
+    return {frames == std::numeric_limits<uint32_t>::max() ? 0U : frames,
+            frames == std::numeric_limits<uint32_t>::max()};
+  }
   // Must be safe to call while the audio graph is published. Implementations
   // with mutable state publish this value from lock-free atomics.
   virtual PreparedEffectRuntimeStatus runtimeStatus() const noexcept {

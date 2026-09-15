@@ -62,6 +62,10 @@ SP-06 15 сентября 2026 года собрал pinned Tracktion/JUCE и д
 
 Signalsmith Stretch — MIT-кандидат для offline time-stretch; качество на русскоязычном вокале проверяется отдельно.[^6] Форматная конверсия WAV/AIFF сначала через системные API. Не добавлять FFmpeg, libsndfile, MLX, ONNX Runtime, Wasmtime и Python runtime внутрь приложения «на будущее». Для каждого нового runtime нужен реальный сценарий и профиль ресурсов.
 
+Готовая библиотека предпочтительна, когда она закрывает сложный стандартный слой: plugin SDK/hosting, time-stretch, resampling, MIDI, файловый codec или проверенный playback graph. Подключение проходит через наш adapter за C ABI и получает четыре обязательных доказательства: закреплённую версию и hash, совместимую лицензию, parity-тест с текущей семантикой проекта и измерение CPU/RAM/latency. Формат проекта, command/Undo model, realtime contract и основной macOS UX остаются нашими, чтобы смена backend не ломала пользовательские сессии.
+
+Ближайший reuse-порядок: сначала сравнить Tracktion adapter для graph/render/hosting; затем провести отдельные spikes Signalsmith Stretch для offline stretch и libsamplerate/r8brain-кандидатов для sample-rate conversion. Добавлять целый framework ради одной небольшой функции нельзя: системный API или узкий MIT/BSD-компонент имеет меньшую поверхность обновлений и лицензирования.
+
 Core AI уже представлен Apple как on-device framework; он включён в исследование, но минимальная ОС и поддержанные модели должны быть проверены по конкретному SDK до интеграции.[^7] Core ML остаётся кандидатом для более широкого deployment target; источники не доказывают ускорение любой модели на ANE.
 
 [^1]: Apple: [AudioDeviceIOProc](https://developer.apple.com/documentation/coreaudio/audiodeviceioproc), [Audio Workgroups](https://developer.apple.com/documentation/audiotoolbox/understanding-audio-workgroups), [vDSP audio example](https://developer.apple.com/documentation/accelerate/creating-an-audio-unit-extension-using-the-vdsp-library).
