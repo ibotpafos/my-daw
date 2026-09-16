@@ -48,7 +48,45 @@ extension DraftApp {
             arrangementConsoleSplit?.adjustSubviews()
             window.contentView?.layoutSubtreeIfNeeded()
         }
+        installMixerConsoleMenu()
     }
+
+    private func installMixerConsoleMenu() {
+        guard let mainMenu=NSApp.mainMenu else{return}
+        let root:NSMenuItem
+        let menu:NSMenu
+        if let existing=mainMenu.items.first(where:{$0.title=="Микшер"}),let existingMenu=existing.submenu {
+            root=existing;menu=existingMenu;menu.removeAllItems()
+        } else {
+            root=NSMenuItem(title:"Микшер",action:nil,keyEquivalent:"")
+            menu=NSMenu(title:"Микшер");root.submenu=menu;mainMenu.addItem(root)
+        }
+        func command(_ title:String,_ selector:Selector,_ key:String="",_ modifiers:NSEvent.ModifierFlags=[])->NSMenuItem {
+            let item=NSMenuItem(title:title,action:selector,keyEquivalent:key);item.target=self;item.keyEquivalentModifierMask=modifiers;return item
+        }
+        menu.addItem(command("Матрица маршрутизации…",#selector(openMixerRoutingMatrix),"r",[.command,.option]))
+        menu.addItem(.separator())
+        menu.addItem(command("Канал полностью",#selector(mixerRackFull),"1",[.command,.option]))
+        menu.addItem(command("Только Inserts",#selector(mixerRackInserts),"2",[.command,.option]))
+        menu.addItem(command("Только Sends",#selector(mixerRackSends),"3",[.command,.option]))
+        menu.addItem(command("Фейдеры",#selector(mixerRackFaders),"4",[.command,.option]))
+        menu.addItem(.separator())
+        menu.addItem(command("Показать все каналы",#selector(mixerShowAllChannels)))
+    }
+
+    @objc private func openMixerRoutingMatrix() {
+        MixerRoutingPresenter.shared.present(
+            strips:{ [weak self] in self?.mixerWorkspace.strips ?? [] },
+            onOutput:{ [weak self] id,bus in self?.consoleRoute(id,to:bus) },
+            onSend:{ [weak self] id,action in self?.consoleSend(id,action) }
+        )
+    }
+    @objc private func mixerRackFull(){mixerWorkspace.setRackMode(.full)}
+    @objc private func mixerRackInserts(){mixerWorkspace.setRackMode(.inserts)}
+    @objc private func mixerRackSends(){mixerWorkspace.setRackMode(.sends)}
+    @objc private func mixerRackFaders(){mixerWorkspace.setRackMode(.faders)}
+    @objc private func mixerShowAllChannels(){mixerWorkspace.consoleState.showAll();mixerWorkspace.needsLayout=true}
+
     func consoleBegin(_ id: UInt64, send: UInt64?) {
         guard !isRecording, consoleGesture == nil, let kind = mixerKinds[id] else { return }
         if send == nil {
@@ -89,7 +127,7 @@ extension DraftApp {
         guard !isRecording, let kind = mixerKinds[id], kind != .master else { return }
         // The existing routing commands validate all destinations and cycles.
         let result = kind == .track ? daw_set_track_output(session,id,bus,revision) : daw_set_bus_output(session,id,bus,revision)
-        _ = check(result); refresh(); pollTransport()
+        _ = check(result); refresh(); pollTransport();MixerRoutingPresenter.shared.reload()
     }
     private func consoleInsert(_ id: UInt64, _ action: MixerInsertAction) {
         guard !isRecording, let owner = consoleOwner(id) else { return }
@@ -134,6 +172,6 @@ extension DraftApp {
             guard let value = MixerScale.parseDb(field.stringValue) else { storageMessage("Введи конечное значение от −120 до +24 dB."); return }
             _ = check(daw_upsert_send(session,id,bus,value,send.preFader ? 1 : 0,revision))
         }
-        refresh(); pollTransport()
+        refresh(); pollTransport();MixerRoutingPresenter.shared.reload()
     }
 }
