@@ -1,0 +1,33 @@
+name: Fix reference workspace compile blocker
+on:
+  push:
+    branches: ["codex/reference-workspace"]
+    paths: [".github/workflows/fix-reference-workspace.yml"]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Fix selector and commit source only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/macos/main.swift')
+          text = path.read_text()
+          old = '#selector(resetWorkspace)'
+          new = '#selector(resetWorkspaceLayout)'
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one {old}, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git add apps/macos/main.swift
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(macos): wire workspace reset command'
+          git push origin HEAD:refs/heads/codex/reference-workspace
