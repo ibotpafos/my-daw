@@ -22,6 +22,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     private var insertButtons: [MixerActionButton] = [], sendButtons: [MixerActionButton] = []
     private var editingGain = false
     var sendTarget: UInt64?
+    var rackMode: MixerConsoleState.RackMode = .full { didSet { if oldValue != rackMode { needsLayout = true } } }
     init(model: MixerStripModel) {
         self.model = model
         super.init(frame: .zero)
@@ -250,26 +251,36 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         super.layout()
         let w = bounds.width, h = bounds.height, inset: CGFloat = 7
         let detailed = h >= 600, tall = h >= 780
+        let showInserts = detailed && (rackMode == .full || rackMode == .inserts)
+        let showSends = detailed && model.kind == .track && (rackMode == .full || rackMode == .sends)
         icon.isHidden = !detailed
         icon.frame = NSRect(x: w/2-14,y: 14,width: 28,height: 28)
         title.frame = NSRect(x: 3,y: detailed ? 48 : 6,width: w-6,height: 24)
         var y: CGFloat = detailed ? 82 : 35
-        insertLabel.isHidden = !detailed; addInsert.isHidden = !detailed
-        sendsLabel.isHidden = !detailed; addSend.isHidden = !detailed || model.kind != .track
-        let visibleInsertCount = detailed ? (tall ? 4 : 2) : 0
-        insertLabel.frame = NSRect(x: inset,y:y,width:w-14,height:12); if detailed { y += 17 }
-        for (i, button) in insertButtons.enumerated() { button.isHidden = i >= visibleInsertCount; button.frame = NSRect(x:inset,y:y+CGFloat(i)*25,width:w-14,height:23) }
-        if detailed { y += CGFloat(visibleInsertCount)*25; addInsert.frame = NSRect(x:inset,y:y,width:w-14,height:23); y += 34 }
-        sendsLabel.frame = NSRect(x:inset,y:y,width:w-14,height:12); if detailed { y += 17 }
-        let visibleSends = detailed ? (tall ? 3 : 1) : 0
-        for (i, button) in sendButtons.enumerated() { button.isHidden = i >= visibleSends; button.frame = NSRect(x:inset,y:y+CGFloat(i)*25,width:w-14,height:23) }
-        if detailed {
+
+        insertLabel.isHidden = !showInserts; addInsert.isHidden = !showInserts
+        let visibleInsertCount = showInserts ? (tall ? 4 : 2) : 0
+        for (i, button) in insertButtons.enumerated() { button.isHidden = i >= visibleInsertCount }
+        if showInserts {
+            insertLabel.frame = NSRect(x: inset,y:y,width:w-14,height:12); y += 17
+            for (i, button) in insertButtons.enumerated() where i < visibleInsertCount { button.frame = NSRect(x:inset,y:y+CGFloat(i)*25,width:w-14,height:23) }
+            y += CGFloat(visibleInsertCount)*25
+            addInsert.frame = NSRect(x:inset,y:y,width:w-14,height:23); y += 34
+        }
+
+        sendsLabel.isHidden = !showSends; addSend.isHidden = !showSends
+        let visibleSends = showSends ? (tall ? 3 : 1) : 0
+        for (i, button) in sendButtons.enumerated() { button.isHidden = i >= visibleSends }
+        if showSends {
+            sendsLabel.frame = NSRect(x:inset,y:y,width:w-14,height:12); y += 17
+            for (i, button) in sendButtons.enumerated() where i < visibleSends { button.frame = NSRect(x:inset,y:y+CGFloat(i)*25,width:w-14,height:23) }
             y += CGFloat(visibleSends)*25
             addSend.title = model.sends.count > visibleSends ? "+ Send · \(model.sends.count)" : "+ Send"
             addSend.frame = NSRect(x:inset,y:y,width:w-14,height:23); y += 33
         }
-        // Compact workspace keeps processing accessible through channel menus.
-        if !detailed && h >= 350 {
+
+        // Compact workspace keeps processing accessible without forcing tall racks.
+        if !detailed && h >= 350 && (rackMode == .full || rackMode == .inserts) {
             addInsert.isHidden = false; addInsert.frame = NSRect(x:inset,y:y,width:w-14,height:22); y += 28
         }
         route.frame = NSRect(x:inset,y:y,width:w-14,height:24); y += 30
