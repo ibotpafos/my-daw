@@ -14,12 +14,14 @@ final class MixerConsoleState {
             }
         }
     }
+    enum RackMode: Int { case full, inserts, sends, faders }
     enum Zone { case scrolling, left, right }
 
     static let maximumPinnedChannels = 3
 
     var filter: Filter = .all
     var density: Density = .regular
+    var rackMode: RackMode = .full
     var search = ""
     private(set) var hiddenIDs = Set<UInt64>()
     private(set) var leftPinnedIDs: [UInt64] = []
