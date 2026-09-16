@@ -1,0 +1,36 @@
+name: Hardware probe build
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-probes:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build CoreMIDI hardware probe
+        run: |
+          mkdir -p build/tools
+          xcrun clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+            tools/midi_input_probe.cpp \
+            -framework CoreMIDI -framework CoreFoundation \
+            -o build/tools/midi_input_probe
+
+      - name: Build AU MusicDevice probe
+        run: |
+          xcrun clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+            tools/au_music_device_probe.cpp \
+            -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
+            -o build/tools/au_music_device_probe
+
+      - name: CLI smoke
+        run: |
+          build/tools/midi_input_probe --list
+          build/tools/au_music_device_probe --help >/dev/null 2>&1 || test "$?" -eq 2
