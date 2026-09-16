@@ -352,6 +352,18 @@ int daw_get_master_gain_automation_count(daw_session*,uint32_t* count);
 int daw_get_master_gain_automation_point(daw_session*,uint32_t index,daw_automation_point*);
 int daw_upsert_master_gain_automation_point(daw_session*,uint64_t frame,double gain_db,uint64_t expected_revision);
 int daw_remove_master_gain_automation_point(daw_session*,uint64_t frame,uint64_t expected_revision);
+/* Buffered automation write gestures (Touch/Latch). One gesture may be open per
+ * session, so write carries no expected_revision: the open gesture IS the
+ * mutation guard — while it is open, every other mutating call is rejected and
+ * reads, snapshot and seeking stay free of charge. begin consumes no revision,
+ * end consumes exactly one. end_frame must not precede the last accepted sample;
+ * a rejected end leaves the gesture OPEN and it must be cancelled explicitly.
+ * A rejected per-sample value does not move the gesture's ordering cursor, and a
+ * take whose values all already match the lane still commits one revision — the
+ * silent no-op belongs to the single-point upsert commands, not to gestures.
+ * Ranges: -120..+24 dB for volume/bus/master lanes and -1..1 for the pan lane
+ * (carried in gain_db); 2048 points per lane, 10-minute timeline ceiling.
+ * See docs/44-automation-write-pdc-plan.md and tests/e2e/e2e_automation.cpp. */
 int daw_begin_automation_gesture(daw_session*,int32_t target,uint64_t target_id,int32_t mode,uint64_t expected_revision);
 int daw_write_automation_gesture(daw_session*,uint64_t frame,double value);
 int daw_end_automation_gesture(daw_session*,uint64_t end_frame,uint64_t expected_revision);
@@ -558,7 +570,7 @@ int daw_get_auto_monitor_on_arm(daw_session*, int32_t* on);
 int daw_set_metronome(daw_session*, int32_t on);
 int daw_get_metronome(daw_session*, int32_t* on);
 /* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0
- * anchored (120 BPM, 4/4), at most 64 points each. Upsert replaces a point at
+ * anchored (120 BPM, 4/8 per kDefaultTimeSignature*), at most 64 points each. Upsert replaces a point at
  * the same frame; an identical value is a successful no-op without a revision.
  * The first (frame-0) point cannot be removed. The bridge pre-validates ABI
  * shape and obvious value ranges; ordering, timeline and capacity rules stay

@@ -81,12 +81,34 @@ int main() {
         saveDraftAndWait(session.get(), draft);
         CHECK(fileNonEmpty(draft));
 
+        // 9b. The synchronous save API the app uses for quick persists:
+        // argument/bad-directory rejections carry error text and change
+        // nothing, and a successful sync save round-trips identically.
+        const auto revisionBeforeSync = rev(session.get());
+        CHECK_REJ(session.get(), daw_save_draft(session.get(), nullptr));
+        CHECK_REJ(session.get(), daw_save_draft(session.get(), ""));
+        const auto badDir = root / "no-such-dir" / "x.mydawdraft";
+        CHECK_REJ(session.get(), daw_save_draft(session.get(), badDir.string().c_str()));
+        CHECK(!std::filesystem::exists(root / "no-such-dir")); // rejected saves create no scaffolding
+        CHECK(rev(session.get()) == revisionBeforeSync);      // and never mutate the session
+        const auto syncDraft = root / "sync.mydawdraft";
+        CHECK_OK(session.get(), daw_save_draft(session.get(), syncDraft.string().c_str()));
+        CHECK(fileNonEmpty(syncDraft));
+
         Bridge reopened;
         CHECK_OK(reopened.get(), daw_open_draft(reopened.get(), draft.string().c_str()));
         const auto restored = dumpOf(reopened.get());
         if (!(restored == built))
             throw std::runtime_error("round-trip changed the project:\nBEFORE:\n" + describe(built) +
                                      "\nAFTER:\n" + describe(restored));
+
+        // The synchronous draft is the same project, byte for byte in model terms.
+        Bridge syncProbe;
+        CHECK_OK(syncProbe.get(), daw_open_draft(syncProbe.get(), syncDraft.string().c_str()));
+        const auto syncRestored = dumpOf(syncProbe.get());
+        if (!(syncRestored == built))
+            throw std::runtime_error("synchronous save lost the project:\nBEFORE:\n" + describe(built) +
+                                     "\nAFTER:\n" + describe(syncRestored));
 
         // 10. Portable paths (PRJ-01): the draft embeds its media, so the
         // reopened project must still render with the source file deleted.

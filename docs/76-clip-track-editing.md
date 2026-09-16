@@ -5,7 +5,7 @@
 
 ## Домен (`engine/domain`)
 Десять команд общей конвенции (expected-revision, no-op при идентичном значении, один snapshot на commit):
-- дорожки: `setTrackMuted`, `setTrackSolo`, `setTrackColor`, `setTrackGain` (тот же clamp −60..12 dB, что у master/bus), `duplicateTrack` → новый id (копируются regions, takes, MIDI, routing, automation, inserts; имя — «{name} copy», cap 256).
+- дорожки: `setTrackMuted`, `setTrackSolo`, `setTrackColor`, `setTrackGain` (то же ограничение −60..12 dB, что у master/bus: вне диапазона команда **отказывается**, а не обрезает значение; см. оговорку ниже), `duplicateTrack` → новый id (копируются regions, takes, MIDI, routing, automation, inserts; имя — «{name} copy», cap 256).
 - аудио-клипы (regions): `setClipColor`, `setClipGain` — поле `Region.gain` в dB по умолчанию 0.0.
 - MIDI-клипы: `setMidiClipColor`, `transposeMidiClip` (int8 полутонов, питчи клампятся 0..127, all-clamped = no-op без ревизии), `quantizeMidiClip` (snap старта нот к кратным `gridBeats` через beats↔frames темпо-карты; grid≤0 = no-op).
 `Track.color`/`Region.color`/`MidiClip.color` — uint32 0xRRGGBB, 0 = «цвета нет». trim/split MIDI сохраняют цвет обеих половин.
@@ -47,3 +47,12 @@ UI: «Мьют клипа (M)» и «Луп клипа (L)» в контекст
 
 ## Гейты кода
 debug 17/17, ASan/UBSan 16/16, TSan 16/16 на слитом дереве; сборка AppKit + 4 s launch — зелёные. Физические гейты (мышь по новым контролам, слух clip gain) остаются открытыми.
+
+## Сквозная проверка через ABI (1.71.0)
+
+`tests/e2e/e2e_timeline_editing.cpp` прогоняет тот же набор команд только через публичный C ABI и подтверждает каждую правку двумя независимыми способами: моделью (`dumpOf`) и коротким экспортом, где уровень сигнала читается как позиция. Два факта, которые раньше были только в коде:
+
+- вне диапазона `daw_set_clip_gain` и `daw_set_clip_pan` **отказывают** (`Clip gain outside -60..12 dB`, `Clip pan outside -1..1`), но revision и модель не двигаются; обрезки значения нет ни у одной из команд (ни у clip, ни у track gain) — формулировку «clamp» в этом разделе надо читать как «отказ»;
+- длительность рендера считается по **слышимым** регионам: если замутить хвостовой клип, бэунс обрывается на последнем слышимом регионе, а не на геометрическом конце проекта. Проверено измерением, в прежних разделах не описывалось.
+
+Оба факта закреплены ассертами сценария, поэтому расхождение больше не может тихо вернуться в документации.

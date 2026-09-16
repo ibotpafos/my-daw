@@ -14,7 +14,7 @@
 - track volume/pan, bus gain и master gain automation становятся Points с прямыми ссылками на параметры;
 - Audio Unit и VST3 на track, bus и master становятся device соответствующего Channel; state находится внутри owner-qualified `plugins/track-*`, `plugins/bus-*` или `plugins/master-*` paths, а VST3 использует стандартный `.vstpreset` container;
 - format v14 plug-in lanes становятся `RealParameter` внутри device и sibling `Points` в Arrangement с `Target` IDREF; normalized value сохраняется, а loss report отмечает зависимость от mapping vendor parameter ID;
-- tempo берётся из текущего UI, текущая time signature — 4/4.
+- tempo берётся из текущего UI, текущая time signature — дефолтный якорь проекта 4/8 (см. [69 tempo map](69-tempo-map.md); 4/8, а не 4/4, потому что бит в beat-формулах — четвертной).
 
 ## Loss report
 

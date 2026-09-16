@@ -261,6 +261,12 @@ if(BUILD_TESTING)
     target_include_directories(${e2e_name} PRIVATE engine tests/e2e)
     target_link_libraries(${e2e_name} PRIVATE daw_core)
     target_compile_options(${e2e_name} PRIVATE -Wall -Wextra -Werror)
+    if(APPLE AND TARGET daw_au_scan_helper)
+      # The isolated AU scanner is a disposable helper process; the catalog
+      # e2e scenario launches it by path, exactly as the macOS app resolves it.
+      target_compile_definitions(${e2e_name} PRIVATE
+        DAW_E2E_AU_SCAN_HELPER="$<TARGET_FILE:daw_au_scan_helper>")
+    endif()
     add_test(NAME ${e2e_name} COMMAND ${e2e_name})
     set_tests_properties(${e2e_name} PROPERTIES LABELS "e2e" TIMEOUT 300)
   endforeach()

@@ -81,6 +81,10 @@ public:
     TempRoot& operator=(const TempRoot&) = delete;
     ~TempRoot() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
     std::filesystem::path operator/(const std::string& leaf) const { return path / leaf; }
+    // Act as a path wherever std::filesystem wants one, and expose the string
+    // form, so scenario code reads naturally (root.string(), iterate root/path).
+    operator const std::filesystem::path&() const { return path; }
+    std::string string() const { return path.string(); }
 };
 
 // RAII wrapper for the opaque session handle.
