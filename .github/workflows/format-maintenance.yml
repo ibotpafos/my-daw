@@ -1,5 +1,5 @@
 name: Format maintenance
-# Temporary, same-repository migration. Remove after the reviewed changes land.
+# Temporary and branch-scoped; only the reviewed bridge fixes below are committed.
 on:
   push:
     branches: ["codex/midi-hardware-acceptance"]
@@ -17,25 +17,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-      - name: Apply guarded extraction and portability fixes
+      - name: Apply exact compiler fixes
         run: |
-          python3 scripts/maintenance_project_layout.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('engine/bridge/daw.cpp')
+          text = path.read_text()
+          changes = {
+              'entry.plugin.instrument ? DAW_VST3_FLAG_INSTRUMENT : 0u':
+                  'entry.plugin.instrument ? static_cast<uint32_t>(DAW_VST3_FLAG_INSTRUMENT) : 0u',
+              'int daw_get_midi_input_device(daw_session *s, uint32_t index, daw_midi_device *out) {':
+                  'int daw_get_midi_input_device(daw_session *s, [[maybe_unused]] uint32_t index, daw_midi_device *out) {',
+          }
+          for before, after in changes.items():
+              if text.count(before) != 1:
+                  raise SystemExit('Reviewed code changed; refusing replacement')
+              text = text.replace(before, after, 1)
+          path.write_text(text)
+          PY
+          clang-format-18 -i engine/bridge/daw.cpp
           git diff --check
-          bash -n scripts/build-macos.sh
-      - name: Commit reviewed paths to the same branch
+      - name: Commit only the bridge fixes
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- CMakeLists.txt cmake/DawPlatform.cmake cmake/DawTests.cmake \
-            apps/macos/main.swift apps/macos/ProjectTime.swift apps/macos/TimelineRulerView.swift \
-            apps/macos/sources.txt scripts/build-macos.sh engine/storage/storage.cpp \
-            engine/bridge/daw.cpp engine/plugins/vst3_catalog.hpp \
-            engine/platform/macos/vst3_scanner.hpp engine/platform/macos/vst3_scan_cache.hpp \
-            scripts/test-au-music-device.sh scripts/test-midi-hardware.sh scripts/test-audio-preview.sh
-          git commit -m 'refactor: separate app components, build modules and portable catalog metadata'
+          git add -- engine/bridge/daw.cpp
+          git commit -m 'fix(bridge): keep portable flags and MIDI stub warning-clean'
           git push origin HEAD:refs/heads/codex/midi-hardware-acceptance
-      - name: Verify GCC build
+      - name: Verify GCC build and tests
         run: |
           cmake --preset sanitizers
-          cmake --build --preset sanitizers --parallel 2
+          cmake --build --preset sanitizers --parallel 2 -- -k
           ctest --preset sanitizers
