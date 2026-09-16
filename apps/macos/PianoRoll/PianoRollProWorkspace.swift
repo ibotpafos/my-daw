@@ -35,6 +35,8 @@ final class PRProWorkspaceView: NSView {
     private let strumDirection = NSSegmentedControl(labels: ["↑", "↓"], trackingMode: .selectOne, target: nil, action: nil)
     private let rampFrom = NSTextField(string: "60")
     private let rampTo = NSTextField(string: "110")
+    private let transformApplyButton = NSButton(title: "Apply preview", target: nil, action: nil)
+    private let transformCancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let chordRoot = NSPopUpButton()
     private let chordKind = NSPopUpButton()
     private let chordInversion = NSPopUpButton()
@@ -158,22 +160,41 @@ final class PRProWorkspaceView: NSView {
         inspector.addArrangedSubview(caption("RATCHET"))
         ratchetCount.addItems(withTitles: ["2", "3", "4", "6", "8", "12", "16", "32"])
         ratchetCount.selectItem(withTitle: "4")
-        inspector.addArrangedSubview(row("Repeats", ratchetCount))
+        ratchetCount.target = self; ratchetCount.action = #selector(previewRatchetNow)
         ratchetGate.isContinuous = true
+        ratchetGate.target = self; ratchetGate.action = #selector(previewRatchetNow)
+        inspector.addArrangedSubview(row("Repeats", ratchetCount))
         inspector.addArrangedSubview(row("Gate", ratchetGate))
-        inspector.addArrangedSubview(button("Apply Ratchet", #selector(ratchetNow)))
+        inspector.addArrangedSubview(button("Preview Ratchet", #selector(previewRatchetNow)))
         inspector.addArrangedSubview(divider())
         inspector.addArrangedSubview(caption("STRUM"))
         strumDirection.selectedSegment = 0
+        strumDirection.target = self; strumDirection.action = #selector(previewStrumNow)
+        strumAmount.isContinuous = true
+        strumAmount.target = self; strumAmount.action = #selector(previewStrumNow)
         inspector.addArrangedSubview(row("Direction", strumDirection))
         inspector.addArrangedSubview(row("Spread · beat", strumAmount))
-        inspector.addArrangedSubview(button("Apply Strum", #selector(strumNow)))
+        inspector.addArrangedSubview(button("Preview Strum", #selector(previewStrumNow)))
         inspector.addArrangedSubview(divider())
         inspector.addArrangedSubview(caption("VELOCITY RAMP"))
+        rampFrom.target = self; rampFrom.action = #selector(previewRampNow)
+        rampTo.target = self; rampTo.action = #selector(previewRampNow)
         let ramp = NSStackView(views: [rampFrom, NSTextField(labelWithString: "→"), rampTo])
         ramp.spacing = 4; ramp.alignment = .centerY
         inspector.addArrangedSubview(ramp)
-        inspector.addArrangedSubview(button("Apply Ramp", #selector(rampNow)))
+        inspector.addArrangedSubview(button("Preview Ramp", #selector(previewRampNow)))
+        inspector.addArrangedSubview(divider())
+        inspector.addArrangedSubview(caption("TRANSFORM PREVIEW"))
+        transformApplyButton.target = self; transformApplyButton.action = #selector(applyTransformPreview)
+        transformCancelButton.target = self; transformCancelButton.action = #selector(cancelTransformPreview)
+        for button in [transformApplyButton, transformCancelButton] {
+            button.bezelStyle = .texturedRounded
+            button.font = DAWDesignTokens.Typography.caption
+        }
+        transformApplyButton.contentTintColor = DAWDesignTokens.Color.mint
+        let previewActions = NSStackView(views: [transformApplyButton, transformCancelButton])
+        previewActions.spacing = 5; previewActions.alignment = .centerY
+        inspector.addArrangedSubview(previewActions)
         inspector.addArrangedSubview(divider())
         inspector.addArrangedSubview(caption("CHORD STAMP"))
         chordRoot.addItems(withTitles: PRPitch.names)
@@ -294,6 +315,8 @@ final class PRProWorkspaceView: NSView {
         scaleLock.state = state.lockScale ? .on : .off
         foldButton.state = state.fold ? .on : .off
         followButton.state = state.followPlayhead ? .on : .off
+        transformApplyButton.isEnabled = state.hasTransformPreview
+        transformCancelButton.isEnabled = state.hasTransformPreview
         statusField.stringValue = state.status
         updateInspector()
         refreshGeometry()
@@ -474,21 +497,38 @@ final class PRProWorkspaceView: NSView {
         state.setChannel(value - 1); focusCanvas()
     }
 
-    @objc private func ratchetNow() {
+    @objc private func previewRatchetNow() {
+        guard !state.selection.isEmpty else { state.setStatus("Выберите ноты для Ratchet"); return }
         let count = Int(ratchetCount.titleOfSelectedItem ?? "4") ?? 4
-        state.ratchet(count: count, gate: ratchetGate.doubleValue)
+        state.previewRatchet(count: count, gate: ratchetGate.doubleValue)
         focusCanvas()
     }
 
-    @objc private func strumNow() {
-        state.strum(spreadBeats: strumAmount.doubleValue,
-                    descending: strumDirection.selectedSegment == 1)
+    @objc private func previewStrumNow() {
+        guard !state.selection.isEmpty else { state.setStatus("Выберите аккорд для Strum"); return }
+        state.previewStrum(spreadBeats: strumAmount.doubleValue,
+                           descending: strumDirection.selectedSegment == 1)
         focusCanvas()
     }
 
-    @objc private func rampNow() {
-        guard let from = Int(rampFrom.stringValue), let to = Int(rampTo.stringValue) else { return }
-        state.velocityRamp(from: from, to: to); focusCanvas()
+    @objc private func previewRampNow() {
+        guard !state.selection.isEmpty else { state.setStatus("Выберите ноты для Velocity Ramp"); return }
+        guard let from = Int(rampFrom.stringValue), let to = Int(rampTo.stringValue) else {
+            state.setStatus("Velocity Ramp: значения должны быть 1–127")
+            return
+        }
+        state.previewVelocityRamp(from: from, to: to)
+        focusCanvas()
+    }
+
+    @objc private func applyTransformPreview() {
+        state.applyTransformPreview()
+        focusCanvas()
+    }
+
+    @objc private func cancelTransformPreview() {
+        state.cancelTransformPreview()
+        focusCanvas()
     }
 
     @objc private func chordKindChanged() {
