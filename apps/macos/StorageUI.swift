@@ -133,7 +133,7 @@ extension DraftApp {
         if cancel { daw_cancel_import(job) }
         daw_release_import(job)
         importJob = nil; importIntent = nil; importSession = nil; importStatus = nil
-        inspectorBrowser.isImportBusy = false
+        libraryBrowser.isImportBusy = false
         cancelImportButton.isEnabled = false; cancelImportButton.isHidden = true
         resolveImportButton.isEnabled = false; resolveImportButton.isHidden = true
     }

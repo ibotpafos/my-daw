@@ -3,13 +3,13 @@ import AppKit
 /// Stable visual primitives for the DAW shell. Keep semantic names at call sites.
 enum DAWDesignTokens {
     enum Color {
-        static let canvas = NSColor(srgbRed: 0.075, green: 0.086, blue: 0.112, alpha: 1)
-        static let surface = NSColor(srgbRed: 0.105, green: 0.118, blue: 0.151, alpha: 1)
-        static let raisedSurface = NSColor(srgbRed: 0.135, green: 0.149, blue: 0.188, alpha: 1)
-        static let border = NSColor(srgbRed: 0.235, green: 0.251, blue: 0.310, alpha: 1)
-        static let text = NSColor(srgbRed: 0.890, green: 0.878, blue: 0.970, alpha: 1)
-        static let secondaryText = NSColor(srgbRed: 0.620, green: 0.627, blue: 0.735, alpha: 1)
-        static let accent = NSColor(srgbRed: 0.650, green: 0.460, blue: 0.980, alpha: 1)
+        static let canvas = NSColor(srgbRed: 0.055, green: 0.071, blue: 0.086, alpha: 1)
+        static let surface = NSColor(srgbRed: 0.075, green: 0.094, blue: 0.110, alpha: 1)
+        static let raisedSurface = NSColor(srgbRed: 0.110, green: 0.137, blue: 0.165, alpha: 1)
+        static let border = NSColor(srgbRed: 0.165, green: 0.204, blue: 0.239, alpha: 1)
+        static let text = NSColor(srgbRed: 0.902, green: 0.925, blue: 0.949, alpha: 1)
+        static let secondaryText = NSColor(srgbRed: 0.647, green: 0.698, blue: 0.757, alpha: 1)
+        static let accent = NSColor(srgbRed: 0.341, green: 0.620, blue: 0.980, alpha: 1)
         static let mint = NSColor(srgbRed: 0.380, green: 0.820, blue: 0.690, alpha: 1)
         static let coral = NSColor(srgbRed: 0.950, green: 0.490, blue: 0.510, alpha: 1)
         static let warning = NSColor(srgbRed: 0.950, green: 0.760, blue: 0.330, alpha: 1)

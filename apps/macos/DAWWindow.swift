@@ -6,6 +6,7 @@ import AppKit
 final class DAWWindow: NSWindow {
     var onPlayStop: (() -> Void)?
     var onRewind: (() -> Void)?
+    var shouldHandleClipDelete: (() -> Bool)?
     var onDeleteSelectedClip: (() -> Void)?
     var onDeleteSelectedTrack: (() -> Void)?
     var onZoomIn: (() -> Void)?
@@ -64,6 +65,7 @@ final class DAWWindow: NSWindow {
         case 115: // Home
             return invoke(onRewind)
         case 51, 117: // Backspace/Delete and forward Delete
+            guard shouldHandleClipDelete?() ?? true else { return false }
             return invoke(onDeleteSelectedClip)
         default:
             return false

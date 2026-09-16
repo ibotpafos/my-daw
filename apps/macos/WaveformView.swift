@@ -100,7 +100,7 @@ final class WaveformView: NSView {
         setAccessibilityHelp("Клик — выбрать позицию. Стрелки — одна секунда. Пробел — воспроизведение или стоп. S — разделить, D — дублировать, C — копировать, V — вставить у курсора, M — мьют клипа, L — луп клипа, Delete — удалить выбранный клип или группу. Ctrl-клик добавляет и убирает клип из группы, Option+стрелки сдвигают группу на шаг сетки. Правая кнопка — меню клипа. Перетаскивание WAV/AIFF из Finder — импорт клипа в дорожку по месту отпускания.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    private var lane: NSRect { NSRect(x: 14, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - 28), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
+    private var lane: NSRect { NSRect(x: showsEmbeddedRuler ? 14:0, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - (showsEmbeddedRuler ? 28:0)), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
     private func clipRect(_ clip: ClipGeometry) -> NSRect {
         let x = lane.minX + lane.width * CGFloat(Double(clip.start) / Double(max(1, projectFrames)))
         let width = max(2, lane.width * CGFloat(Double(clip.length) / Double(max(1, projectFrames))))

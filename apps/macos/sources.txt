@@ -14,4 +14,10 @@ apps/macos/StorageUI.swift
 apps/macos/TimelineRulerView.swift
 apps/macos/WaveformView.swift
 apps/macos/WorkflowUI.swift
+apps/macos/Workspace/ChannelRackView.swift
+apps/macos/Workspace/LibraryBrowserView.swift
+apps/macos/Workspace/MidiArrangementView.swift
+apps/macos/Workspace/WorkspaceLayout.swift
+apps/macos/Workspace/WorkspaceUI.swift
+apps/macos/Workspace/WorkspaceView.swift
 apps/macos/main.swift
