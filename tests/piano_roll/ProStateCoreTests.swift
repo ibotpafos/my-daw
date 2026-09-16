@@ -15,6 +15,7 @@ import Foundation
             PianoRollNote(startFrames: 24_000, lengthFrames: 24_000, pitch: 60, channel: 0, velocity: 80),
             PianoRollNote(startFrames: 48_000, lengthFrames: 24_000, pitch: 64, channel: 0, velocity: 90),
             PianoRollNote(startFrames: 72_000, lengthFrames: 24_000, pitch: 67, channel: 0, velocity: 100)]
+        let originalFixture = persisted
         let state = PRProState()
         var commits = 0
         state.onCommit = { notes in
@@ -29,6 +30,7 @@ import Foundation
         state.nudge(beats: 0.25, semitones: 2)
         check(commits == 1, "nudge is one host commit")
         check(state.selection == originalIDs, "accepted echo preserves IDs")
+        check(state.status.contains("применено"), "accepted bridge echo confirms commit status")
         check(state.entities.map(\.note.pitch) == [62, 66, 69], "nudge transposes group")
         check(state.entities.map(\.note.startFrames) == [30_000, 54_000, 78_000], "nudge moves in musical time")
 
@@ -97,6 +99,22 @@ import Foundation
         state.selectAll()
         state.quantize()
         check(commits == commitBeforeDisabled, "missing time map refuses mutation")
+
+        // The UI commits optimistically but the bridge remains authoritative.
+        // A synchronous reject echo must restore the bridge snapshot and must
+        // not leave a false "applied" status behind.
+        let rejected = PRProState()
+        rejected.receive(notes: originalFixture, map: map, editable: true)
+        rejected.selection = [rejected.entities[0].id]
+        var rejectedCalls = 0
+        rejected.onCommit = { _ in
+            rejectedCalls += 1
+            rejected.receive(notes: originalFixture, map: map, editable: true)
+        }
+        rejected.nudge(beats: 1, semitones: 5)
+        check(rejectedCalls == 1, "rejected edit still calls host exactly once")
+        check(rejected.entities.map(\.note) == originalFixture, "rejected echo restores authoritative notes")
+        check(rejected.status.contains("отклонено"), "rejected echo reports rejection instead of success")
 
         print("RESULT \(checks) pro-state checks passed")
     }
