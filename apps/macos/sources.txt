@@ -1,0 +1,17 @@
+# Explicit Swift application sources; tests are compiled separately.
+apps/macos/AudioPreviewController.swift
+apps/macos/DAWWindow.swift
+apps/macos/DesignSystem/DAWDataVisuals.swift
+apps/macos/DesignSystem/DAWDesignTokens.swift
+apps/macos/DesignSystem/DAWIcon.swift
+apps/macos/Diagnostics.swift
+apps/macos/InspectorBrowserView.swift
+apps/macos/MixerWorkspaceView.swift
+apps/macos/PianoRollView.swift
+apps/macos/PinnedTrackHeaderView.swift
+apps/macos/ProjectTime.swift
+apps/macos/StorageUI.swift
+apps/macos/TimelineRulerView.swift
+apps/macos/WaveformView.swift
+apps/macos/WorkflowUI.swift
+apps/macos/main.swift

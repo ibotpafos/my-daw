@@ -11,6 +11,7 @@
 #include "audio/plugin_parameters.hpp"
 #include "audio/analysis.hpp"
 #include "plugins/plugin_descriptor.hpp"
+#include "plugins/vst3_catalog.hpp"
 #include "export/dawproject_export.hpp"
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
