@@ -1,0 +1,34 @@
+name: Fix workspace split layout
+on:
+  push:
+    branches: ["codex/reference-workspace"]
+    paths: [".github/workflows/fix-workspace-split-layout.yml"]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Make split resize callbacks internally consistent
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          path = Path('apps/macos/Workspace/WorkspaceView.swift')
+          text = path.read_text()
+          old = base64.b64decode('ICAgIGZ1bmMgYXBwbHlHZW9tZXRyeSgpIHsKICAgICAgICBndWFyZCAhYXBwbHlpbmcsIGJvdW5kcy53aWR0aCA+IDAsIGJvdW5kcy5oZWlnaHQgPiAwIGVsc2UgeyByZXR1cm4gfQogICAgICAgIGFwcGx5aW5nID0gdHJ1ZTsgZGVmZXIgeyBhcHBseWluZyA9IGZhbHNlIH0KICAgICAgICBjb2x1bW5zLmZyYW1lID0gYm91bmRzCiAgICAgICAgbGV0IGcgPSBnZW9tZXRyeQogICAgICAgIGxpYnJhcnlQYW5lLmlzSGlkZGVuID0gZy5saWJyYXJ5ID09IDA7IGluc3BlY3RvclBhbmUuaXNIaWRkZW4gPSBnLmluc3BlY3RvciA9PSAwOyBkb2NrUGFuZS5pc0hpZGRlbiA9IGcuZG9jayA9PSAwCiAgICAgICAgbGlicmFyeVBhbmUuZnJhbWUgPSBOU1JlY3QoeDogMCwgeTogMCwgd2lkdGg6IGcubGlicmFyeSwgaGVpZ2h0OiBib3VuZHMuaGVpZ2h0KQogICAgICAgIGxldCBjZW50ZXJYID0gZy5saWJyYXJ5ICsgKGcubGlicmFyeSA+IDAgPyBnLmdhcCA6IDApCiAgICAgICAgY2VudGVyLmZyYW1lID0gTlNSZWN0KHg6IGNlbnRlclgsIHk6IDAsIHdpZHRoOiBnLmNlbnRlciwgaGVpZ2h0OiBib3VuZHMuaGVpZ2h0KQogICAgICAgIGluc3BlY3RvclBhbmUuZnJhbWUgPSBOU1JlY3QoeDogY2VudGVyWCArIGcuY2VudGVyICsgKGcuaW5zcGVjdG9yID4gMCA/IGcuZ2FwIDogMCksIHk6IDAsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB3aWR0aDogZy5pbnNwZWN0b3IsIGhlaWdodDogYm91bmRzLmhlaWdodCkKICAgICAgICBhcnJhbmdlbWVudFBhbmUuZnJhbWUgPSBOU1JlY3QoeDogMCwgeTogMCwgd2lkdGg6IGcuY2VudGVyLCBoZWlnaHQ6IGcuYXJyYW5nZW1lbnQpCiAgICAgICAgZG9ja1BhbmUuZnJhbWUgPSBOU1JlY3QoeDogMCwgeTogZy5hcnJhbmdlbWVudCArIChnLmRvY2sgPiAwID8gZy5nYXAgOiAwKSwgd2lkdGg6IGcuY2VudGVyLCBoZWlnaHQ6IGcuZG9jaykKICAgIH0KICAgIGZ1bmMgc3BsaXRWaWV3KF8gc3BsaXRWaWV3OiBOU1NwbGl0VmlldywgcmVzaXplU3Vidmlld3NXaXRoT2xkU2l6ZSBvbGRTaXplOiBOU1NpemUpIHsgYXBwbHlHZW9tZXRyeSgpIH0K').decode()
+          new = base64.b64decode('ICAgIHByaXZhdGUgZnVuYyBsYXlvdXRDb2x1bW5zKF8gZ2VvbWV0cnk6IFdvcmtzcGFjZUxheW91dC5HZW9tZXRyeSkgewogICAgICAgIGxldCBoZWlnaHQgPSBjb2x1bW5zLmJvdW5kcy5oZWlnaHQKICAgICAgICBsaWJyYXJ5UGFuZS5mcmFtZSA9IE5TUmVjdCh4OiAwLCB5OiAwLCB3aWR0aDogZ2VvbWV0cnkubGlicmFyeSwgaGVpZ2h0OiBoZWlnaHQpCiAgICAgICAgbGV0IGNlbnRlclggPSBnZW9tZXRyeS5saWJyYXJ5ICsgKGdlb21ldHJ5LmxpYnJhcnkgPiAwID8gZ2VvbWV0cnkuZ2FwIDogMCkKICAgICAgICBjZW50ZXIuZnJhbWUgPSBOU1JlY3QoeDogY2VudGVyWCwgeTogMCwgd2lkdGg6IGdlb21ldHJ5LmNlbnRlciwgaGVpZ2h0OiBoZWlnaHQpCiAgICAgICAgaW5zcGVjdG9yUGFuZS5mcmFtZSA9IE5TUmVjdCgKICAgICAgICAgICAgeDogY2VudGVyWCArIGdlb21ldHJ5LmNlbnRlciArIChnZW9tZXRyeS5pbnNwZWN0b3IgPiAwID8gZ2VvbWV0cnkuZ2FwIDogMCksCiAgICAgICAgICAgIHk6IDAsCiAgICAgICAgICAgIHdpZHRoOiBnZW9tZXRyeS5pbnNwZWN0b3IsCiAgICAgICAgICAgIGhlaWdodDogaGVpZ2h0KQogICAgfQogICAgcHJpdmF0ZSBmdW5jIGxheW91dENlbnRlcihfIGdlb21ldHJ5OiBXb3Jrc3BhY2VMYXlvdXQuR2VvbWV0cnkpIHsKICAgICAgICBhcnJhbmdlbWVudFBhbmUuZnJhbWUgPSBOU1JlY3QoeDogMCwgeTogMCwgd2lkdGg6IGNlbnRlci5ib3VuZHMud2lkdGgsIGhlaWdodDogZ2VvbWV0cnkuYXJyYW5nZW1lbnQpCiAgICAgICAgZG9ja1BhbmUuZnJhbWUgPSBOU1JlY3QoCiAgICAgICAgICAgIHg6IDAsCiAgICAgICAgICAgIHk6IGdlb21ldHJ5LmFycmFuZ2VtZW50ICsgKGdlb21ldHJ5LmRvY2sgPiAwID8gZ2VvbWV0cnkuZ2FwIDogMCksCiAgICAgICAgICAgIHdpZHRoOiBjZW50ZXIuYm91bmRzLndpZHRoLAogICAgICAgICAgICBoZWlnaHQ6IGdlb21ldHJ5LmRvY2spCiAgICB9CiAgICBmdW5jIGFwcGx5R2VvbWV0cnkoKSB7CiAgICAgICAgZ3VhcmQgIWFwcGx5aW5nLCBib3VuZHMud2lkdGggPiAwLCBib3VuZHMuaGVpZ2h0ID4gMCBlbHNlIHsgcmV0dXJuIH0KICAgICAgICBhcHBseWluZyA9IHRydWU7IGRlZmVyIHsgYXBwbHlpbmcgPSBmYWxzZSB9CiAgICAgICAgbGV0IGcgPSBnZW9tZXRyeQogICAgICAgIGxpYnJhcnlQYW5lLmlzSGlkZGVuID0gZy5saWJyYXJ5ID09IDAKICAgICAgICBpbnNwZWN0b3JQYW5lLmlzSGlkZGVuID0gZy5pbnNwZWN0b3IgPT0gMAogICAgICAgIGRvY2tQYW5lLmlzSGlkZGVuID0gZy5kb2NrID09IDAKICAgICAgICBjb2x1bW5zLmZyYW1lID0gYm91bmRzCiAgICAgICAgbGF5b3V0Q29sdW1ucyhnKQogICAgICAgIGxheW91dENlbnRlcihnKQogICAgfQogICAgZnVuYyBzcGxpdFZpZXcoXyBzcGxpdFZpZXc6IE5TU3BsaXRWaWV3LCByZXNpemVTdWJ2aWV3c1dpdGhPbGRTaXplIG9sZFNpemU6IE5TU2l6ZSkgewogICAgICAgIGd1YXJkIGJvdW5kcy53aWR0aCA+IDAsIGJvdW5kcy5oZWlnaHQgPiAwIGVsc2UgeyByZXR1cm4gfQogICAgICAgIGxldCBnID0gZ2VvbWV0cnkKICAgICAgICBpZiBzcGxpdFZpZXcgPT09IGNvbHVtbnMgewogICAgICAgICAgICBsYXlvdXRDb2x1bW5zKGcpCiAgICAgICAgfSBlbHNlIGlmIHNwbGl0VmlldyA9PT0gY2VudGVyIHsKICAgICAgICAgICAgbGF5b3V0Q2VudGVyKGcpCiAgICAgICAgfQogICAgfQo=').decode()
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one split-layout block, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git add apps/macos/Workspace/WorkspaceView.swift
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(macos): keep split resize geometry internally consistent'
+          git push origin HEAD:refs/heads/codex/reference-workspace
