@@ -1281,7 +1281,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
-            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)}
+            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }
         let masterHeading=label("MASTER / PLUG-INS",size:10,color:.tertiaryLabelColor);masterHeading.font = .systemFont(ofSize:10,weight:.semibold)
@@ -2044,6 +2044,53 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
     }
     func duplicateTrackNow(_ id:UInt64){ guard !isRecording else{return}; finishEditing(); stopAudio(); var newID:UInt64=0; if check(daw_duplicate_track(session,id,&newID,revision)){refresh(); pollTransport()} }
+    /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
+    /// «Группу N», маршрутизацию в существующие шины и возврат на мастер.
+    func bridgeRevision()->UInt64 { var snap=daw_snapshot();snap.struct_size=UInt32(MemoryLayout<daw_snapshot>.size);return check(daw_get_snapshot(session,&snap)) ? snap.revision : revision }
+    func currentTrackOutputBus(_ id:UInt64)->UInt64 {
+        guard let index = trackIDs.first(where: { $0.value == id })?.key else { return 0 }
+        var track = daw_track(); track.struct_size = UInt32(MemoryLayout<daw_track>.size)
+        guard check(daw_get_track(session, UInt32(index), &track)) else { return 0 }
+        return track.output_bus_id
+    }
+    func showTrackGroupMenu(_ id:UInt64){
+        guard !isRecording,automationGesture==nil,pluginParameterGesture==nil else{return}
+        var snap = daw_snapshot(); snap.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+        guard check(daw_get_snapshot(session, &snap)) else { return }
+        let currentOutput = currentTrackOutputBus(id)
+        let menu = NSMenu(); menu.autoenablesItems=false
+        let create = NSMenuItem(title: "Новая шина «Группа \(snap.bus_count + 1)»", action: #selector(groupTrackNewBus(_:)), keyEquivalent: ""); create.target = self; create.representedObject = ["track": id]; menu.addItem(create)
+        if snap.bus_count > 0 { menu.addItem(.separator()) }
+        for busIndex in 0..<Int(snap.bus_count) {
+            var bus = daw_bus(); bus.struct_size = UInt32(MemoryLayout<daw_bus>.size)
+            guard check(daw_get_bus(session, UInt32(busIndex), &bus)) else { return }
+            let name = withUnsafeBytes(of: bus.name) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            let item = NSMenuItem(title: "Шина: \(name)", action: #selector(groupTrackToBus(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = ["track": id, "bus": bus.id]
+            item.state = bus.id == currentOutput ? .on : .off
+            menu.addItem(item)
+        }
+        if currentOutput != 0 || snap.bus_count > 0 {
+            let direct = NSMenuItem(title: "Мастер (без шины)", action: #selector(groupTrackToBus(_:)), keyEquivalent: "")
+            direct.target = self; direct.representedObject = ["track": id, "bus": UInt64(0)]; direct.state = currentOutput == 0 ? .on : .off
+            menu.addItem(direct)
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+    @objc func groupTrackNewBus(_ sender:NSMenuItem){
+        guard let track = (sender.representedObject as? [String:UInt64])?["track"], !isRecording else { return }
+        finishEditing(); stopAudio()
+        var count:UInt32=0; guard check(daw_get_bus_count(session,&count)) else{return}
+        var newID:UInt64=0
+        guard check(daw_create_bus(session,"Группа \(count+1)",&newID,bridgeRevision())) else{return}
+        refresh()
+        if check(daw_set_track_output(session,track,newID,bridgeRevision())){refresh();pollTransport();status.stringValue="Дорожка направлена в новую шину «Группа \(count+1)»"}
+    }
+    @objc func groupTrackToBus(_ sender:NSMenuItem){
+        guard let dict = sender.representedObject as? [String:UInt64], let track = dict["track"], let bus = dict["bus"], !isRecording else { return }
+        finishEditing(); stopAudio()
+        if check(daw_set_track_output(session,track,bus,bridgeRevision())){refresh();pollTransport()}
+    }
     func selectedMidiClip(_ trackID:UInt64)->UInt32? {
         var count:UInt32=0; guard daw_get_midi_clip_count(session,trackID,&count)==0,count>0 else{storageMessage("На дорожке нет MIDI-клипа.");return nil}
         let index=midiClipIndex != nil && UInt32(midiClipIndex!) < count ? UInt32(midiClipIndex!) : 0

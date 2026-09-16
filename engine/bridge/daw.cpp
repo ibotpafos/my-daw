@@ -472,6 +472,14 @@ int daw_set_bus_pan(daw_session* s,uint64_t id,double pan,uint64_t rev){return g
 int daw_set_bus_mute(daw_session* s,uint64_t id,int32_t muted,uint64_t rev){return guard(s,[&]{if(muted!=0&&muted!=1)throw daw::Error("Mute must be 0 or 1");s->model.busMute(id,muted,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_track_output(daw_session* s,uint64_t track,uint64_t bus,uint64_t rev){return guard(s,[&]{s->model.routeTrack(track,bus,rev);resetTransport(s);});}
 int daw_set_bus_output(daw_session* s,uint64_t id,uint64_t output,uint64_t rev){return guard(s,[&]{s->model.routeBus(id,output,rev);resetTransport(s);});}
+int daw_create_bus(daw_session* s,const char* name,uint64_t* out_bus_id,uint64_t rev){return guard(s,[&]{
+    const std::string text=required(name);
+    if(text.empty())throw daw::Error("Bus name required");
+    s->model.addBus(text,rev);
+    if(out_bus_id)*out_bus_id=s->model.state().buses.back().id;
+    cancelStalePlaybackPreparation(s);
+});}
+int daw_get_bus_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Bus count output required");*count=(uint32_t)s->model.state().buses.size();});}
 int daw_get_send(daw_session* s,uint64_t trackID,uint32_t index,daw_send* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_send))throw daw::Error("Send ABI mismatch");const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==s->model.state().tracks.end()||index>=track->sends.size())throw daw::Error("Send index out of range");const auto& send=track->sends[index];*out={sizeof(daw_send),send.bus,send.gain,send.preFader?1:0};});}
 int daw_upsert_send(daw_session* s,uint64_t track,uint64_t bus,double gain,int32_t pre,uint64_t rev){return guard(s,[&]{if(pre!=0&&pre!=1)throw daw::Error("Send tap must be 0 or 1");s->model.upsertSend(track,bus,gain,pre!=0,rev);resetTransport(s);});}
 int daw_remove_send(daw_session* s,uint64_t track,uint64_t bus,uint64_t rev){return guard(s,[&]{s->model.removeSend(track,bus,rev);resetTransport(s);});}

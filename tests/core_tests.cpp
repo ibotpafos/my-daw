@@ -192,6 +192,18 @@ int main() { try {
     snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0&&snap.master_gain_db==-3);t.struct_size=sizeof(t);CHECK(daw_get_track(bridge.get(),0,&t)==0&&t.pan==0.5&&t.muted==1&&t.solo==1);CHECK(daw_set_mute(bridge.get(),1,2,snap.revision)==1);
     CHECK(daw_add_bus(bridge.get(),"Mix Bus",snap.revision)==0);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0&&snap.bus_count==1);daw_bus bus{};bus.struct_size=sizeof(bus);CHECK(daw_get_bus(bridge.get(),0,&bus)==0&&std::string(bus.name)=="Mix Bus");
     CHECK(daw_set_track_output(bridge.get(),1,bus.id,snap.revision)==0);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0);CHECK(daw_upsert_send(bridge.get(),1,bus.id,-9,0,snap.revision)==0);t.struct_size=sizeof(t);CHECK(daw_get_track(bridge.get(),0,&t)==0&&t.output_bus_id==bus.id&&t.send_count==1);daw_send send{};send.struct_size=sizeof(send);CHECK(daw_get_send(bridge.get(),1,0,&send)==0&&send.bus_id==bus.id&&send.gain_db==-9);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0);CHECK(daw_set_bus_output(bridge.get(),bus.id,bus.id,snap.revision)==1);
+    // Grouping helpers: create names a fresh bus, count enumerates, getter mirrors.
+    uint64_t group=0;snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0);
+    CHECK(daw_create_bus(bridge.get(),"Группа 1",&group,snap.revision)==0&&group!=0&&group!=bus.id);
+    uint32_t busCount=0;CHECK(daw_get_bus_count(bridge.get(),&busCount)==0&&busCount==2);
+    daw_bus createdBus{};createdBus.struct_size=sizeof(createdBus);CHECK(daw_get_bus(bridge.get(),1,&createdBus)==0&&createdBus.id==group);
+    CHECK(std::string(createdBus.name)=="Группа 1");
+    CHECK(daw_get_bus(bridge.get(),2,&createdBus)==1);
+    daw_bus tiny{};tiny.struct_size=4;CHECK(daw_get_bus(bridge.get(),0,&tiny)==1);
+    CHECK(daw_create_bus(bridge.get(),"",&group,snap.revision)==1);
+    CHECK(daw_create_bus(bridge.get(),nullptr,&group,snap.revision)==1);
+    CHECK(daw_get_bus_count(bridge.get(),nullptr)==1);
+    snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0);
 #ifdef __APPLE__
     uint32_t auCount=0;CHECK(daw_scan_supported_au(bridge.get(),&auCount)==0&&auCount==3);daw_au_component component{};component.struct_size=sizeof(component);CHECK(daw_get_supported_au(bridge.get(),0,&component)==0&&component.manufacturer);CHECK(daw_add_master_au(bridge.get(),component.type,component.subtype,component.manufacturer,snap.revision)==0);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0&&snap.master_insert_count==1);daw_plugin plugin{};plugin.struct_size=sizeof(plugin);CHECK(daw_get_master_insert(bridge.get(),0,&plugin)==0&&plugin.id&&std::string(plugin.name).find("Apple")!=std::string::npos);CHECK(daw_set_master_insert_bypass(bridge.get(),plugin.id,1,snap.revision)==0);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0);CHECK(daw_remove_master_insert(bridge.get(),plugin.id,snap.revision)==0);snap.struct_size=sizeof(snap);CHECK(daw_get_snapshot(bridge.get(),&snap)==0&&snap.master_insert_count==0);
     // The approved catalogue is machine-independent but an AUv3 component is

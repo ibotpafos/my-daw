@@ -64,6 +64,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
     /// durable uint32 0xRRGGBB (0 = сброс).
     var onTrackColor: ((UInt64) -> Void)?
     var onDuplicateTrack: ((UInt64) -> Void)?
+    var onGroupMenu: ((UInt64) -> Void)?
     var onMidiTranspose: ((UInt64) -> Void)?
     var onMidiQuantize: ((UInt64) -> Void)?
     var onMidiColor: ((UInt64) -> Void)?
@@ -129,7 +130,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         mute.action = #selector(changeMute)
         solo.action = #selector(changeSolo)
 
-        actionMenu.addItems(withTitles: ["•••", "Переместить выше", "Переместить ниже", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку", "Дублировать дорожку", "Цвет дорожки…", "Транспонировать MIDI-клип…", "Квантовать MIDI-клип…", "Цвет MIDI-клипа…", "Перенести MIDI-клип на дорожку…", "Копировать MIDI-клип"])
+        actionMenu.addItems(withTitles: ["•••", "Переместить выше", "Переместить ниже", "Import take…", "Comp takes", "Split at playhead", "Duplicate clip", "Crossfade", "Delete clip", "Удалить дорожку", "Дублировать дорожку", "Цвет дорожки…", "Группировка в шину…", "Транспонировать MIDI-клип…", "Квантовать MIDI-клип…", "Цвет MIDI-клипа…", "Перенести MIDI-клип на дорожку…", "Копировать MIDI-клип"])
         actionMenu.item(at: 0)?.isEnabled = false
         actionMenu.menu?.addItem(.separator())
         actionMenu.target = self
@@ -271,11 +272,12 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         case 9: onDeleteTrack?(model.id)
         case 10: onDuplicateTrack?(model.id)
         case 11: onTrackColor?(model.id)
-        case 12: onMidiTranspose?(model.id)
-        case 13: onMidiQuantize?(model.id)
-        case 14: onMidiColor?(model.id)
-        case 15: onMidiMove?(model.id)
-        case 16: onMidiCopy?(model.id)
+        case 12: onGroupMenu?(model.id)
+        case 13: onMidiTranspose?(model.id)
+        case 14: onMidiQuantize?(model.id)
+        case 15: onMidiColor?(model.id)
+        case 16: onMidiMove?(model.id)
+        case 17: onMidiCopy?(model.id)
         default: break
         }
     }

@@ -291,6 +291,11 @@ int main(void) {
     if (daw_get_record_monitor(session, &monitor) != 0 || monitor != 1) result |= 1;
     if (daw_get_record_monitor(session, NULL) == 0) result |= 1;
     if (daw_set_record_monitor(session, 0) != 0) result |= 1;
+    /* Bus grouping rejects NULL arguments and an empty name. */
+    uint64_t group_bus = 0;
+    if (daw_create_bus(session, NULL, &group_bus, r + 3) == 0) result |= 1;
+    if (daw_create_bus(session, "", &group_bus, r + 3) == 0) result |= 1;
+    if (daw_get_bus_count(session, NULL) == 0) result |= 1;
     /* Track-filtered stems reject before touching the filesystem: unknown id,
      * NULL ids with a count, and duplicate ids all return no job. */
     uint64_t ghost_track = 4242;
