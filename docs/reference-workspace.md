@@ -109,3 +109,39 @@ Primary AppKit contracts used here:
 [menu item validation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MenuList/Articles/EnablingMenuItems.html),
 [clip-view bounds constraints](https://developer.apple.com/documentation/appkit/nsclipview/constrainboundsrect(_:)),
 and [native color blending](https://developer.apple.com/documentation/appkit/nscolor/blended(withfraction:of:)).
+
+
+## Cycle-range and zoom iteration
+
+The 24-point strip below the seconds ruler edits the existing transport/export/
+comp selection. Drag empty space to create it, either handle to resize it, or
+its body to move it without changing duration. Option-drag creates a new range
+inside an existing one. Shift bypasses the existing tempo-map beat grid; Escape
+cancels a preview. A click or a zero-width creation is a no-op. The native context
+menu toggles looping without losing the selected export range, or clears both.
+Delete while this strip has focus clears the range, not a clip.
+
+Only release commits: mouse movement never calls the audio engine. The existing
+`daw_set_loop` validates against actual project duration (not viewport padding)
+and **stops playback when changing a loop**. This iteration preserves that ABI
+behavior; it does not claim uninterrupted live loop-boundary editing. No project
+revision or undo entry is consumed. Audio and MIDI recording lock all entry
+points, including previously available In/Out/Clear/Loop commands and stale menu
+callbacks. If the project changes before release, the public ABI revalidates the
+range and a failed commit keeps the prior UI selection.
+
+Zoom buttons and existing keyboard shortcuts anchor to a visible playhead. If
+it is offscreen, they retain the viewport midpoint instead. AppKit clamps scroll
+bounds and keeps the pinned headers aligned. Range/zoom command routing is in
+`Workspace/TimelineNavigation.swift`, extracted from the large coordinator.
+
+The additional native tests are in `tests/workspace_timeline_tests.swift`;
+Foundation-only range/zoom geometry is checked by `tests/timeline_range_tests.swift`.
+Both are invoked by `bash scripts/test-workspace-ui.sh`. The native harness
+uses real NSEvent, NSMenu and existing C ABI transport commands, captures
+`workspace-cycle.png`, and does not open physical audio or MIDI devices.
+
+Ready-made mechanisms reused: AppKit [autoscroll](https://developer.apple.com/documentation/appkit/nsview/autoscroll(with:)),
+[NSClipView bounds constraints](https://developer.apple.com/documentation/appkit/nsclipview/constrainboundsrect(_:)),
+native target/action menus, the existing beat-grid resolver, and `daw_set_loop`.
+There is no new DSP or dependency and no duplicate persisted range model.

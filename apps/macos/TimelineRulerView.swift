@@ -38,9 +38,22 @@ final class TimelineRulerView: NSView {
     var onMarkerSeek: ((UInt64) -> Void)?
     var onMarkerAdd: ((UInt64) -> Void)?
     var onMarkerMenu: ((ProjectMarker) -> NSMenu?)?
+    let cycleRange = TimelineRangeView(frame: .zero)
+    static let cycleBand: CGFloat = 24
+    static var preferredHeight: CGFloat { markerBand + barBand + 28 + cycleBand }
     static let barBand: CGFloat = 20
     static let markerBand: CGFloat = 28
     override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(cycleRange)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func layout() {
+        super.layout()
+        cycleRange.frame = NSRect(x: 0, y: bounds.height - Self.cycleBand, width: bounds.width, height: Self.cycleBand)
+    }
 
     func frame(atX x: CGFloat) -> UInt64 {
         guard bounds.width.isFinite, bounds.width > 0, x.isFinite else { return 0 }
@@ -137,15 +150,16 @@ final class TimelineRulerView: NSView {
         for tick in 0...min(1024, Int(min(1024, seconds / step))) {
             let second = Double(tick) * step
             let x = CGFloat(second / seconds) * bounds.width
-            line(at: x, from: bounds.height - 6, to: bounds.height, color: DAWDesignTokens.Color.border)
+            line(at: x, from: bounds.height - Self.cycleBand - 6, to: bounds.height - Self.cycleBand, color: DAWDesignTokens.Color.border)
             String(format: "%.0f s", second).draw(at: NSPoint(x: x + 4, y: baseline + 4), withAttributes: secondsText)
         }
         let cursor = x(atFrame: playhead)
-        line(at: cursor, from: Self.markerBand, to: bounds.height, color: DAWDesignTokens.Color.accent)
+        let cursorBottom = bounds.height - Self.cycleBand
+        line(at: cursor, from: Self.markerBand, to: cursorBottom, color: DAWDesignTokens.Color.accent)
         DAWDesignTokens.Color.accent.setFill()
         let pointer = NSBezierPath()
-        pointer.move(to: NSPoint(x: cursor - 4, y: bounds.height - 6))
-        pointer.line(to: NSPoint(x: cursor + 4, y: bounds.height - 6))
-        pointer.line(to: NSPoint(x: cursor, y: bounds.height)); pointer.close(); pointer.fill()
+        pointer.move(to: NSPoint(x: cursor - 4, y: cursorBottom - 6))
+        pointer.line(to: NSPoint(x: cursor + 4, y: cursorBottom - 6))
+        pointer.line(to: NSPoint(x: cursor, y: cursorBottom)); pointer.close(); pointer.fill()
     }
 }

@@ -272,7 +272,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     /// Durable v19 color wins; the positional palette remains the fallback.
     func durableTrackColor(_ hex:UInt64,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(UInt32(hex)) : trackAccent(index) }
     func durableTrackColor(_ hex:UInt32,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(hex) : trackAccent(index) }
-    func setTimelineZoom(_ zoom:CGFloat){timelineZoom=zoom.isFinite ? min(8,max(1,zoom)) : 1;fitTimelineViewport();UserDefaults.standard.set(Double(timelineZoom),forKey:"timelineZoom");timelineDocument?.needsLayout=true;timelineRuler.needsDisplay=true}
     @objc func zoomIn(){setTimelineZoom(timelineZoom*2)}
     @objc func zoomOut(){setTimelineZoom(timelineZoom/2)}
     @objc func resetZoom(){setTimelineZoom(1)}
@@ -421,7 +420,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         document.addSubview(timelineRuler);document.addSubview(rows); scroll.documentView = document
         timelineZoom=CGFloat(UserDefaults.standard.double(forKey:"timelineZoom"));if timelineZoom < 1{timelineZoom=1}
         timelineWidthConstraint=document.widthAnchor.constraint(equalToConstant:1400*timelineZoom);timelineWidthConstraint?.isActive=true
-        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28).isActive=true
+        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.preferredHeight).isActive=true
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),timelineRuler.leadingAnchor.constraint(equalTo:document.leadingAnchor),timelineRuler.trailingAnchor.constraint(equalTo:document.trailingAnchor),timelineRuler.topAnchor.constraint(equalTo:document.topAnchor),
             rows.leadingAnchor.constraint(equalTo: document.leadingAnchor), rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
@@ -430,7 +429,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let headerScroll=NSScrollView();trackHeaderScroll=headerScroll;headerScroll.hasVerticalScroller=false;headerScroll.hasHorizontalScroller=false;headerScroll.drawsBackground=false
         trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=2;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
         let headerDocument=DraftCanvas();headerDocument.translatesAutoresizingMaskIntoConstraints=false;let tracksHeading=label("TRACKS",size:10,color:.tertiaryLabelColor);tracksHeading.font = .systemFont(ofSize:10,weight:.semibold);tracksHeading.translatesAutoresizingMaskIntoConstraints=false;headerDocument.addSubview(tracksHeading);headerDocument.addSubview(trackHeaderRows);headerScroll.documentView=headerDocument
-        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
+        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.preferredHeight),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
         scroll.contentView.postsBoundsChangedNotifications=true;headerScroll.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:headerScroll.contentView)
@@ -1471,9 +1470,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         exportButton.title = rangeEnd != nil ? "Экспорт диапазона WAV…" : "Экспорт WAV…"
         loopButton.title=loopEnabled ? "↻ Цикл вкл." : "↻ Цикл"
         loopButton.state=loopEnabled ? .on:.off
-        loopButton.isEnabled=rangeStart != nil && rangeEnd != nil && !isRecording
+        loopButton.isEnabled=rangeStart != nil && rangeEnd != nil && !isRecording && !midiTakeArmed
         for wave in waveforms { wave.snapFrames=gridFrames; wave.snapGrid={[weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0)}; wave.rangeStart=rangeStart; wave.rangeEnd=rangeEnd;wave.loopEnabled=loopEnabled }
         refreshBarMarks()
+        syncTimelineRange()
         positionLabel.stringValue = tempoMap.barBeatTick(atFrame: playheadFrame, bars: tempoBars)
     }
     /// Читает темпо-карту и карту размеров из сессии (единственный источник истины).
@@ -1530,25 +1530,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func currentTransportFrame() -> UInt64? {
         var value=daw_transport();value.struct_size=UInt32(MemoryLayout<daw_transport>.size)
         return check(daw_get_transport(session,&value)) ? value.frame : nil
-    }
-    @objc func setRangeStart() {
-        disableLoop()
-        guard let frame=currentTransportFrame() else{return};rangeStart=frame
-        if let end=rangeEnd,end<=frame { rangeEnd=nil };updateTimelineTools()
-    }
-    @objc func setRangeEnd() {
-        disableLoop()
-        guard let frame=currentTransportFrame() else{return};let start=rangeStart ?? 0
-        guard frame>start else{storageMessage("Конец диапазона должен быть позже начала.");return}
-        rangeStart=start;rangeEnd=frame;updateTimelineTools()
-    }
-    @objc func clearRange() { disableLoop();rangeStart=nil;rangeEnd=nil;updateTimelineTools() }
-    func disableLoop(){guard loopEnabled else{return};if check(daw_set_loop(session,0,0,0)){loopEnabled=false}}
-    @objc func toggleLoop(){
-        guard !isRecording else{return}
-        if loopEnabled { disableLoop();updateTimelineTools();pollTransport();return }
-        guard let start=rangeStart,let end=rangeEnd,end>start else{storageMessage("Сначала задай начало и конец диапазона.");return}
-        if check(daw_set_loop(session,1,start,end)){loopEnabled=true;updateTimelineTools();pollTransport()}
     }
     /// Тактовые метки линейки: пересчитываются из карты при каждом изменении темпа,
     /// размера, позиции или длины проекта.

@@ -17,6 +17,9 @@ apps/macos/WorkflowUI.swift
 apps/macos/Workspace/ChannelRackView.swift
 apps/macos/Workspace/LibraryBrowserView.swift
 apps/macos/Workspace/MidiArrangementView.swift
+apps/macos/Workspace/TimelineNavigation.swift
+apps/macos/Workspace/TimelineRangeEditing.swift
+apps/macos/Workspace/TimelineRangeView.swift
 apps/macos/Workspace/WorkspaceCommandBar.swift
 apps/macos/Workspace/WorkspaceLayout.swift
 apps/macos/Workspace/WorkspaceUI.swift

@@ -55,6 +55,7 @@ func runWorkspaceIntegrationTests() {
     }
     expect(revision() == beforeLayout, "Layout and tab changes never mutate project")
     expect(ObjectIdentifier(controller.inspectorBrowser.midiEditor) == editorIdentity, "Editor identity retained")
+    expect(controller.timelineRuler.cycleRange.playableFrames == 0, "Empty project has no editable loop duration")
     screenshot("workspace-empty")
 
     // Menu commands retain the original control as sender and recheck state.
@@ -297,5 +298,8 @@ func runWorkspaceIntegrationTests() {
     workspace.selectDock(.mixer); root.layoutSubtreeIfNeeded(); screenshot("workspace-mixer")
     controller.selectedMixerID = tracks[2]; controller.updateMixerInspector(tracks[2]); workspace.selectDock(.midi)
     root.layoutSubtreeIfNeeded(); screenshot("workspace-midi")
+    assertions += runTimelineEditingTests(controller)
+    controller.selectedMixerID = tracks[4]; controller.updateMixerInspector(tracks[4]); workspace.selectDock(.devices)
+    settle(1536, 1000); screenshot("workspace-cycle")
     print("PASS: \(assertions) native workspace assertions; actual AppKit composition, model commands, selection and screenshots")
 }

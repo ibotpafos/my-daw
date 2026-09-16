@@ -16,6 +16,8 @@ final class MidiArrangementView: NSView {
     var projectFrames: UInt64 = 1
     var barFrames: [UInt64] = []
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
+    var cycleSelection: TimelineFrameRange? { didSet { needsDisplay = true } }
+    var cycleEnabled = false { didSet { needsDisplay = true } }
     var title = "MIDI"
     var onSelect: ((Int, Bool) -> Void)?
     override var isFlipped: Bool { true }
@@ -30,6 +32,12 @@ final class MidiArrangementView: NSView {
         let grid = NSBezierPath()
         for frame in barFrames { let xx = x(frame); grid.move(to: NSPoint(x: xx, y: 0)); grid.line(to: NSPoint(x: xx, y: bounds.height)) }
         grid.stroke()
+        if let range = cycleSelection {
+            let tint = cycleEnabled ? NSColor.systemOrange : NSColor.systemBlue
+            let rect = NSRect(x: x(range.start), y: 0, width: x(range.length), height: bounds.height)
+            tint.withAlphaComponent(cycleEnabled ? 0.20 : 0.15).setFill(); rect.fill()
+            tint.withAlphaComponent(0.85).setStroke(); NSBezierPath(rect: rect).stroke()
+        }
         for clip in clips {
             let rect = clipRect(clip)
             guard rect.intersects(dirtyRect) else { continue }

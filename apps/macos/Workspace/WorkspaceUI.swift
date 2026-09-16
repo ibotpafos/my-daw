@@ -104,6 +104,7 @@ extension DraftApp {
     }
 
     func wireWorkspace() {
+        wireTimelineNavigation()
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
             self.workspaceDock?.select(preference.dockTab)
@@ -157,7 +158,7 @@ extension DraftApp {
     }
     var shouldHandleWorkspaceClipDelete: Bool {
         guard let view = window.firstResponder as? NSView else { return true }
-        return !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor)
+        return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor)
     }
 
     func refreshWorkspaceSelection() {
@@ -229,6 +230,7 @@ extension DraftApp {
         if check(result) { refresh(); pollTransport() }
     }
     func updateWorkspaceChrome() {
+        timelineRuler.cycleRange.editingEnabled = !isRecording && !midiTakeArmed
         projectTitleLabel.stringValue = currentURL?.deletingPathExtension().lastPathComponent ?? "Новый черновик"
         projectStateLabel.stringValue = "\(dirty ? "Есть изменения" : "Сохранено") · \(trackIDs.count) дорожек · 48 kHz"
         projectStateLabel.toolTip = summary.stringValue
