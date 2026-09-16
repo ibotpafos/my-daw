@@ -48,6 +48,20 @@ std::optional<MIDIUniqueID> endpointUniqueID(MIDIEndpointRef endpoint) {
     return static_cast<MIDIUniqueID>(value);
 }
 
+UInt32 umpWords(UInt32 messageType) {
+    switch (messageType) {
+    case 0x3U: // Data64 / SysEx7
+    case 0x4U: // MIDI 2.0 Channel Voice
+        return 2;
+    case 0x5U: // Data128
+    case 0xDU: // Flex Data
+    case 0xFU: // Stream
+        return 4;
+    default:
+        return 1;
+    }
+}
+
 void receive(const MIDIEventList* eventList, Counters& counters) {
     if (eventList == nullptr) return;
 
@@ -57,21 +71,27 @@ void receive(const MIDIEventList* eventList, Counters& counters) {
         counters.bytes.fetch_add(static_cast<std::uint64_t>(packet->wordCount) * sizeof(UInt32),
                                  std::memory_order_relaxed);
 
-        for (UInt32 wordIndex = 0; wordIndex < packet->wordCount; ++wordIndex) {
+        UInt32 wordIndex = 0;
+        while (wordIndex < packet->wordCount) {
             const UInt32 word = packet->words[wordIndex];
             const UInt32 messageType = (word >> 28U) & 0x0fU;
+            const UInt32 words = umpWords(messageType);
+            if (words > packet->wordCount - wordIndex) break;
+
             // We request kMIDIProtocol_1_0 below. CoreMIDI therefore delivers
             // MIDI 1.0 Channel Voice UMP (message type 0x2) regardless of the
             // source's native protocol. Layout: type/group/status+channel/data1/data2.
-            if (messageType != 0x2U) continue;
-            const UInt32 command = (word >> 20U) & 0x0fU;
-            const UInt32 velocity = word & 0xffU;
-            if (command == 0x9U) {
-                if (velocity == 0U) counters.note_off.fetch_add(1, std::memory_order_relaxed);
-                else counters.note_on.fetch_add(1, std::memory_order_relaxed);
-            } else if (command == 0x8U) {
-                counters.note_off.fetch_add(1, std::memory_order_relaxed);
+            if (messageType == 0x2U) {
+                const UInt32 command = (word >> 20U) & 0x0fU;
+                const UInt32 velocity = word & 0xffU;
+                if (command == 0x9U) {
+                    if (velocity == 0U) counters.note_off.fetch_add(1, std::memory_order_relaxed);
+                    else counters.note_on.fetch_add(1, std::memory_order_relaxed);
+                } else if (command == 0x8U) {
+                    counters.note_off.fetch_add(1, std::memory_order_relaxed);
+                }
             }
+            wordIndex += words;
         }
         packet = MIDIEventPacketNext(packet);
     }
