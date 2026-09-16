@@ -5,6 +5,7 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
     let state: PRProState
     let workspace: PRProWorkspaceView
     var onClose: (() -> Void)?
+    private var playheadTimer: Timer?
 
     init(state: PRProState) {
         self.state = state
@@ -25,12 +26,31 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
 
     func present(relativeTo owner: NSWindow?, title: String?) {
         if let title, !title.isEmpty { window?.title = "Piano Roll — \(title)" }
-        if let owner, window?.parent == nil { owner.addChildWindow(window!, ordered: .above) }
+        if let owner, let window, window.parent == nil {
+            owner.addChildWindow(window, ordered: .above)
+        }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         workspace.refreshFromState()
         workspace.focusCanvas()
+        startPlayheadPolling()
+    }
+
+    private func startPlayheadPolling() {
+        playheadTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 30.0,
+                          target: self,
+                          selector: #selector(pollProjectPlayhead),
+                          userInfo: nil,
+                          repeats: true)
+        playheadTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        pollProjectPlayhead()
+    }
+
+    @objc private func pollProjectPlayhead() {
+        guard let app = NSApp.delegate as? DraftApp else { return }
+        workspace.updatePlayhead(app.playheadFrame)
     }
 
     func detachFromParent() {
@@ -38,6 +58,8 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        playheadTimer?.invalidate()
+        playheadTimer = nil
         detachFromParent()
         if state.isGesturing { state.cancelGesture() }
         onClose?()
