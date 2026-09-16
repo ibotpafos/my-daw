@@ -196,9 +196,13 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     @objc private func scrollBoundsChanged() { virtualizeScrolledBank() }
 
     private func updateHistoryButtons() {
-        let state = historyState?() ?? (false,false)
-        undoButton.isEnabled = editingEnabled && state.canUndo
-        redoButton.isEnabled = editingEnabled && state.canRedo
+        if let state = historyState?() {
+            undoButton.isEnabled = editingEnabled && state.canUndo
+            redoButton.isEnabled = editingEnabled && state.canRedo
+        } else {
+            undoButton.isEnabled = false
+            redoButton.isEnabled = false
+        }
     }
 
     private func selectedStrip() -> MixerStripModel? { strips.first { $0.isSelected && $0.kind != .master } }
