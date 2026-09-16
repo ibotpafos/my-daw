@@ -39,7 +39,48 @@ int main() {
 #endif
 
 #ifdef __APPLE__
-        // 2. A missing helper must surface as a failed job with error text,
+        // 2. Deterministic scanner protocol proof. The fake helper advertises
+        // one MusicDevice (`aumu`) and accepts its probe. This does not load an
+        // Audio Unit at all: it proves the isolated scanner parser + C ABI
+        // catalog preserve an instrument component type instead of silently
+        // filtering the old Effect/MusicEffect-only world back in.
+        const auto fakeHelper = root / "fake-au-helper.sh";
+        {
+            std::ofstream script(fakeHelper, std::ios::binary);
+            script << "#!/bin/sh\n"
+                      "if [ \"$1\" = \"--list\" ]; then\n"
+                      "  printf '61756d75\\t74657374\\t4f414949\\tE2E MusicDevice\\t/tmp/fake.component\\t1.0\\n'\n"
+                      "  exit 0\n"
+                      "fi\n"
+                      "if [ \"$1\" = \"--probe\" ]; then printf 'ok\\n'; exit 0; fi\n"
+                      "exit 2\n";
+        }
+        std::filesystem::permissions(
+            fakeHelper,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_write |
+                std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::replace);
+        auto* fakeScan = daw_begin_installed_au_scan(fakeHelper.string().c_str(), 2000);
+        CHECK(fakeScan);
+        auto fakeStatus = abi<daw_au_scan_status>();
+        for (int attempt = 0; attempt < 400 && fakeStatus.status == 0; ++attempt) {
+            CHECK(daw_poll_installed_au_scan(fakeScan, &fakeStatus) == 0);
+            if (fakeStatus.status != 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        CHECK(fakeStatus.status == 1 && fakeStatus.available_count == 1 && fakeStatus.quarantined_count == 0);
+        uint32_t fakeAvailable = 0, fakeQuarantined = 0;
+        CHECK_OK(session.get(), daw_apply_installed_au_scan(session.get(), fakeScan, &fakeAvailable, &fakeQuarantined));
+        CHECK(fakeAvailable == 1 && fakeQuarantined == 0);
+        auto fakeComponent = abi<daw_au_component>();
+        CHECK_OK(session.get(), daw_get_supported_au(session.get(), 0, &fakeComponent));
+        CHECK(fakeComponent.type == 0x61756d75U);          // 'aumu' MusicDevice
+        CHECK(fakeComponent.subtype == 0x74657374U);       // 'test'
+        CHECK(fakeComponent.manufacturer == 0x4f414949U);  // 'OAII'
+        daw_release_installed_au_scan(fakeScan);
+
+        // 3. A missing helper must surface as a failed job with error text,
         // never as a hang or a fake empty success.
         auto* missing = daw_begin_installed_au_scan("/nonexistent/mydaw-au-scan-helper", 2000);
         CHECK(missing);
@@ -55,7 +96,7 @@ int main() {
         CHECK_REJ(session.get(), daw_apply_installed_au_scan(session.get(), missing, &available, &quarantined));
         daw_release_installed_au_scan(missing);
 
-        // 3. The real scan: disposable helper enumerates the machine's AUs.
+        // 4. The real scan: disposable helper enumerates the machine's AUs.
         // A slow machine can legitimately time the helper out; that is the
         // same failed-job contract asserted above, so accept both terminals
         // and only take the success path when the machine delivers one.
@@ -85,7 +126,7 @@ int main() {
             auto over = abi<daw_au_component>();
             CHECK_REJ(session.get(), daw_get_supported_au(session.get(), available, &over));
 
-            // 4. Cache round trip: save, then load in a FRESH session with the
+            // 5. Cache round trip: save, then load in a FRESH session with the
             // helper used only for freshness validation (the historic app
             // restart path).
             const auto cachePath = root / "au-scan-cache.bin";
@@ -112,7 +153,7 @@ int main() {
         }
         daw_release_installed_au_scan(scan);
 
-        // 5. VST3 negative contract (no pinned scan helper in this build).
+        // 6. VST3 negative contract (no pinned scan helper in this build).
         auto* vst3 = daw_begin_installed_vst3_scan("/nonexistent/mydaw-vst3-scan-helper", 2000);
         CHECK(vst3);
         daw_vst3_scan_status vstatus = abi<daw_vst3_scan_status>();
@@ -138,7 +179,7 @@ int main() {
         CHECK_REJ(session.get(), daw_add_insert_vst3(session.get(), DAW_INSERT_OWNER_MASTER, 0, 7, revision));
         CHECK(rev(session.get()) == revision); // all negatives left the project untouched
 
-        // 6. VST3 cache load contracts. A MISSING cache is a clean first
+        // 7. VST3 cache load contracts. A MISSING cache is a clean first
         // start: empty catalog, zero counts, success. A CORRUPT cache rejects
         // with a named error, and neither outcome may invent entries.
         uint32_t av = 9, qu = 9, inv = 9;
@@ -152,7 +193,7 @@ int main() {
         CHECK(vst3Count == 0);
 #endif
 
-        std::cout << "PASS: e2e_plugin_catalog — helper argument gates, failed-job contract, catalog apply, cache round trip, VST3 negatives\n";
+        std::cout << "PASS: e2e_plugin_catalog — helper argument gates, MusicDevice preservation, failed-job contract, catalog apply, cache round trip, VST3 negatives\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "E2E FAIL: " << error.what() << '\n';
