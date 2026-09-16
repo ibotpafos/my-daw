@@ -1,68 +1,43 @@
 #!/usr/bin/env bash
+# Canonical local entry point. Only this checkout's primary bundle is controlled.
 set -euo pipefail
-
-MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_BUNDLE="$ROOT_DIR/build/My DAW.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/My DAW"
-APP_NAME="My DAW"
-BUNDLE_ID="dev.mydaw.prototype"
-
-stop_running_app() {
-  local process_ids attempt
-  process_ids="$(pgrep -f "^$APP_BINARY$" || true)"
-  if [[ -z "$process_ids" ]]; then
-    return
-  fi
-
-  # The command is anchored to this bundle's executable, so a Run action does
-  # not terminate another My DAW build slot or any unrelated process.
-  kill $process_ids
-  for attempt in {1..50}; do
-    if ! pgrep -f "^$APP_BINARY$" >/dev/null; then
-      return
-    fi
-    sleep 0.1
-  done
-
-  printf 'Timed out waiting for the previous %s process to exit.\n' "$APP_NAME" >&2
-  return 1
-}
-
+MODE="${1:-run}"
+usage() { printf 'usage: %s [run|--debug|--logs|--telemetry|--verify|--kill]\n' "$0"; }
+if [[ "$#" -gt 1 ]]; then usage >&2; exit 2; fi
 case "$MODE" in
-  run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify)
-    ;;
-  *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
-    exit 2
-    ;;
+  --help|-h) usage; exit 0 ;;
+  run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify|--kill|kill) ;;
+  *) usage >&2; exit 2 ;;
 esac
-
-stop_running_app
+if [[ "$(uname -s)" != Darwin ]]; then
+  printf 'The native application requires macOS. Use CMake presets for portable core tests.\n' >&2
+  exit 2
+fi
+# AppKit termination honors the app's save/cancel handling. No pkill, SIGKILL,
+# matching by application name, or changing another checkout's running bundle.
+xcrun swift -swift-version 6 "$ROOT_DIR/scripts/macos-app-control.swift" --quit "$APP_BUNDLE"
+case "$MODE" in --kill|kill) exit 0 ;; esac
 "$ROOT_DIR/scripts/build-macos.sh"
-
-launch_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
-}
-
+if [[ ! -x "$APP_BINARY" ]]; then
+  printf 'The expected application executable is missing: %s\n' "$APP_BINARY" >&2
+  exit 1
+fi
 case "$MODE" in
-  run)
-    launch_app
-    ;;
-  --debug|debug)
-    lldb -- "$APP_BINARY"
+  --debug|debug) exec lldb -- "$APP_BINARY" ;;
+esac
+/usr/bin/open -n "$APP_BUNDLE"
+case "$MODE" in
+  --verify|verify)
+    exec xcrun swift -swift-version 6 "$ROOT_DIR/scripts/macos-app-control.swift" --verify "$APP_BUNDLE"
     ;;
   --logs|logs)
-    launch_app
-    /usr/bin/log stream --info --style compact --predicate 'process == "My DAW"'
+    exec /usr/bin/log stream --info --style compact --predicate 'process == "My DAW"'
     ;;
   --telemetry|telemetry)
-    launch_app
-    /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
-    ;;
-  --verify|verify)
-    launch_app
-    sleep 1
-    pgrep -x "$APP_NAME" >/dev/null
+    exec /usr/bin/log stream --info --style compact --predicate 'subsystem == "dev.mydaw.prototype"'
     ;;
 esac
+printf 'Launched %s\n' "$APP_BUNDLE"

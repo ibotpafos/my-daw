@@ -1,36 +1,36 @@
 name: Hardware probe build
-
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: [main]
   pull_request:
-
+  workflow_dispatch:
 permissions:
   contents: read
-
+concurrency:
+  group: hardware-probes-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   build-probes:
     runs-on: macos-15
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
+        with:
+          persist-credentials: false
       - name: Build CoreMIDI hardware probe
         run: |
           mkdir -p build/tools
           xcrun clang++ -std=c++20 -fblocks -Wall -Wextra -Wpedantic -Werror \
-            tools/midi_input_probe.cpp \
-            -framework CoreMIDI -framework CoreFoundation \
+            tools/midi_input_probe.cpp -framework CoreMIDI -framework CoreFoundation \
             -o build/tools/midi_input_probe
-
       - name: Build AU MusicDevice probe
         run: |
           xcrun clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
             tools/au_music_device_probe.cpp \
             -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
             -o build/tools/au_music_device_probe
-
-      - name: CLI smoke
+      - name: CLI smoke (not physical acceptance)
         run: |
           build/tools/midi_input_probe --list
           build/tools/au_music_device_probe --help >/dev/null 2>&1 || test "$?" -eq 2

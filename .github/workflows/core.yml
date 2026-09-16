@@ -17,20 +17,87 @@ jobs:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
       - name: Configure
         run: cmake --preset sanitizers
       - name: Build
         run: cmake --build --preset sanitizers --parallel 2
       - name: Test
         run: ctest --preset sanitizers
-      - name: Docs and contract checks
+      - name: Install pinned documentation tools
+        id: docs-tools
         if: ${{ !cancelled() }}
-        run: python3 scripts/check_docs.py
-      - name: E2E coverage ledger
+        run: |
+          python3 -m venv build/docs-venv
+          build/docs-venv/bin/python -m pip install --disable-pip-version-check -r requirements-docs.txt
+          build/docs-venv/bin/python -m pip check
+      - name: Required schema and documentation checks
+        if: ${{ !cancelled() && steps.docs-tools.outcome == 'success' }}
+        run: build/docs-venv/bin/python scripts/check_docs.py --require-schemas
+      - name: Repository layout and E2E ledger
         if: ${{ !cancelled() }}
-        run: python3 scripts/e2e_coverage.py --strict
+        run: |
+          python3 -m unittest discover -s tests -p test_project_layout.py -v
+          python3 scripts/e2e_coverage.py --strict
+      - name: Native Swift regression tests
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          mkdir -p build/swift-tests
+          xcrun swiftc -swift-version 6 -parse-as-library apps/macos/ProjectTime.swift tests/project_time_tests.swift -o build/swift-tests/project-time
+          build/swift-tests/project-time
+          xcrun swiftc -swift-version 6 -typecheck scripts/macos-app-control.swift
       - name: Build AppKit prototype
+        id: app-build
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         run: ./scripts/build-macos.sh
+      - name: Package development build
+        id: app-package
+        if: ${{ !cancelled() && steps.app-build.outcome == 'success' }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/My-DAW-macos-arm64.zip
+          shasum -a 256 build/My-DAW-macos-arm64.zip > build/My-DAW-macos-arm64.sha256
+      - name: Upload development application
+        if: ${{ !cancelled() && steps.app-package.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: My-DAW-macos-arm64-development-${{ github.sha }}
+          path: |
+            build/My-DAW-macos-arm64.zip
+            build/My-DAW-macos-arm64.sha256
+            build/build-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            build/sanitizers/ctest.xml
+            build/sanitizers/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
+  source-quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install standard lint tools
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 shellcheck
+      - name: Check migrated C++ formatting
+        run: clang-format-18 --dry-run --Werror engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
+      - name: Check canonical launch scripts
+        run: |
+          shellcheck script/build_and_run.sh scripts/run-macos.sh
+          bash -n scripts/build-macos.sh
+          ./script/build_and_run.sh --help

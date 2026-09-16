@@ -1,11 +1,69 @@
 {
   "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 28, "patch": 0},
   "configurePresets": [
-    {"name":"debug","generator":"Unix Makefiles","binaryDir":"${sourceDir}/build/debug","cacheVariables":{"CMAKE_BUILD_TYPE":"Debug"}},
-    {"name":"release","inherits":"debug","binaryDir":"${sourceDir}/build/release","cacheVariables":{"CMAKE_BUILD_TYPE":"Release"}},
-    {"name":"sanitizers","inherits":"debug","binaryDir":"${sourceDir}/build/sanitizers","cacheVariables":{"DAW_SANITIZERS":"ON"}},
-    {"name":"thread-sanitizer","inherits":"debug","binaryDir":"${sourceDir}/build/thread-sanitizer","cacheVariables":{"DAW_THREAD_SANITIZER":"ON"}}
+    {
+      "name": "debug",
+      "displayName": "Debug core and tests",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON",
+        "DAW_SANITIZERS": "OFF",
+        "DAW_THREAD_SANITIZER": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "sanitizers",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/sanitizers",
+      "cacheVariables": {"DAW_SANITIZERS": "ON"}
+    },
+    {
+      "name": "thread-sanitizer",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/thread-sanitizer",
+      "cacheVariables": {"DAW_THREAD_SANITIZER": "ON"}
+    }
   ],
-  "buildPresets":[{"name":"debug","configurePreset":"debug"},{"name":"release","configurePreset":"release"},{"name":"sanitizers","configurePreset":"sanitizers"},{"name":"thread-sanitizer","configurePreset":"thread-sanitizer"}],
-  "testPresets":[{"name":"debug","configurePreset":"debug","output":{"outputOnFailure":true}},{"name":"release","configurePreset":"release","output":{"outputOnFailure":true}},{"name":"sanitizers","configurePreset":"sanitizers","output":{"outputOnFailure":true}},{"name":"thread-sanitizer","configurePreset":"thread-sanitizer","output":{"outputOnFailure":true}}]
+  "buildPresets": [
+    {"name": "debug", "configurePreset": "debug"},
+    {"name": "release", "configurePreset": "release"},
+    {"name": "sanitizers", "configurePreset": "sanitizers"},
+    {"name": "thread-sanitizer", "configurePreset": "thread-sanitizer"}
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {"outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/debug/ctest.xml"},
+      "execution": {"noTestsAction": "error", "timeout": 300}
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {"outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/release/ctest.xml"},
+      "execution": {"noTestsAction": "error", "timeout": 300}
+    },
+    {
+      "name": "sanitizers",
+      "configurePreset": "sanitizers",
+      "output": {"outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/sanitizers/ctest.xml"},
+      "execution": {"noTestsAction": "error", "timeout": 300}
+    },
+    {
+      "name": "thread-sanitizer",
+      "configurePreset": "thread-sanitizer",
+      "output": {"outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/thread-sanitizer/ctest.xml"},
+      "execution": {"noTestsAction": "error", "timeout": 300}
+    }
+  ]
 }
