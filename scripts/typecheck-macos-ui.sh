@@ -10,6 +10,7 @@ PIANO_ROLL_SOURCES=(
   apps/macos/PianoRoll/PianoRollEdits.swift
   apps/macos/PianoRoll/PianoRollTransforms.swift
   apps/macos/PianoRoll/PianoRollHarmony.swift
+  apps/macos/PianoRoll/PianoRollProState.swift
 )
 APP_SOURCES=(
   apps/macos/Diagnostics.swift
