@@ -1,0 +1,89 @@
+name: Import contract maintenance
+# One-shot, same-repository migration. The commit removes this workflow itself.
+on:
+  push:
+    branches: ["codex/midi-hardware-acceptance"]
+    paths: [".github/workflows/import-contract-maintenance.yml"]
+permissions:
+  contents: read
+jobs:
+  migrate:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/midi-hardware-acceptance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply guarded test-only changes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected = {
+              'tests/audio_tests.cpp': '0fcd0cae45391da4355baaa16717e31a8ac53fa1',
+              'tests/core_tests.cpp': '426ae04335ed0e5f8e1d8b1c52c8f6b278de1e75',
+              'tests/e2e/e2e_media_import.cpp': '5b19de1c56f767da28bbd6088d03f4a35bfd1881',
+              'tests/aiff_import_tests.cpp': '208830c4030ac146d69959fdb7b183bb3e55dd19',
+          }
+          for path, sha in expected.items():
+              if subprocess.check_output(['git', 'hash-object', path], text=True).strip() != sha:
+                  raise SystemExit(f'Refusing changed input: {path}')
+          def once(text, before, after):
+              if text.count(before) != 1:
+                  raise SystemExit(f'Expected one reviewed match: {before[:100]!r}')
+              return text.replace(before, after, 1)
+          changes = {}
+          text = Path('tests/audio_tests.cpp').read_text()
+          text = once(text, '#ifndef __APPLE__\n        if (rate != 48000) { rejects([&]{daw::decodeWav(wavAtRate(rate, sourceFrames));}); continue; }\n#endif\n', '')
+          text = once(text, '#ifdef __APPLE__\n    CHECK(daw::decodeWav(wavAtRate(192000, 1))->frames() == 1);\n#else\n    rejects([&]{daw::decodeWav(wavAtRate(192000, 1));});\n#endif', '    CHECK(daw::decodeWav(wavAtRate(192000, 1))->frames() == 1);')
+          changes['tests/audio_tests.cpp'] = text
+          text = Path('tests/core_tests.cpp').read_text()
+          text = once(text, '#ifdef __APPLE__\n    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"44.1 base",rateSnapshot.revision)==0);', '    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"44.1 base",rateSnapshot.revision)==0);')
+          text = once(text, '#else\n    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"unsupported non-Apple rate",rateSnapshot.revision)==1);\n    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);\n#endif\n', '')
+          text = once(text, '#ifdef __APPLE__\n    // v36 keeps expensive decode/resampling off the owner thread.', '    // v36 keeps expensive decode/resampling off the owner thread.')
+          text = once(text, '#endif\n    daw::Session bounded;', '    daw::Session bounded;')
+          changes['tests/core_tests.cpp'] = text
+          text = Path('tests/e2e/e2e_media_import.cpp').read_text()
+          text = once(text, '        Bridge platform;\n#ifdef __APPLE__\n', '        Bridge platform;\n')
+          begin = text.index('#else\n        {\n            // Non-Apple builds accept only 48 kHz PCM WAV')
+          end = text.index('#endif', begin) + len('#endif')
+          removed = text[begin:end]
+          if removed.count('#else') != 1 or removed.count('#endif') != 1 or '#if' in removed[:-len('#endif')]:
+              raise SystemExit('Unexpected nested preprocessor branch')
+          text = text[:begin] + text[end:]
+          text = once(text, '// 10. Platform import surface. macOS additionally converts foreign\n        //     rates (docs/62) and reads AIFF/AIFC (docs/67); a non-Apple build\n        //     has no converter and must say so instead of faking a pitch.', '// 10. Shared import surface: both platforms convert supported rates\n        //     and read AIFF/AIFC through the public ABI (docs/62, 67, 83).\n        //     Use the same duration, metadata and mutation assertions.')
+          text = once(text, "// Interior bins only: Apple's converter may settle at both edges.", '// Interior bins only: either converter may settle at both edges.')
+          changes['tests/e2e/e2e_media_import.cpp'] = text
+          text = Path('tests/aiff_import_tests.cpp').read_text()
+          text = once(text, '#include <chrono>', '#include <algorithm>\n#include <chrono>')
+          begin = text.index('            int32_t iv;\n')
+          end = text.index(' d += width;', begin) + len(' d += width;')
+          text = text[:begin] + '''            const int64_t limit = int64_t{1} << (bits - 1);
+                      const int64_t scaled = static_cast<int64_t>(std::llround(double(v) * double(limit - 1)));
+                      const int64_t sample = std::clamp(scaled, -limit, limit - 1);
+                      putBE(b, d, static_cast<uint32_t>(sample), width); d += width;''' + text[end:]
+          # Keep the surrounding fixture's indentation; no other code changes.
+          text = text.replace('\n                      const int64_t', '\n            const int64_t').replace('\n                      putBE', '\n            putBE')
+          changes['tests/aiff_import_tests.cpp'] = text
+          for path, text in changes.items():
+              Path(path).write_text(text)
+          PY
+          git diff --check
+      - name: Commit only reviewed test changes and remove this migration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- tests/audio_tests.cpp tests/core_tests.cpp tests/aiff_import_tests.cpp tests/e2e/e2e_media_import.cpp
+          git rm -- .github/workflows/import-contract-maintenance.yml
+          git commit -m 'test(import): share conversion contracts across platforms and avoid PCM32 overflow'
+          git push origin HEAD:refs/heads/codex/midi-hardware-acceptance
+      - name: Verify GCC sanitizer suite
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libsamplerate0-dev pkg-config
+          cmake --preset sanitizers -DCMAKE_CXX_FLAGS=-fno-sanitize-recover=undefined
+          cmake --build --preset sanitizers --parallel 2
+          ctest --preset sanitizers
