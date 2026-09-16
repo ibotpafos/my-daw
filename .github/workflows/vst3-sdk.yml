@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Explicit bash enables -o pipefail; tee must never turn compiler/test errors
+# into successful steps.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: vst3-sdk-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -36,15 +42,30 @@ jobs:
             xcrun swiftc --version
             cmake --version
           } > build/vst3-diagnostics/toolchain.txt
+      - name: Test report verification rules
+        run: python3 -m unittest discover -s tests -p test_ci_reports.py -v
       - name: Bootstrap pinned VST3 SDK
         run: |
           ./scripts/bootstrap-vst3-sdk.sh
           git -C build/dependencies/vst3sdk submodule status > build/vst3-diagnostics/sdk-submodules.txt
+      - name: Build the pinned Steinberg ADelay fixture
+        run: |
+          cmake -S build/dependencies/vst3sdk -B build/vst3-fixtures \
+            -DCMAKE_BUILD_TYPE=Debug -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
+            -DSMTG_RUN_VST_VALIDATOR=OFF -DSMTG_CREATE_PLUGIN_LINK=OFF \
+            2>&1 | tee build/vst3-diagnostics/fixture-configure.log
+          cmake --build build/vst3-fixtures --target adelay --parallel 2 \
+            2>&1 | tee build/vst3-diagnostics/fixture-build.log
+          plugin="$(find "$PWD/build/vst3-fixtures" -type d -name 'adelay.vst3' -print -quit)"
+          test -n "$plugin" && test -d "$plugin"
+          echo "DAW_VST3_TEST_PLUGIN=$plugin" >> "$GITHUB_ENV"
       - name: Configure real SDK host and both helpers
         run: |
           cmake -S . -B build/vst3-ci -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDAW_SANITIZERS=ON \
+            -DDAW_VST3_TEST_PLUGIN="$DAW_VST3_TEST_PLUGIN" \
             -DDAW_BUILD_VST3_SCAN_HELPER=ON -DDAW_BUILD_VST3_RUNTIME_HELPER=ON \
             2>&1 | tee build/vst3-diagnostics/configure.log
       - name: Build SDK host and regression suite
@@ -54,6 +75,10 @@ jobs:
           ctest --test-dir build/vst3-ci --output-on-failure --no-tests=error \
             --timeout 300 --output-junit ctest.xml \
             2>&1 | tee build/vst3-diagnostics/ctest.log
+      - name: Verify actual test execution
+        run: |
+          python3 scripts/check_test_report.py build/vst3-ci/ctest.xml \
+            --require vst3_runtime_isolation --require vst3_sdk_smoke
       - name: Build native development bundle with VST3
         run: ./scripts/build-macos.sh 2>&1 | tee build/vst3-diagnostics/app-build.log
       - name: Verify and package SDK-enabled application

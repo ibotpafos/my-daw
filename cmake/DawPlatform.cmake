@@ -5,6 +5,14 @@ if(APPLE)
   target_sources(daw_core PRIVATE engine/platform/macos/input.cpp engine/platform/macos/midi_input.cpp engine/platform/macos/output.cpp engine/platform/macos/duplex.cpp engine/platform/macos/storage.mm)
   target_sources(daw_core PRIVATE engine/platform/macos/effect.mm engine/platform/macos/plugin_parameters.cpp)
   if(EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
+    # AppleClang does not support every upstream Clang warning. Probe the
+    # positive form: some compilers silently accept unknown -Wno-* options.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-Wunnecessary-virtual-specifier" DAW_HAS_VIRTUAL_SPECIFIER_WARNING)
+    set(DAW_VST3_COMPATIBILITY_OPTIONS "-Wno-deprecated-declarations")
+    if(DAW_HAS_VIRTUAL_SPECIFIER_WARNING)
+      list(APPEND DAW_VST3_COMPATIBILITY_OPTIONS "-Wno-unnecessary-virtual-specifier")
+    endif()
     target_sources(daw_core PRIVATE
       engine/platform/macos/vst3_effect.cpp
       engine/platform/macos/vst3_runtime.cpp
@@ -28,7 +36,7 @@ if(APPLE)
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp"
-      PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations;-Wno-unnecessary-virtual-specifier")
+      PROPERTIES COMPILE_OPTIONS "${DAW_VST3_COMPATIBILITY_OPTIONS}")
     set_source_files_properties("${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm" PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(daw_core PUBLIC "-framework Cocoa" "-framework CoreFoundation")
   else()
@@ -112,7 +120,7 @@ if(APPLE)
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
       "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp"
-      PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations;-Wno-unnecessary-virtual-specifier")
+      PROPERTIES COMPILE_OPTIONS "${DAW_VST3_COMPATIBILITY_OPTIONS}")
     target_include_directories(daw_vst3_runtime_helper PRIVATE engine "${DAW_VST3_SDK_DIR}" "${DAW_VST3_SDK_DIR}/pluginterfaces" "${DAW_VST3_SDK_DIR}/base/source")
     target_compile_options(daw_vst3_runtime_helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(daw_vst3_runtime_helper PRIVATE "-framework Cocoa" "-framework CoreFoundation" "-framework Foundation")
