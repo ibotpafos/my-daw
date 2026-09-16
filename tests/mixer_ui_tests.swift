@@ -31,13 +31,15 @@ struct MixerUITests {
             model.outputName = index > 7 ? "Vocal Bus" : "Master"
             model.outputID = index > 7 ? 101 : 0
             model.hasMidi = (5...7).contains(index)
-            model.inserts = [MixerInsertSummary(name: "AUParametricEQ", id: UInt64(1000+index))]
+            model.inserts = [MixerInsertSummary(name: "AUParametricEQ", id: UInt64(1000+index), latencyFrames:index == 8 ? 144:0)]
             if index > 7 {
                 model.sends = [MixerSendSummary(destination: "Vocal Reverb", gainDb: -18, preFader: false, busID: 100)]
-                model.inserts.append(MixerInsertSummary(name: "AUDynamics", id: UInt64(2000+index)))
+                model.inserts.append(MixerInsertSummary(name: "AUDynamics", id: UInt64(2000+index), latencyFrames:index == 8 ? 48:0))
             }
             tracks.append(model)
         }
+        precondition(tracks[7].totalInsertLatencyFrames == 192)
+        precondition(abs(tracks[7].totalInsertLatencyMilliseconds - 4.0) < 0.0001)
         tracks.append(MixerStripModel(id:100,kind:.bus,title:"Vocal Reverb",color:.systemPurple,volumeDb:-3))
         tracks.append(MixerStripModel(id:101,kind:.bus,title:"Vocal Bus",color:.systemOrange))
         tracks.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemMint,volumeDb:0,outputName:"Output 1–2"))
@@ -60,6 +62,23 @@ struct MixerUITests {
         precondition(mixer.visibleIDs.contains(8) && mixer.visibleIDs.contains(101))
         mixer.search.stringValue = ""
         mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+
+        // Modern zones stay fixed outside horizontal scrolling and intentionally ignore search/filter.
+        mixer.consoleState.pin(8,to:.left)
+        mixer.consoleState.pin(100,to:.right)
+        mixer.search.stringValue = "nothing matches"
+        mixer.filter.selectedSegment = 1
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(mixer.visibleIDs == [8,100])
+        precondition(mixer.stripViews[8]?.superview === mixer && mixer.stripViews[100]?.superview === mixer)
+        precondition(mixer.consoleState.zone(of:8) == .left && mixer.consoleState.zone(of:100) == .right)
+        mixer.consoleState.setHidden(true,id:8)
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(!mixer.visibleIDs.contains(8) && !mixer.consoleState.isPinned(8))
+        mixer.consoleState.showAll();mixer.consoleState.clearPins();mixer.search.stringValue="";mixer.filter.selectedSegment=0
+        mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+        precondition(mixer.visibleIDs.count == 14 && mixer.stripViews[8]?.superview === mixer.documentView)
+
         var mainChanges = 0, sendChanges = 0
         mixer.onVolume = { _,_ in mainChanges += 1 }
         mixer.onSendGain = { id,bus,value in
@@ -133,10 +152,17 @@ struct MixerUITests {
         }
         try data.write(to: url)
         precondition(data.count > 10000, "Screenshot must contain actual rendered content")
-        // Large session presentation; this is not a 256-audio-track DSP claim.
+
+        // Large-session presentation: keep stable controls but composite only the visible bank + overscan.
+        mixer.consoleState.showAll();mixer.consoleState.clearPins();mixer.search.stringValue="";mixer.filter.selectedSegment=0
         mixer.strips=(1...256).map { MixerStripModel(id:UInt64($0),kind:.track,title:"Track \($0)") } + [tracks.last!]
-        mixer.needsLayout=true; mixer.layoutSubtreeIfNeeded()
+        mixer.setFrameSize(NSSize(width:1024,height:700));mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
         precondition(mixer.visibleIDs.count == 256 && mixer.stripViews.count == 257)
-        print("Mixer AppKit tests PASS: scales, search, filters, identities, insert/send action IDs, send mapping, disable, clip reset, resize, 256 strips")
+        let composited=mixer.stripViews.values.filter{$0.model.kind != .master && !$0.isHidden}.count
+        precondition(composited < 40, "Offscreen channels should be culled from AppKit compositing")
+        mixer.contentView.scroll(to:NSPoint(x:12000,y:0));mixer.contentView.postsBoundsChangedNotifications=true
+        NotificationCenter.default.post(name:NSView.boundsDidChangeNotification,object:mixer.contentView)
+        precondition(mixer.stripViews[1]!.isHidden)
+        print("Mixer AppKit tests PASS: scales, search, visibility, fixed zones, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }
