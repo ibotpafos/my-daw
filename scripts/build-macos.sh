@@ -39,10 +39,6 @@ mkdir -p "$DAW_APP/Contents/Resources/Workflows/vocal-preparation"
 mkdir -p "$DAW_APP/Contents/Resources/ThirdPartyNotices"
 mkdir -p "$DAW_APP/Contents/Resources/DesignSystem"
 cp apps/macos/Info.plist "$DAW_APP/Contents/Info.plist"
-# Версия берётся из VERSION, а не из текучего plist: рассинхрон уже случался
-# (plist показывал 1.38.0 при собранных 1.72.0), и по нему нельзя понять, какая
-# сборка перед пользователем. Короткая ревизия git кладётся в DAWBuildCommit — её
-# печатает unified log при запуске (см. apps/macos/Diagnostics.swift).
 DAW_VERSION="$(tr -d '[:space:]' < VERSION)"
 DAW_COMMIT="$(git -C "$DAW_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 python3 - "$DAW_APP/Contents/Info.plist" "$DAW_VERSION" "$DAW_COMMIT" <<'PY'
@@ -68,12 +64,9 @@ cp modules/vocal-preparation/module.json "$DAW_APP/Contents/Resources/Workflows/
 cp apps/macos/DesignSystem/ui-kit-manifest.json "$DAW_APP/Contents/Resources/DesignSystem/ui-kit-manifest.json"
 cp apps/macos/DesignSystem/Assets/*.svg "$DAW_APP/Contents/Resources/DesignSystem/"
 xcrun swiftc -swift-version 6 -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header engine/bridge/daw.h apps/macos/Diagnostics.swift apps/macos/main.swift apps/macos/DAWWindow.swift apps/macos/WaveformView.swift apps/macos/PinnedTrackHeaderView.swift apps/macos/MixerScale.swift apps/macos/MixerConsoleState.swift apps/macos/MixerModels.swift apps/macos/MixerControls.swift apps/macos/MixerStripView.swift apps/macos/MixerWorkspaceView.swift apps/macos/MixerConsoleController.swift apps/macos/InspectorBrowserView.swift apps/macos/AudioPreviewController.swift apps/macos/StorageUI.swift apps/macos/WorkflowUI.swift apps/macos/PianoRollView.swift apps/macos/DesignSystem/DAWDesignTokens.swift apps/macos/DesignSystem/DAWIcon.swift apps/macos/DesignSystem/DAWDataVisuals.swift \
+  -import-objc-header engine/bridge/daw.h apps/macos/Diagnostics.swift apps/macos/main.swift apps/macos/DAWWindow.swift apps/macos/WaveformView.swift apps/macos/PinnedTrackHeaderView.swift apps/macos/MixerScale.swift apps/macos/MixerConsoleState.swift apps/macos/MixerModels.swift apps/macos/MixerControls.swift apps/macos/MixerStripView.swift apps/macos/MixerWorkspaceView.swift apps/macos/MixerRoutingMatrixView.swift apps/macos/MixerRoutingPresenter.swift apps/macos/MixerConsoleController.swift apps/macos/InspectorBrowserView.swift apps/macos/AudioPreviewController.swift apps/macos/StorageUI.swift apps/macos/WorkflowUI.swift apps/macos/PianoRollView.swift apps/macos/DesignSystem/DAWDesignTokens.swift apps/macos/DesignSystem/DAWIcon.swift apps/macos/DesignSystem/DAWDataVisuals.swift \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \
   -o "$DAW_APP/Contents/MacOS/My DAW"
-# Set to an installed Apple Development/Developer ID identity to preserve the
-# designated requirement across updates. Never weaken the requirement to a
-# bundle identifier alone or modify the user's privacy database.
 DAW_SIGNING_IDENTITY="${DAW_SIGNING_IDENTITY:--}"
 codesign --force --sign "$DAW_SIGNING_IDENTITY" "$DAW_APP/Contents/MacOS/daw_au_scan_helper"
 if [ "$VST3_HELPER_OPTION" = ON ]; then
