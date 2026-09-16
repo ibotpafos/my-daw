@@ -6,8 +6,7 @@
       "scope": "spike-only",
       "version": "3.5.0-develop",
       "repository": "https://github.com/Tracktion/tracktion_engine.git",
-      "revision": "ff794da4f58e732528b06d7799dad087635de0cb",
-      "sourceArchiveSha256": "879f12fd2f88c0d30b68af6a39f2ccb9593e05dff4b48f98c0625b2cb698821d",
+      "revision": "00fe42753a995c79dd857efe69dde17550e27e78",
       "license": "GPL-3.0-or-later OR commercial",
       "bundledInApp": false
     },
