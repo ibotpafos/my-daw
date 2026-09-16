@@ -1,0 +1,14 @@
+# clang-format 18; migrate existing files in separate, formatting-only commits.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Empty
+BreakStringLiterals: false
+SortIncludes: Never
+ReflowComments: false
+FixNamespaceComments: false
+InsertBraces: false
