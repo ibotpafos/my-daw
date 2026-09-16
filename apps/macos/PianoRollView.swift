@@ -41,8 +41,8 @@ private final class PRMiniPreviewView: NSView {
             let start = map.start(note) / map.durationBeats
             let length = map.length(note) / map.durationBeats
             let normalizedPitch = Double(Int(note.pitch) - bottom) / Double(pitchSpan)
-            let x = start * bounds.width
-            let width = max(2, length * bounds.width)
+            let x = CGFloat(start) * bounds.width
+            let width = max(CGFloat(2), CGFloat(length) * bounds.width)
             let y = bounds.height - CGFloat(normalizedPitch) * max(1, bounds.height - 8) - 5
             let rect = NSRect(x: x, y: min(bounds.height - 6, max(2, y)), width: width, height: 5)
             let color = state.selection.contains(entity.id) ? PRProDrawing.mint : PRProDrawing.noteColor(note)
@@ -71,6 +71,8 @@ final class PianoRollEditorView: NSView {
     var clips: [PianoRollClipModel] = [] { didSet { reloadClips(); syncState() } }
     var selectedClip: Int? { didSet { syncClipSelection(); syncState() } }
     var editorEnabled = false { didSet { applyEnabled(); syncState() } }
+    /// Optional explicit adapter for isolated tests/embedders. In the real app,
+    /// the selected clip is mapped through DraftApp.tempoMap automatically.
     var timeMap: PRTimeMap? { didSet { syncState() } }
     var playheadFrame: UInt64 = 0 {
         didSet {
@@ -113,6 +115,21 @@ final class PianoRollEditorView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    private var hostApp: DraftApp? { NSApp.delegate as? DraftApp }
+
+    private func resolvedTimeMap() -> PRTimeMap? {
+        if let timeMap { return timeMap }
+        guard let selectedClip,
+              let clip = clips.first(where: { $0.index == selectedClip }),
+              clip.lengthFrames > 0,
+              let hostApp else { return nil }
+        let projectMap = hostApp.tempoMap
+        return try? PRTimeMap(clipStart: clip.startFrames,
+                              clipLength: clip.lengthFrames,
+                              toBeat: { projectMap.beats(atFrame: $0) },
+                              toFrame: { projectMap.frame(atBeats: $0) })
+    }
 
     private func setup() {
         clipPopup.target = self; clipPopup.action = #selector(selectClip)
@@ -171,10 +188,12 @@ final class PianoRollEditorView: NSView {
     private func syncState() {
         guard !syncing else { return }
         syncing = true
-        state.playheadFrame = playheadFrame
-        state.receive(notes: notes, map: timeMap,
+        let currentPlayhead = hostApp?.playheadFrame ?? playheadFrame
+        state.playheadFrame = currentPlayhead
+        state.receive(notes: notes, map: resolvedTimeMap(),
                       editable: editorEnabled && selectedClip != nil && !clips.isEmpty)
         syncing = false
+        applyEnabled()
     }
 
     private func refreshFromState() {
@@ -201,14 +220,15 @@ final class PianoRollEditorView: NSView {
 
     private func applyEnabled() {
         let hasClip = selectedClip != nil && !clips.isEmpty
-        clipPopup.isEnabled = editorEnabled && hasClip
+        let canEdit = editorEnabled && hasClip
+        clipPopup.isEnabled = canEdit
         addClipButton.isEnabled = editorEnabled
-        removeClipButton.isEnabled = editorEnabled && hasClip
-        openButton.isEnabled = editorEnabled && hasClip && timeMap != nil
-        addNoteButton.isEnabled = editorEnabled && hasClip
-        quantizeButton.isEnabled = editorEnabled && hasClip
-        legatoButton.isEnabled = editorEnabled && hasClip
-        gridPopup.isEnabled = editorEnabled && hasClip
+        removeClipButton.isEnabled = canEdit
+        openButton.isEnabled = canEdit && resolvedTimeMap() != nil
+        addNoteButton.isEnabled = canEdit
+        quantizeButton.isEnabled = canEdit
+        legatoButton.isEnabled = canEdit
+        gridPopup.isEnabled = canEdit
     }
 
     @objc private func selectClip() {
@@ -235,10 +255,11 @@ final class PianoRollEditorView: NSView {
     }
 
     @objc private func openPianoRoll() {
-        guard editorEnabled, selectedClip != nil, timeMap != nil else {
+        guard editorEnabled, selectedClip != nil, resolvedTimeMap() != nil else {
             state.fail(PREditError.unavailable)
             return
         }
+        syncState()
         let controller: PRProWindowController
         if let existing = windowController {
             controller = existing
@@ -248,10 +269,26 @@ final class PianoRollEditorView: NSView {
             windowController = created
             controller = created
         }
-        controller.workspace.onSeek = { [weak self] frame in self?.onSeek?(frame) }
-        controller.workspace.onUndo = { [weak self] in self?.onUndo?() }
-        controller.workspace.onRedo = { [weak self] in self?.onRedo?() }
-        controller.workspace.onPlayToggle = { [weak self] in self?.onPlayToggle?() }
+        controller.workspace.onSeek = { [weak self] frame in
+            guard let self else { return }
+            if let onSeek = self.onSeek { onSeek(frame) }
+            else { self.hostApp?.seekAudio(frame) }
+        }
+        controller.workspace.onUndo = { [weak self] in
+            guard let self else { return }
+            if let onUndo = self.onUndo { onUndo() }
+            else { self.hostApp?.undo() }
+        }
+        controller.workspace.onRedo = { [weak self] in
+            guard let self else { return }
+            if let onRedo = self.onRedo { onRedo() }
+            else { self.hostApp?.redo() }
+        }
+        controller.workspace.onPlayToggle = { [weak self] in
+            guard let self else { return }
+            if let onPlayToggle = self.onPlayToggle { onPlayToggle() }
+            else { self.hostApp?.togglePlayStop() }
+        }
         let title = clips.first(where: { $0.index == selectedClip })?.title
         controller.present(relativeTo: window, title: title)
     }
