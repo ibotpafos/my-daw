@@ -45,7 +45,14 @@ limit — тот же bounded host maximum.
 6. преобразует каждый `PreparedMidiEvent` в Note On/Note Off через
    `MusicDeviceMIDIEvent`, сохраняя `sampleOffset` внутри блока;
 7. вызывает `AudioUnitRender` с абсолютным host sample time;
-8. при ошибке восстанавливает dry input и best-effort отправляет All Notes Off.
+8. суммирует generated output с входным dry signal;
+9. при ошибке восстанавливает dry input и best-effort отправляет All Notes Off.
+
+Аддитивная семантика важна не только для MIDI-only дорожки, где dry buffer
+изначально нулевой. Общий C ABI хранит AU как обычный insert и исторически не
+запрещает выбрать scanned component для bus/master. MusicDevice в таком месте
+не должен стирать уже собранный микс: без MIDI он оставляет dry signal как был,
+а с MIDI добавляет generated output поверх него.
 
 Обычный `AppleEffect` теперь игнорирует track MIDI span. Это обязательно для
 последовательной цепочки `instrument → effect`: renderer по контракту передаёт
@@ -69,8 +76,10 @@ MIDI lane всем inserts дорожки, а эффект после синте
 
 - `tests/au_host_probe.cpp` передаёт MIDI span обычным Apple effects и требует,
   чтобы они продолжали успешно рендерить;
-- scanner parser не фильтрует component type и проверяет прежний six-field
-  helper protocol;
+- `e2e_plugin_catalog` запускает deterministic fake helper с component type
+  `aumu` и проверяет, что isolated scan, apply и C ABI catalog сохраняют
+  MusicDevice type/subtype/manufacturer без фильтрации;
+- scanner parser/cache по-прежнему используют прежний six-field helper protocol;
 - macOS CI компилирует standalone CoreMIDI/MusicDevice probes с `-Werror`.
 
 На физическом Mac:
