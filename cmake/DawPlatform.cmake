@@ -126,6 +126,17 @@ if(APPLE)
     target_link_libraries(daw_vst3_runtime_helper PRIVATE "-framework Cocoa" "-framework CoreFoundation" "-framework Foundation")
     target_compile_definitions(daw_core PRIVATE DAW_VST3_RUNTIME_AVAILABLE=1)
   endif()
+  # Helpers do not link daw_core and therefore do not inherit its sanitizer
+  # flags. Instrument their own process paths during the SDK acceptance gate.
+  if(DAW_SANITIZERS)
+    foreach(helper IN ITEMS daw_vst3_scan_helper daw_vst3_runtime_helper)
+      if(TARGET ${helper})
+        target_compile_options(${helper} PRIVATE -fsanitize=address,undefined
+          -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+        target_link_options(${helper} PRIVATE -fsanitize=address,undefined)
+      endif()
+    endforeach()
+  endif()
 else()
   # Offline conversion uses an established DSP library instead of a custom
   # resampler or a stub that makes otherwise portable import tests fail.

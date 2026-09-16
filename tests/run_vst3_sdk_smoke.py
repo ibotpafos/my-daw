@@ -37,4 +37,9 @@ if __name__ == "__main__":
         main()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError):
+            # Preserve sanitizer/error diagnostics emitted by the real scanner.
+            for output in (error.stdout, error.stderr):
+                if output:
+                    print(output[-8000:], file=sys.stderr)
         raise SystemExit(1)
