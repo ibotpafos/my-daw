@@ -104,6 +104,7 @@ extension DraftApp {
     }
 
     func wireWorkspace() {
+        wireRackParameters()
         wireInspectorSignalChain()
         wireTimelineNavigation()
         workspace?.onChange = { [weak self] preference in
@@ -159,7 +160,7 @@ extension DraftApp {
     }
     var shouldHandleWorkspaceClipDelete: Bool {
         guard let view = window.firstResponder as? NSView else { return true }
-        return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor)
+        return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor) && !view.isDescendant(of: channelRack)
     }
 
     func refreshWorkspaceSelection() {
@@ -184,7 +185,7 @@ extension DraftApp {
         defer { refreshInspectorSignalChain() }
         guard session != nil, let id = selectedMixerID,
               let strip = mixerWorkspace.strips.first(where: { $0.id == id }) else {
-            channelRack.update(target: nil, title: "", output: "", accent: DAWDesignTokens.Color.accent, devices: [], editable: false); return
+            channelRack.update(target: nil, title: "", output: "", accent: DAWDesignTokens.Color.accent, devices: [], editable: false, revision: revision); return
         }
         let owner = Int32(strip.kind == .track ? DAW_INSERT_OWNER_TRACK : (strip.kind == .bus ? DAW_INSERT_OWNER_BUS : DAW_INSERT_OWNER_MASTER))
         let target = RackTarget(owner: owner, ownerID: id)
@@ -204,7 +205,7 @@ extension DraftApp {
             }
         }
         channelRack.update(target: target, title: strip.title, output: strip.outputName, accent: strip.color ?? DAWDesignTokens.Color.accent,
-                           devices: devices, editable: !isRecording && !midiTakeArmed)
+                           devices: devices, editable: !isRecording && !midiTakeArmed, revision: revision)
     }
     func performRackAction(_ target: RackTarget, _ action: RackAction) {
         guard !isRecording, !midiTakeArmed, target == channelRack.target else { return }
@@ -236,6 +237,7 @@ extension DraftApp {
         if check(result) { refresh(); pollTransport() }
     }
     func updateWorkspaceChrome() {
+        channelRack.setParameterEditingEnabled(!isRecording && !midiTakeArmed && automationGesture == nil && pluginParameterGesture == nil)
         timelineRuler.cycleRange.editingEnabled = !isRecording && !midiTakeArmed
         projectTitleLabel.stringValue = currentURL?.deletingPathExtension().lastPathComponent ?? "Новый черновик"
         projectStateLabel.stringValue = "\(dirty ? "Есть изменения" : "Сохранено") · \(trackIDs.count) дорожек · 48 kHz"

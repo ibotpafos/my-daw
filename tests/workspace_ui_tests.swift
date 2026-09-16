@@ -302,5 +302,8 @@ func runWorkspaceIntegrationTests() {
     assertions += runTimelineEditingTests(controller)
     controller.selectedMixerID = tracks[4]; controller.updateMixerInspector(tracks[4]); workspace.selectDock(.devices)
     settle(1536, 1000); screenshot("workspace-cycle")
+    assertions += runRackParameterTests(controller)
+    settle(1536, 1000); screenshot("workspace-parameters")
+    settle(1060, 700); screenshot("workspace-parameters-1060")
     print("PASS: \(assertions) native workspace assertions; actual AppKit composition, model commands, selection and screenshots")
 }

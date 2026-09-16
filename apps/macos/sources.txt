@@ -22,6 +22,9 @@ apps/macos/Workspace/TimelineRangeEditing.swift
 apps/macos/Workspace/TimelineRangeView.swift
 apps/macos/Workspace/WorkspaceCommandBar.swift
 apps/macos/Workspace/WorkspaceLayout.swift
+apps/macos/Workspace/RackParameter.swift
+apps/macos/Workspace/RackParameterPanelView.swift
+apps/macos/Workspace/RackParameterEditing.swift
 apps/macos/Workspace/WorkspaceUI.swift
 apps/macos/Workspace/WorkspaceView.swift
 apps/macos/main.swift
