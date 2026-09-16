@@ -43,7 +43,7 @@ int list() {
     const auto bundles=bundleIndex();
     while((component=AudioComponentFindNext(component,&wildcard))) {
         AudioComponentDescription description{}; if(AudioComponentGetDescription(component,&description)!=noErr) continue;
-        if(description.componentType!=kAudioUnitType_Effect&&description.componentType!=kAudioUnitType_MusicEffect) continue;
+        if(description.componentType!=kAudioUnitType_Effect&&description.componentType!=kAudioUnitType_MusicEffect&&description.componentType!=kAudioUnitType_MusicDevice) continue;
         CFStringRef name=nullptr; if(AudioComponentCopyName(component,&name)!=noErr||!name) continue;
         std::array<char,481> bytes{}; const bool converted=CFStringGetCString(name,bytes.data(),bytes.size(),kCFStringEncodingUTF8); CFRelease(name);
         if(converted&&bytes[0]&&printableName(bytes.data())) printDescription(description,bytes.data(),bundles);
@@ -56,7 +56,8 @@ int probe(uint32_t type,uint32_t subtype,uint32_t manufacturer) {
     bool initialized=false;
     const auto dispose=[&]{ if(unit) { if(initialized) AudioUnitUninitialize(unit); AudioComponentInstanceDispose(unit); unit=nullptr; } };
     const auto stream=stereoFormat(); UInt32 maximum=4096;
-    if(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum))!=noErr||AudioUnitInitialize(unit)!=noErr) { dispose(); return 12; }
+    if(type!=kAudioUnitType_MusicDevice&&AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&stream,sizeof(stream))!=noErr) { dispose(); return 12; }
+    if(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum))!=noErr||AudioUnitInitialize(unit)!=noErr) { dispose(); return 12; }
     initialized=true;
     Float64 latency=0; UInt32 latencySize=sizeof(latency); if(AudioUnitGetProperty(unit,kAudioUnitProperty_Latency,kAudioUnitScope_Global,0,&latency,&latencySize)!=noErr||!std::isfinite(latency)||latency<0||latency>10) { dispose(); return 13; }
     CFPropertyListRef state=nullptr; UInt32 stateSize=sizeof(state); const auto stateStatus=AudioUnitGetProperty(unit,kAudioUnitProperty_ClassInfo,kAudioUnitScope_Global,0,&state,&stateSize); if(state) CFRelease(state); dispose();
