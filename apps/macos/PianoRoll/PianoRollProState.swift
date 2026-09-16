@@ -2,10 +2,13 @@ import Foundation
 
 @MainActor
 final class PRProState {
+    enum GestureSource { case pointer, transform }
+
     struct Gesture {
         var original: [PRNoteEntity]
         var originalSelection: Set<UInt64>
         var generation: UInt64
+        var source: GestureSource
     }
 
     private var store = PRNoteStore()
@@ -44,6 +47,7 @@ final class PRProState {
     var selectedEntities: [PRNoteEntity] { entities.filter { selection.contains($0.id) } }
     var nextID: UInt64 { max(store.nextID, (entities.map(\.id).max() ?? 0) + 1) }
     var isGesturing: Bool { gesture != nil }
+    var isTransformPreview: Bool { gesture?.source == .transform }
     var pitchRows: PRPitchRows {
         PRPitchRows(used: fold ? Set(store.entities.map { Int($0.note.pitch) }) : nil)
     }
@@ -89,14 +93,22 @@ final class PRProState {
     }
 
     @discardableResult
-    func beginGesture() -> Bool {
-        guard editable, timeMap != nil, gesture == nil else {
+    func beginGesture(source: GestureSource = .pointer) -> Bool {
+        if let active = gesture {
+            status = active.source == .transform
+                ? "Сначала примените или отмените предпросмотр преобразования."
+                : "Сначала завершите текущий жест редактирования."
+            changed()
+            return false
+        }
+        guard editable, timeMap != nil else {
             fail(PREditError.unavailable)
             return false
         }
         gesture = Gesture(original: store.entities,
                           originalSelection: selection,
-                          generation: generation)
+                          generation: generation,
+                          source: source)
         preview = nil
         return true
     }
@@ -143,7 +155,12 @@ final class PRProState {
     func perform(_ transform: ([PRNoteEntity], PRTimeMap) throws -> [PRNoteEntity],
                  selection replacement: Set<UInt64>? = nil) {
         guard editable, gesture == nil, let map = timeMap else {
-            fail(PREditError.unavailable)
+            if isTransformPreview {
+                status = "Сначала примените или отмените предпросмотр преобразования."
+                changed()
+            } else {
+                fail(PREditError.unavailable)
+            }
             return
         }
         do {
