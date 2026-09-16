@@ -1,6 +1,5 @@
 name: Format maintenance
-# One-time migration of the three minified translation units blocking GCC.
-# Never runs on pull_request or a fork, never pushes to main, never force-pushes.
+# Temporary, same-repository migration. Remove after the reviewed changes land.
 on:
   push:
     branches: ["codex/midi-hardware-acceptance"]
@@ -11,35 +10,29 @@ jobs:
   format:
     if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/midi-hardware-acceptance'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-      - name: Install formatter
-        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18
-      - name: Format only reviewed translation units
+      - name: Apply guarded extraction and portability fixes
         run: |
-          clang-format-18 -i engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
-          python3 - <<'PY'
-          import pathlib, re, subprocess
-          paths = ['engine/domain/session.cpp', 'engine/bridge/daw.cpp', 'engine/storage/storage.cpp']
-          for name in paths:
-              before = subprocess.check_output(['git', 'show', f'HEAD:{name}'])
-              after = pathlib.Path(name).read_bytes()
-              if re.sub(rb'\s+', b'', before) != re.sub(rb'\s+', b'', after):
-                  raise SystemExit(f'Refusing non-whitespace transformation: {name}')
-          PY
+          python3 scripts/maintenance_project_layout.py
           git diff --check
-      - name: Commit formatting to the same branch
+          bash -n scripts/build-macos.sh
+      - name: Commit reviewed paths to the same branch
         run: |
-          if git diff --quiet; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
-          git commit -m 'style(core): expand minified C++ without changing tokens'
+          git add -- CMakeLists.txt cmake/DawPlatform.cmake cmake/DawTests.cmake \
+            apps/macos/main.swift apps/macos/ProjectTime.swift apps/macos/TimelineRulerView.swift \
+            apps/macos/sources.txt scripts/build-macos.sh engine/storage/storage.cpp \
+            engine/bridge/daw.cpp engine/plugins/vst3_catalog.hpp \
+            engine/platform/macos/vst3_scanner.hpp engine/platform/macos/vst3_scan_cache.hpp \
+            scripts/test-au-music-device.sh scripts/test-midi-hardware.sh scripts/test-audio-preview.sh
+          git commit -m 'refactor: separate app components, build modules and portable catalog metadata'
           git push origin HEAD:refs/heads/codex/midi-hardware-acceptance
       - name: Verify GCC build
         run: |
