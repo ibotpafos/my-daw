@@ -5,7 +5,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Experimental bridge v1, distinct from the planned workflow command API.
+/* Experimental bridge v1. The workflow surface (preview/commit and vocal
+ * preparation) is part of this same API, not a separate future one. Numeric
+ * input ranges of those calls are not spelled out here; they are enforced in
+ * engine/bridge/daw.cpp, asserted by tests/e2e/e2e_workflow_vocal.cpp and
+ * tabulated in docs/40-vocal-preparation-workflow.md.
  * All calls: same owning non-real-time thread, including destruction. No concurrency.
  * Handle owns state; caller owns all input/output buffers. No borrowed pointers escape.
  * Names/paths are NUL-terminated UTF-8; valid buffer storage is caller's responsibility.

@@ -20,7 +20,7 @@ Bundle содержит `org.mydaw.vocal-preparation` manifest. Host прове�
 
 После подтверждения тот же batch снова полностью проверяется и применяется одной project revision с одной Undo entry. Неизвестная operation, отсутствующая дорожка, неверное имя, gain вне диапазона или stale revision отклоняют весь batch без частичных изменений.
 
-Текущий встроенный workflow подготавливает одну дорожку. Multi-selection, peak/RMS suggestions и работа с выбранными doubles относятся к B-015. Внешний executable/runtime не запускается: первый модуль остаётся bundled declarative recipe.
+Текущий встроенный workflow подготавливает от одной до 32 выбранных дорожек сразу: `daw_preview_vocal_preparation` принимает массив ID, первый выбранный становится `Lead`, остальные `Double 1…N`, и предложения по peak/RMS считаются для каждой дорожки (multi-selection и peak/RMS suggestions из B-015 уже в ABI; актуальный контракт с числовыми границами — в [40 vocal preparation workflow](40-vocal-preparation-workflow.md)). Внешний executable/runtime не запускается: первый модуль остаётся bundled declarative recipe.
 
 ## Границы
 
