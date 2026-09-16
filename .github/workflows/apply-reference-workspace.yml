@@ -21,9 +21,76 @@ jobs:
               .github/maintenance/workspace.patch.part03 \
             | base64 --decode | xz -dc > /tmp/reference-workspace.patch
           printf '%s  %s\n' '127e4cee30c0f050b8013ac91fc8c993fb4d6558cc058015c888b734d16483a8' '/tmp/reference-workspace.patch' | sha256sum -c -
-      - name: Apply source changes from exact blob preimages
+      - name: Materialize exact reviewed postimages
         run: |
-          git apply --3way /tmp/reference-workspace.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+
+          lines = Path('/tmp/reference-workspace.patch').read_text().splitlines(keepends=True)
+          i = 0
+          touched = []
+          while i < len(lines):
+              if not lines[i].startswith('diff --git '):
+                  i += 1
+                  continue
+              m = re.match(r'diff --git a/(.+) b/(.+)\n?$', lines[i])
+              if not m: raise SystemExit(f'bad diff header: {lines[i]!r}')
+              old_path, new_path = m.group(1), m.group(2)
+              i += 1
+              old_sha = new_sha = None
+              while i < len(lines) and not lines[i].startswith('--- '):
+                  im = re.match(r'index ([0-9a-f]{40})\.\.([0-9a-f]{40})', lines[i])
+                  if im: old_sha, new_sha = im.groups()
+                  i += 1
+              if i >= len(lines): raise SystemExit(f'missing --- for {new_path}')
+              old_marker = lines[i].strip(); i += 1
+              new_marker = lines[i].strip(); i += 1
+              is_new = old_marker == '--- /dev/null'
+              path = Path(new_path)
+              if is_new:
+                  current = []
+              else:
+                  if not path.exists(): raise SystemExit(f'missing preimage {new_path}')
+                  actual = subprocess.check_output(['git','hash-object',new_path], text=True).strip()
+                  if old_sha and actual != old_sha:
+                      raise SystemExit(f'preimage mismatch {new_path}: {actual} != {old_sha}')
+                  current = path.read_text().splitlines(keepends=True)
+              offset = 0
+              while i < len(lines) and not lines[i].startswith('diff --git '):
+                  if not lines[i].startswith('@@ '):
+                      i += 1; continue
+                  hm = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', lines[i])
+                  if not hm: raise SystemExit(f'bad hunk header {lines[i]!r}')
+                  old_start = int(hm.group(1)); i += 1
+                  src, dst = [], []
+                  while i < len(lines) and not lines[i].startswith('@@ ') and not lines[i].startswith('diff --git '):
+                      line = lines[i]
+                      if line.startswith(' '): src.append(line[1:]); dst.append(line[1:])
+                      elif line.startswith('-'): src.append(line[1:])
+                      elif line.startswith('+'): dst.append(line[1:])
+                      elif line.startswith('\\ No newline at end of file'):
+                          if src: src[-1] = src[-1].removesuffix('\n')
+                          if dst: dst[-1] = dst[-1].removesuffix('\n')
+                      i += 1
+                  expected = max(0, old_start - 1 + offset)
+                  if src:
+                      candidates = [p for p in range(0, len(current)-len(src)+1) if current[p:p+len(src)] == src]
+                      if expected in candidates: pos = expected
+                      elif len(candidates) == 1: pos = candidates[0]
+                      else: raise SystemExit(f'ambiguous/missing hunk in {new_path} near {old_start}: {candidates[:8]}')
+                  else:
+                      pos = min(len(current), old_start + offset)
+                  current[pos:pos+len(src)] = dst
+                  offset += len(dst) - len(src)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(''.join(current))
+              actual_new = subprocess.check_output(['git','hash-object',new_path], text=True).strip()
+              if new_sha and actual_new != new_sha:
+                  raise SystemExit(f'postimage mismatch {new_path}: {actual_new} != {new_sha}')
+              touched.append(new_path)
+          print(f'Exact postimages materialized: {len(touched)} files')
+          PY
           git diff --check
       - name: Commit clean workspace implementation
         run: |
