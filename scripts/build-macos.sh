@@ -46,6 +46,7 @@ PIANO_ROLL_SOURCES=(
   apps/macos/PianoRoll/PianoRollEdits.swift
   apps/macos/PianoRoll/PianoRollTransforms.swift
   apps/macos/PianoRoll/PianoRollHarmony.swift
+  apps/macos/PianoRoll/PianoRollProState.swift
 )
 xcrun swiftc -swift-version 6 -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
   -import-objc-header engine/bridge/daw.h apps/macos/Diagnostics.swift apps/macos/main.swift apps/macos/DAWWindow.swift apps/macos/WaveformView.swift apps/macos/PinnedTrackHeaderView.swift apps/macos/MixerWorkspaceView.swift apps/macos/InspectorBrowserView.swift apps/macos/AudioPreviewController.swift apps/macos/StorageUI.swift apps/macos/WorkflowUI.swift "${PIANO_ROLL_SOURCES[@]}" apps/macos/PianoRollView.swift apps/macos/DesignSystem/DAWDesignTokens.swift apps/macos/DesignSystem/DAWIcon.swift apps/macos/DesignSystem/DAWDataVisuals.swift \
