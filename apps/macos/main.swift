@@ -2128,45 +2128,38 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             status.stringValue = "Шина «\(busName)» удалена, дорожки перенаправлены на мастер"
         }
     }
-    /// Экспорт одной дорожки в WAV-файл (реюз логики стемов).
+    /// Экспорт одной дорожки в WAV: тот же фоновый stems-джоб, что и у
+    /// «Экспорт стемов», но на одну дорожку. UI не блокируется — завершение
+    /// обрабатывает общий pump pollStorage().
     func exportTrackAsWav(_ trackID:UInt64){
+        guard !exportBusy else { storageMessage("Экспорт уже выполняется."); return }
         guard !isRecording else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType.wav]
-        panel.nameFieldStringValue = "track-\(trackID).wav"
-        panel.title = "Экспорт дорожки в WAV"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let dir = url.deletingLastPathComponent().path
-        let format: Int32 = 1  // WAV float32
+        finishEditing()
+        let choice = NSAlert()
+        choice.messageText = "Экспорт дорожки в WAV"
+        choice.informativeText = "Один WAV слышимой дорожки: мастер-гейн и мастер-цепочка не применяются. Замьюченная или пустая дорожка не экспортируется."
+        choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
+        let response = choice.runModal()
+        guard response != .alertThirdButtonReturn else { return }
+        let format: Int32 = response == .alertSecondButtonReturn ? 2 : 1
         var options = daw_export_options()
-        options.struct_size = UInt32(MemoryLayout<daw_export_options>.stride)  // stride returns Int, cast to UInt32
-        options.tail_mode = UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT)
-        options.manual_tail_frames = 48000
+        options.struct_size = UInt32(MemoryLayout<daw_export_options>.size)
+        options.version = UInt32(DAW_EXPORT_OPTIONS_VERSION)
+        let defaults = UserDefaults.standard
+        let storedMode = UInt32(max(0, defaults.integer(forKey: "export.tail.mode.v1")))
+        let storedLimit = UInt32(max(0, defaults.integer(forKey: "export.tail.limitSeconds.v1")))
+        options.tail_mode = storedMode >= UInt32(DAW_EXPORT_TAIL_AUTOMATIC) && storedMode <= UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT) ? storedMode : UInt32(DAW_EXPORT_TAIL_AUTOMATIC)
+        options.manual_tail_frames = [2, 5, 15, 30].contains(Int(storedLimit)) ? storedLimit * 48_000 : 30 * 48_000
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        if let currentURL { panel.directoryURL = currentURL.deletingLastPathComponent() }
+        panel.message = "Папка, куда записать WAV этой дорожки"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
         let ids: [UInt64] = [trackID]
-        let job: OpaquePointer? = ids.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, dir, format, &options, $0.baseAddress, UInt32(ids.count)) }
+        let job = ids.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, UInt32(ids.count)) }
         guard let job else { _ = check(1); return }
-        var status: Int32 = 0
-        var exportStatus = daw_export_status()
-        exportStatus.struct_size = UInt32(MemoryLayout<daw_export_status>.stride)
-        while true {
-            daw_poll_export(job, &exportStatus)
-            if exportStatus.status == 1 || exportStatus.status == 2 { status = exportStatus.status; break }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        daw_release_export(job)
-        if status == 1 {
-            // Find the exported file and rename it
-            let stemDir = URL(fileURLWithPath: dir)
-            if let enumerator = FileManager.default.enumerator(at: stemDir, includingPropertiesForKeys: nil) {
-                for case let fileURL as URL in enumerator where fileURL.pathExtension == "wav" {
-                    try? FileManager.default.moveItem(at: fileURL, to: url)
-                    break
-                }
-            }
-            storageMessage("Дорожка экспортирована в \(url.lastPathComponent)")
-        } else {
-            storageMessage("Ошибка экспорта дорожки.")
-        }
+        exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
+        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
+        updateStorageStatus()
     }
     /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
     /// «Группу N», маршрутизацию в существующие шины и возврат на мастер.
