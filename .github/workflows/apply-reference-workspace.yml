@@ -21,10 +21,9 @@ jobs:
               .github/maintenance/workspace.patch.part03 \
             | base64 --decode | xz -dc > /tmp/reference-workspace.patch
           printf '%s  %s\n' '127e4cee30c0f050b8013ac91fc8c993fb4d6558cc058015c888b734d16483a8' '/tmp/reference-workspace.patch' | sha256sum -c -
-          git apply --check /tmp/reference-workspace.patch
-      - name: Apply source changes
+      - name: Apply source changes from exact blob preimages
         run: |
-          git apply /tmp/reference-workspace.patch
+          git apply --3way /tmp/reference-workspace.patch
           git diff --check
       - name: Commit clean workspace implementation
         run: |
