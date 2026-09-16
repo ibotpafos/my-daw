@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$(mktemp -d "${TMPDIR:-/tmp}/my-daw-transforms.XXXXXX")"
 trap 'rm -rf "$BUILD"' EXIT
 CORE_SOURCES=()
-for FILE in Model Timing Edits Transforms Harmony; do
+for FILE in Model Timing Edits Transforms Harmony NoteIndex; do
   CORE_SOURCES+=("$ROOT/apps/macos/PianoRoll/PianoRoll$FILE.swift")
 done
 swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
