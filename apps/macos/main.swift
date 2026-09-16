@@ -400,6 +400,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     // луп-записи; флаг живёт в мосте как метроном, в проект не пишется.
     var recordMonitorOn = false
     let recordMonitorButton = NSButton(title: "MON", target: nil, action: nil)
+    // Автоматический мониторинг при вооружении дорожки: по умолчанию включён.
+    var autoMonitorOnArm = true
+    let autoMonitorButton = NSButton(title: "AUTO", target: nil, action: nil)
     // MIDI-захват: открыт ли вход и идёт ли тейк — вопросы моста, здесь кэш
     // показаний daw_midi_input_active/daw_midi_record_status для инспектора.
     var midiInputID: UInt32 = 0
@@ -591,6 +594,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         recordMonitorButton.toolTip = "Мониторинг входа: прямой сигнал микрофона в наушники во время записи"
         recordMonitorButton.setAccessibilityLabel("Кнопка мониторинга входа")
         recordMonitorButton.setAccessibilityHelp("Включает слышимость входа только во время луп-записи: моно-сигнал подаётся в оба канала с unity-уровнем до эффектов и без затухания. Одиночный входной захват его игнорирует.")
+        autoMonitorButton.setButtonType(.toggle)
+        autoMonitorButton.font = .systemFont(ofSize: 10, weight: .semibold)
+        autoMonitorButton.target = self; autoMonitorButton.action = #selector(toggleAutoMonitorOnArm(_:))
+        autoMonitorButton.toolTip = "Авто-мониторинг: при вооружении дорожки вход автоматически слышен"
+        autoMonitorButton.setAccessibilityLabel("Кнопка авто-мониторинга")
+        autoMonitorButton.setAccessibilityHelp("Когда включено, вооружение дорожки автоматически включает мониторинг входа (MON). Позволяет сразу слышать микрофон при начале записи.")
+        syncAutoMonitorButton()
         metronomeButton.target = self; metronomeButton.action = #selector(toggleMetronome(_:)); metronomeButton.setButtonType(.toggle)
         metronomeButton.toolTip = "Метроном: клик только в мониторинге, в экспорт не попадает"; metronomeButton.setAccessibilityHelp("Переключает клик метронома в живом звуке. Флаг принадлежит сессии, поэтому следующий play подхватит его без повтора. В проект не сохраняется.")
         styleIconButton(importButton, icon: .importAudio);styleIconButton(addTrackButton, icon: .addTrack);styleIconButton(addBusButton, icon: .addBus);styleIconButton(workflowButton, icon: .workflow)
@@ -656,7 +666,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let arrangementSplit=NSSplitView();self.arrangementInspectorSplit=arrangementSplit;arrangementSplit.delegate=self;arrangementSplit.isVertical=true;arrangementSplit.dividerStyle = .thin;arrangementSplit.addArrangedSubview(trackTimelineSplit);arrangementSplit.addArrangedSubview(inspectorBrowser)
         let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
-        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton,recordMonitorButton]);transportControls.spacing=4;transportControls.alignment = .centerY
+        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton,recordMonitorButton,autoMonitorButton]);transportControls.spacing=4;transportControls.alignment = .centerY
         let statusBar=NSStackView(views:[summary,status,gridLabel,flexibleSpace(),transportControls,transportLabel,positionLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
         summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
         gridLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
@@ -969,6 +979,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время луп-записи" : "Мониторинг входа выключен"
     }
     func syncRecordMonitorButton() { recordMonitorButton.state = recordMonitorOn ? .on : .off }
+    @objc func toggleAutoMonitorOnArm(_ sender: NSButton) {
+        let wanted: Int32 = autoMonitorOnArm ? 0 : 1
+        guard check(daw_set_auto_monitor_on_arm(session, wanted)) else { syncAutoMonitorButton(); return }
+        autoMonitorOnArm = wanted != 0
+        syncAutoMonitorButton()
+        status.stringValue = autoMonitorOnArm ? "Авто-мониторинг включён" : "Авто-мониторинг выключен"
+    }
+    func syncAutoMonitorButton() { autoMonitorButton.state = autoMonitorOnArm ? .on : .off }
     @objc func toggleMetronome(_ sender: NSButton) {
         let wanted: Int32 = metronomeOn ? 0 : 1
         guard check(daw_set_metronome(session, wanted)) else { syncMetronomeButton(); return }
@@ -1280,7 +1298,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(92+laneCount*48)
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
-            header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
+            header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;if armed{var auto:Int32=0;if daw_get_auto_monitor_on_arm(self?.session,&auto)==0,auto==1{var mon:Int32=0;if daw_get_record_monitor(self?.session,&mon)==0,mon==0{_=daw_set_record_monitor(self?.session,1)}}};self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
             header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }

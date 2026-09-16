@@ -546,6 +546,10 @@ int daw_get_record_preroll(daw_session*, uint64_t* preroll_frames);
  * Session-scoped like pre-roll; 0 is the default. */
 int daw_set_record_monitor(daw_session*, int32_t on);
 int daw_get_record_monitor(daw_session*, int32_t* on);
+/* Auto-enable monitoring when arming a track (default: on). Session-scoped,
+   not persisted in project. */
+int daw_set_auto_monitor_on_arm(daw_session*, int32_t on);
+int daw_get_auto_monitor_on_arm(daw_session*, int32_t* on);
 int daw_set_metronome(daw_session*, int32_t on);
 int daw_get_metronome(daw_session*, int32_t* on);
 /* Project tempo and time-signature maps: ordered by 48 kHz frame, frame-0

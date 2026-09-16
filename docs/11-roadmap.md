@@ -44,6 +44,8 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.67.0](33-full-duplex-loop-recording.md) — авто-мониторинг при вооружении: флаг `autoMonitorOnArm`, кнопка AUTO, автоматическое включение MON.
+
 [1.66.0](35-routing-buses-sends.md) — группировка дорожек в шину из UI: создание шины и маршрутизация «Группировка в шину…» в шапке.
 
 [1.65.0](25-offline-export.md) — диалог стемов со списком чекбоксов всех дорожек: часть — фильтр id, всё — легаси-вызов.

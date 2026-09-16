@@ -291,6 +291,13 @@ int main(void) {
     if (daw_get_record_monitor(session, &monitor) != 0 || monitor != 1) result |= 1;
     if (daw_get_record_monitor(session, NULL) == 0) result |= 1;
     if (daw_set_record_monitor(session, 0) != 0) result |= 1;
+    /* Auto-monitor on arm: only 0/1 legal, getter mirrors, NULL rejects. */
+    if (daw_set_auto_monitor_on_arm(session, 2) == 0) result |= 1;
+    if (daw_set_auto_monitor_on_arm(session, 0) != 0) result |= 1;
+    int32_t autoMon = 1;
+    if (daw_get_auto_monitor_on_arm(session, &autoMon) != 0 || autoMon != 0) result |= 1;
+    if (daw_get_auto_monitor_on_arm(session, NULL) == 0) result |= 1;
+    if (daw_set_auto_monitor_on_arm(session, 1) != 0) result |= 1;
     /* Bus grouping rejects NULL arguments and an empty name. */
     uint64_t group_bus = 0;
     if (daw_create_bus(session, NULL, &group_bus, r + 3) == 0) result |= 1;

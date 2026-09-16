@@ -90,6 +90,7 @@ struct daw_session {
     bool metronomeEnabled=false;
     uint64_t recordPrerollFrames=0;
     bool recordMonitor=false;
+    bool autoMonitorOnArm=true;  /* arm → auto-enable input monitoring */
     char error[512] = {};
 };
 struct daw_save_job { std::shared_ptr<daw::SaveResult> result; };
@@ -917,6 +918,11 @@ int daw_set_record_preroll(daw_session* s,uint64_t frames){return guard(s,[&]{
 int daw_get_record_preroll(daw_session* s,uint64_t* out){return guard(s,[&]{if(!out)throw daw::Error("Pre-roll output required");*out=s->recordPrerollFrames;});}
 int daw_set_record_monitor(daw_session* s,int32_t on){return guard(s,[&]{if(on!=0&&on!=1)throw daw::Error("Record monitor must be 0 or 1");s->recordMonitor=on!=0;});}
 int daw_get_record_monitor(daw_session* s,int32_t* out){return guard(s,[&]{if(!out)throw daw::Error("Monitor output required");*out=s->recordMonitor?1:0;});}
+int daw_set_auto_monitor_on_arm(daw_session* s,int32_t on){return guard(s,[&]{
+    if(on!=0&&on!=1)throw daw::Error("Auto-monitor must be 0 or 1");
+    s->autoMonitorOnArm=on!=0;
+});}
+int daw_get_auto_monitor_on_arm(daw_session* s,int32_t* out){return guard(s,[&]{if(!out)throw daw::Error("Auto-monitor output required");*out=s->autoMonitorOnArm?1:0;});}
 int daw_set_metronome(daw_session* s,int32_t on){return guard(s,[&]{
     if(on!=0&&on!=1)throw daw::Error("Metronome must be 0 or 1");
     s->metronomeEnabled=on!=0;
