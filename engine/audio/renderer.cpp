@@ -737,6 +737,12 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   busOutputs = std::move(nextBusOutputs);
   busOrder = std::move(nextBusOrder);
   sends = std::move(nextSends);
+  for (size_t i = 0; i < sends.size(); ++i) {
+    sendGainTargets[i].store(sends[i].gain, std::memory_order_relaxed);
+    smoothSendGains[i] = sends[i].gain;
+    sendTrackIDs[i] = state.tracks[sends[i].track].id;
+    sendBusIDs[i] = state.buses[sends[i].bus].id;
+  }
   sendRanges = std::move(nextSendRanges);
   trackMainPdc = std::move(nextTrackPdc);
   sendPdc = std::move(nextSendPdc);
@@ -854,6 +860,16 @@ void Renderer::updateMix(const State &state) noexcept {
     busPans[i].store(float(b.pan));
     busGates[i].store(gate);
   }
+  // Lookup is control-thread-only, by stable IDs rather than labels/ordinals.
+  for (size_t i = 0; i < sends.size(); ++i) {
+    const auto track = std::find_if(state.tracks.begin(), state.tracks.end(),
+        [&](const auto& t) { return t.id == sendTrackIDs[i]; });
+    if (track == state.tracks.end()) continue;
+    const auto send = std::find_if(track->sends.begin(), track->sends.end(),
+        [&](const auto& s) { return s.bus == sendBusIDs[i]; });
+    if (send != track->sends.end() && send->preFader == sends[i].preFader)
+      sendGainTargets[i].store(gain(send->gain), std::memory_order_relaxed);
+  }
   masterGain.store(gain(state.masterGain));
 }
 
@@ -940,7 +956,9 @@ void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
                                                : postL,
                      sendR = sends[s].preFader ? inR * smoothPreFaderGate[track]
                                                : postR;
-          sendPdc[s].process(sendL * sends[s].gain, sendR * sends[s].gain,
+          smoothSendGains[s] += (sendGainTargets[s].load(std::memory_order_relaxed)
+                                - smoothSendGains[s]) * 0.004166667f;
+          sendPdc[s].process(sendL * smoothSendGains[s], sendR * smoothSendGains[s],
                              routeL, routeR);
           busBlockLeft[sends[s].bus * kRenderBlockFrames + f] += routeL;
           busBlockRight[sends[s].bus * kRenderBlockFrames + f] += routeR;
@@ -1153,7 +1171,9 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
                                                : postL,
                      sendR = sends[s].preFader ? inR * smoothPreFaderGate[track]
                                                : postR;
-          sendPdc[s].process(sendL * sends[s].gain, sendR * sends[s].gain,
+          smoothSendGains[s] += (sendGainTargets[s].load(std::memory_order_relaxed)
+                                - smoothSendGains[s]) * 0.004166667f;
+          sendPdc[s].process(sendL * smoothSendGains[s], sendR * smoothSendGains[s],
                              routeL, routeR);
           busBlockLeft[sends[s].bus * kRenderBlockFrames + f] += routeL;
           busBlockRight[sends[s].bus * kRenderBlockFrames + f] += routeR;

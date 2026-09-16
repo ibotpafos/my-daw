@@ -312,9 +312,21 @@ int daw_remove_track(daw_session*, uint64_t track_id, uint64_t expected_revision
  * successful no-op and does not advance the revision. */
 int daw_move_track(daw_session*, uint64_t track_id, uint32_t new_index, uint64_t expected_revision);
 int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expected_revision);
+/* Scalar mixer gesture; one history entry at end, zero at cancel/no-op.
+ * begin/end take the same revision. Snapshot/save read committed state during
+ * preview. Mutations and nested gestures reject until end/cancel. Main-thread
+ * API: previews publish atomic targets to an already prepared renderer. */
+enum { DAW_MIXER_TRACK_GAIN=1, DAW_MIXER_TRACK_PAN=2, DAW_MIXER_BUS_GAIN=3,
+       DAW_MIXER_MASTER_GAIN=4, DAW_MIXER_BUS_PAN=5, DAW_MIXER_SEND_GAIN=6 };
+int daw_begin_mixer_gesture(daw_session*,int32_t target,uint64_t id,uint64_t send_bus_id,uint64_t expected_revision);
+int daw_write_mixer_gesture(daw_session*,double value);
+int daw_end_mixer_gesture(daw_session*,uint64_t expected_revision);
+void daw_cancel_mixer_gesture(daw_session*);
 int daw_set_gain(daw_session*, uint64_t id, double gain_db, uint64_t expected_revision);
 int daw_set_pan(daw_session*,uint64_t id,double pan,uint64_t expected_revision);
 int daw_set_mute(daw_session*,uint64_t id,int32_t muted,uint64_t expected_revision);
+/* Exclusive solo (id=0,solo=0 clears all): one revision, one Undo entry. */
+int daw_set_solo_exclusive(daw_session*,uint64_t id,int32_t solo,uint64_t expected_revision);
 int daw_set_solo(daw_session*,uint64_t id,int32_t solo,uint64_t expected_revision);
 int daw_set_master_gain(daw_session*,double gain_db,uint64_t expected_revision);
 int daw_add_bus(daw_session*,const char* name,uint64_t expected_revision);

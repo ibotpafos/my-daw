@@ -14,6 +14,7 @@ struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operato
 // Ordered timeline points for the track fader. Frames are project frames at
 // the fixed 48 kHz session rate; an empty lane means the static track gain.
 struct AutomationPoint { uint64_t frame=0; double gainDb=0; bool operator==(const AutomationPoint&) const = default; };
+enum class MixerEditTarget : uint8_t { TrackGain=1, TrackPan=2, BusGain=3, MasterGain=4, BusPan=5, SendGain=6 };
 enum class AutomationTarget : uint8_t { TrackVolume=1, TrackPan=2, BusGain=3, MasterGain=4 };
 enum class AutomationWriteMode : uint8_t { Touch=1, Latch=2 };
 enum class PluginOwner : uint8_t { Track=1, Bus=2, Master=3 };
@@ -166,6 +167,14 @@ public:
     // A gesture isolates high-rate fader writes from the authoritative State.
     // It validates every sample but performs exactly one commit/Undo entry at
     // end. Latch writes a terminal hold point at endFrame; Touch does not.
+    // A scalar control gesture previews privately and commits one Undo entry.
+    void exclusiveSolo(uint64_t id,bool solo,uint64_t expected);
+    void beginMixerGesture(MixerEditTarget,uint64_t id,uint64_t busID,uint64_t expected);
+    void writeMixerGesture(double value);
+    void endMixerGesture(uint64_t expected);
+    void cancelMixerGesture() noexcept;
+    const State& mixerPreview() const noexcept;
+    bool mixerGestureActive() const noexcept;
     void beginAutomationGesture(AutomationTarget target,uint64_t targetID,AutomationWriteMode mode,uint64_t expected);
     void writeAutomationGesture(uint64_t frame,double value);
     void endAutomationGesture(uint64_t endFrame,uint64_t expected);
@@ -282,6 +291,8 @@ private:
     std::vector<State> past, future;
     struct AutomationGesture { AutomationTarget target; uint64_t targetID; AutomationWriteMode mode; uint64_t baseRevision; State working; bool hasWritten=false; uint64_t lastFrame=0; double lastValue=0; };
     struct PluginParameterAutomationGesture { PluginOwner owner; uint64_t ownerID; uint64_t pluginID; uint32_t parameterID; std::string name; AutomationWriteMode mode; uint64_t baseRevision; State working; bool hasWritten=false; bool changed=false; uint64_t lastFrame=0; double lastValue=0; };
+    struct MixerGesture { MixerEditTarget target; uint64_t targetID,sendBusID,baseRevision; State working; double initialValue; };
+    std::optional<MixerGesture> mixerGesture;
     std::optional<AutomationGesture> gesture;
     std::optional<PluginParameterAutomationGesture> pluginParameterGesture;
     void check(uint64_t expected) const;

@@ -11,6 +11,7 @@
 #include "audio/plugin_parameters.hpp"
 #include "audio/analysis.hpp"
 #include "plugins/plugin_descriptor.hpp"
+#include "platform/macos/vst3_scan_cache.hpp"
 #include "export/dawproject_export.hpp"
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
@@ -145,6 +146,7 @@ void cancelStalePlaybackPreparation(daw_session* s) noexcept {
     if(s->playbackPreparation)invalidatePlaybackPreparation(s);
 }
 void beginPlaybackPreparation(daw_session* s) {
+    if(s->model.mixerGestureActive())throw daw::Error("Finish the mixer gesture before starting playback");
     invalidatePlaybackPreparation(s);
     if(s->selectedFrame>=duration(s))s->selectedFrame=0;
     if(s->output){
@@ -277,6 +279,7 @@ struct VocalPlan { std::vector<uint64_t> ids;std::vector<daw::TrackAnalysis> ana
 double amplitudeDb(double value){return value>0?std::max(-120.0,20.0*std::log10(value)):-120.0;}
 VocalPlan vocalPlan(daw_session* s,const uint64_t* selected,uint32_t count,const char* base,double targetRms,double peakCeiling,double doubleOffset,uint64_t revision){if(!selected||count==0||count>32)throw daw::Error("Vocal workflow requires 1–32 selected tracks");if(!std::isfinite(targetRms)||targetRms < -60||targetRms > -6||!std::isfinite(peakCeiling)||peakCeiling < -18||peakCeiling > 0||!std::isfinite(doubleOffset)||doubleOffset < -24||doubleOffset > 0)throw daw::Error("Vocal workflow targets are outside their ranges");VocalPlan plan;plan.ids.assign(selected,selected+count);std::vector<daw::VocalGainSuggestion> suggestions;plan.analyses.reserve(count);suggestions.reserve(count);for(uint32_t index=0;index<count;++index){const auto analysis=daw::analyzeTrack(s->model.state(),selected[index]);plan.analyses.push_back(analysis);const auto peak=amplitudeDb(std::max(analysis.peakLeft,analysis.peakRight));const auto rms=amplitudeDb(std::sqrt((double(analysis.rmsLeft)*analysis.rmsLeft+double(analysis.rmsRight)*analysis.rmsRight)*0.5));const auto roleOffset=index==0?0.0:doubleOffset;const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==selected[index];});double proposed=analysis.analyzedFrames==0?track->gain:std::min(targetRms+roleOffset-rms,peakCeiling-peak);suggestions.push_back({selected[index],std::clamp(proposed,-120.0,24.0)});}plan.operations=daw::prepareVocalTracks(s->model.state(),plan.ids,required(base),suggestions);plan.preview=s->model.previewWorkflow(plan.operations,revision);return plan;}
 void startRecording(daw_session* s,uint64_t startFrame,const char* recoveryPath,uint64_t target){
+    if(s->model.mixerGestureActive())throw daw::Error("Finish the mixer gesture before recording");
     if(recordingActive(s))throw daw::Error("Recording is already active");if(startFrame>=48000*600)throw daw::Error("Recording position must be before the 10 minute timeline limit");
     invalidatePlaybackPreparation(s);
     size_t audioTracks=0,audioAssets=0,audioBytes=0;const daw::Track* targetTrack=nullptr;for(const auto& track:s->model.state().tracks)if(track.audio){++audioTracks;++audioAssets;audioBytes+=track.audio->samples().size()*sizeof(float);for(const auto& take:track.takes){++audioAssets;audioBytes+=take.audio->samples().size()*sizeof(float);}if(track.id==target)targetTrack=&track;}
@@ -460,9 +463,37 @@ int daw_add_track(daw_session* s,const char* name,uint64_t rev) { return guard(s
 int daw_remove_track(daw_session* s,uint64_t id,uint64_t rev) { return guard(s,[&]{s->model.removeTrack(id,rev);resetTransport(s);}); }
 int daw_move_track(daw_session* s,uint64_t id,uint32_t index,uint64_t rev) { return guard(s,[&]{s->model.moveTrack(id,index,rev);resetTransport(s);}); }
 int daw_rename_track(daw_session* s,uint64_t id,const char* name,uint64_t rev) { return guard(s,[&]{s->model.rename(id,required(name),rev);cancelStalePlaybackPreparation(s);}); }
+int daw_begin_mixer_gesture(daw_session* s,int32_t target,uint64_t id,uint64_t bus,uint64_t rev) {
+    return guard(s,[&]{
+        if(recordingActive(s))throw daw::Error("Stop recording before editing the mixer");
+        if(target<DAW_MIXER_TRACK_GAIN||target>DAW_MIXER_SEND_GAIN)throw daw::Error("Invalid mixer target");
+        s->model.beginMixerGesture(static_cast<daw::MixerEditTarget>(target),id,bus,rev);
+        cancelStalePlaybackPreparation(s);
+    });
+}
+int daw_write_mixer_gesture(daw_session* s,double value) {
+    return guard(s,[&]{s->model.writeMixerGesture(value);
+        if(s->output)s->output->renderer.updateMix(s->model.mixerPreview());
+    });
+}
+int daw_end_mixer_gesture(daw_session* s,uint64_t rev) {
+    return guard(s,[&]{s->model.endMixerGesture(rev);cancelStalePlaybackPreparation(s);
+        if(s->output)s->output->renderer.updateMix(s->model.state());
+    });
+}
+void daw_cancel_mixer_gesture(daw_session* s) {
+    if(!s)return;
+    s->model.cancelMixerGesture();
+    if(s->output)s->output->renderer.updateMix(s->model.state());
+}
 int daw_set_gain(daw_session* s,uint64_t id,double gain,uint64_t rev) { return guard(s,[&]{s->model.gain(id,gain,rev);cancelStalePlaybackPreparation(s);if(s->output) s->output->renderer.updateMix(s->model.state());}); }
 int daw_set_pan(daw_session* s,uint64_t id,double pan,uint64_t rev){return guard(s,[&]{s->model.pan(id,pan,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_mute(daw_session* s,uint64_t id,int32_t muted,uint64_t rev){return guard(s,[&]{if(muted!=0&&muted!=1)throw daw::Error("Mute must be 0 or 1");s->model.mute(id,muted,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
+int daw_set_solo_exclusive(daw_session* s,uint64_t id,int32_t solo,uint64_t rev){return guard(s,[&]{
+    if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");
+    s->model.exclusiveSolo(id,solo!=0,rev);cancelStalePlaybackPreparation(s);
+    if(s->output)s->output->renderer.updateMix(s->model.state());
+});}
 int daw_set_solo(daw_session* s,uint64_t id,int32_t solo,uint64_t rev){return guard(s,[&]{if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");s->model.solo(id,solo,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_master_gain(daw_session* s,double gain,uint64_t rev){return guard(s,[&]{s->model.masterGain(gain,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_add_bus(daw_session* s,const char* name,uint64_t rev){return guard(s,[&]{s->model.addBus(required(name),rev);resetTransport(s);});}
@@ -481,9 +512,19 @@ int daw_create_bus(daw_session* s,const char* name,uint64_t* out_bus_id,uint64_t
     cancelStalePlaybackPreparation(s);
 });}
 int daw_get_bus_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Bus count output required");*count=(uint32_t)s->model.state().buses.size();});}
-int daw_delete_bus(daw_session* s,uint64_t id,uint64_t rev){return guard(s,[&]{s->model.deleteBus(id,rev);cancelStalePlaybackPreparation(s);});}
+int daw_delete_bus(daw_session* s,uint64_t id,uint64_t rev){return guard(s,[&]{s->model.deleteBus(id,rev);resetTransport(s);});}
 int daw_get_send(daw_session* s,uint64_t trackID,uint32_t index,daw_send* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_send))throw daw::Error("Send ABI mismatch");const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==s->model.state().tracks.end()||index>=track->sends.size())throw daw::Error("Send index out of range");const auto& send=track->sends[index];*out={sizeof(daw_send),send.bus,send.gain,send.preFader?1:0};});}
-int daw_upsert_send(daw_session* s,uint64_t track,uint64_t bus,double gain,int32_t pre,uint64_t rev){return guard(s,[&]{if(pre!=0&&pre!=1)throw daw::Error("Send tap must be 0 or 1");s->model.upsertSend(track,bus,gain,pre!=0,rev);resetTransport(s);});}
+int daw_upsert_send(daw_session* s,uint64_t track,uint64_t bus,double gain,int32_t pre,uint64_t rev){return guard(s,[&]{
+    if(pre!=0&&pre!=1)throw daw::Error("Send tap must be 0 or 1");
+    bool scalarOnly=false;
+    for(const auto& t:s->model.state().tracks)if(t.id==track)
+        for(const auto& send:t.sends)if(send.bus==bus)scalarOnly=send.preFader==(pre!=0);
+    const auto before=s->model.state().revision;
+    s->model.upsertSend(track,bus,gain,pre!=0,rev);
+    if(before==s->model.state().revision)return;
+    if(scalarOnly){cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());}
+    else resetTransport(s);
+});}
 int daw_remove_send(daw_session* s,uint64_t track,uint64_t bus,uint64_t rev){return guard(s,[&]{s->model.removeSend(track,bus,rev);resetTransport(s);});}
 int daw_get_track_volume_automation_count(daw_session* s,uint64_t trackID,uint32_t* count){return guard(s,[&]{
     if(!count)throw daw::Error("Missing automation point count");const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});
@@ -810,6 +851,7 @@ int daw_get_midi_input_device(daw_session* s,uint32_t index,daw_midi_device* out
     *out={};out->struct_size=sizeof(daw_midi_device);out->version=DAW_MIDI_DEVICE_VERSION;
     out->uniqueID=device.uniqueID;out->online=device.online?1:0;copyText(out->name,device.name);
 #else
+    (void)index;
     throw daw::Error("MIDI input requires macOS");
 #endif
 });}
@@ -1083,7 +1125,7 @@ int daw_poll_dawproject_export(daw_dawproject_job* job,daw_dawproject_status* ou
 void daw_cancel_dawproject_export(daw_dawproject_job* job){if(job)job->result->cancel.store(true,std::memory_order_release);}
 void daw_release_dawproject_export(daw_dawproject_job* job){delete job;}
 int daw_save_draft(daw_session* s,const char* path) { return guard(s,[&]{daw::writeDraft(s->model.state(),required(path));}); }
-int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();closeMidiCapture(s);s->midiRecorder.reset();s->midiClipStart=0;s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
+int daw_open_draft(daw_session* s,const char* path) { return guard(s,[&]{if(s->model.mixerGestureActive())throw daw::Error("Finish the mixer gesture before opening a project");auto loaded=daw::readDraft(required(path));if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}invalidatePlaybackPreparation(s);s->recordTarget=0;s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;s->output.reset();s->vst3ParameterCache.reset();closeMidiCapture(s);s->midiRecorder.reset();s->midiClipStart=0;s->model.replace(std::move(loaded));++s->projectEpoch;s->selectedFrame=0;}); }
 namespace {
 daw_import_job* beginImport(daw_session* s,const char* path,const char* name,uint64_t baseRevision,ImportIntent intent,ImportFormat format,uint64_t trackID,uint64_t startFrame) {
     daw_import_job* job=nullptr;

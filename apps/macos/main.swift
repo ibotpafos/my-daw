@@ -328,6 +328,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let automationArmPopup = NSPopUpButton()
     var automationMode: Int32 = 0 // 0 Read, 1 Touch, 2 Latch
     var automationArm: (target: Int32, id: UInt64)?
+    var consoleGesture: (automation: Bool, revision: UInt64)?
     var automationGesture: (target: Int32, id: UInt64)?
     var automationTargets: [(target: Int32, id: UInt64, title: String)] = []
     var rangeStart: UInt64?
@@ -487,6 +488,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.contentView?.layoutSubtreeIfNeeded()
     }
     func applyWorkspaceMode(_ mode: Int) {
+        mixerWorkspace.resetFocus()
+        arrangementInspectorSplit?.isHidden = false
         guard let arrangementInspectorSplit, let arrangementConsoleSplit else { return }
         restoringWorkspaceLayout = true
         defer { restoringWorkspaceLayout = false }
@@ -659,7 +662,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let consoleHeader=NSStackView(views:[mixerHeading,mixerSummary,flexibleSpace(),consoleDetailsButton]);consoleHeader.spacing=10;consoleHeader.alignment = .centerY;consoleHeader.edgeInsets=NSEdgeInsets(top:5,left:9,bottom:4,right:8);consoleHeader.wantsLayer=true;consoleHeader.layer?.backgroundColor=DAWDesignTokens.Color.surface.withAlphaComponent(0.90).cgColor
         console.addArrangedSubview(consoleHeader);console.addArrangedSubview(mixerWorkspace);console.addArrangedSubview(consoleScroll)
         mixerWorkspace.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true;consoleScroll.widthAnchor.constraint(equalTo:console.widthAnchor).isActive=true
-        let mixerMinimumHeight=mixerWorkspace.heightAnchor.constraint(greaterThanOrEqualToConstant:240);mixerMinimumHeight.priority = .defaultHigh;mixerMinimumHeight.isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:180).isActive=true
+        let mixerMinimumHeight=mixerWorkspace.heightAnchor.constraint(greaterThanOrEqualToConstant:300);mixerMinimumHeight.priority = .defaultHigh;mixerMinimumHeight.isActive=true;consoleScroll.heightAnchor.constraint(equalToConstant:180).isActive=true
         mixerWorkspace.setContentHuggingPriority(.defaultLow,for:.vertical);mixerWorkspace.setContentCompressionResistancePriority(.defaultLow,for:.vertical)
         mixerWorkspace.toolTip="Горизонтальная консоль: inserts, sends, routing, pan, meter и fader. Выбери канал для Inspector; используй горизонтальную прокрутку для остальных полос."
         mixerWorkspace.setAccessibilityLabel("Консоль микшера: горизонтальные полосы каналов")
@@ -686,6 +689,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.onVolumeGestureEnd = { [weak self] _,_ in self?.mixerEndVolume() }
         mixerWorkspace.onPan = { [weak self] id,value in self?.mixerSetPan(id,value) }
         mixerWorkspace.onDeleteBus = { [weak self] id in self?.deleteBusWithConfirmation(id) }
+        configureMixerConsole()
         wireInspectorBrowser()
         setupRecovery()
         loadSupportedAudioUnits()
@@ -864,7 +868,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var plugin=daw_plugin();plugin.struct_size=UInt32(MemoryLayout<daw_plugin>.size)
             guard daw_get_insert(session,owner,ownerID,index,&plugin) == 0 else { return nil }
             let name=withUnsafeBytes(of:plugin.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)}
-            return MixerInsertSummary(name:name,bypassed:plugin.bypassed != 0 || plugin.available == 0)
+            return MixerInsertSummary(name:name,bypassed:plugin.bypassed != 0,id:plugin.id,available:plugin.available != 0,latencyFrames:plugin.latency_frames)
         }
     }
     func updateMixerInspector(_ id: UInt64) {
@@ -1192,7 +1196,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var send=daw_send();send.struct_size=UInt32(MemoryLayout<daw_send>.size)
             guard daw_get_send(session,trackID,index,&send) == 0 else { return nil }
             let destination=orderedBuses.first(where:{$0.id == send.bus_id})?.name ?? "Bus \(send.bus_id)"
-            return MixerSendSummary(destination:destination,gainDb:send.gain_db,preFader:send.pre_fader != 0)
+            return MixerSendSummary(destination:destination,gainDb:send.gain_db,preFader:send.pre_fader != 0,busID:send.bus_id)
         }
     }
     func loadSupportedAudioUnits(){
@@ -1289,7 +1293,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var panAutomationCount:UInt32=0;guard check(daw_get_track_pan_automation_count(session,track.id,&panAutomationCount))else{return};var panAutomationPoints:[(frame:UInt64,value:Double)]=[];for pointIndex in 0..<panAutomationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_pan_automation_point(session,track.id,pointIndex,&point))else{return};panAutomationPoints.append((point.frame,point.gain_db))};let panAutomation=button(panAutomationCount==0 ? "P AUTO":"P \(panAutomationCount)",#selector(editTrackPanAutomation(_:)));panAutomation.tag=Int(index);panAutomation.contentTintColor=panAutomationCount==0 ? .secondaryLabelColor:.systemPurple
             automationTargets.append((automationTrackVolume,track.id,"\(name) · Volume"));automationTargets.append((automationTrackPan,track.id,"\(name) · Pan"))
             let trackOutputName = orderedBuses.first(where: { $0.id == track.output_bus_id })?.name ?? "Main"
-            mixerKinds[track.id] = .track;mixerStrips.append(MixerStripModel(id:track.id,kind:.track,title:name,color:accent,volumeDb:track.gain_db,pan:track.pan,outputName:trackOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_TRACK),ownerID:track.id),sends:mixerSendSummaries(trackID:track.id,count:track.send_count),isSelected:selectedMixerID == track.id,isArmed:armedTrackID == track.id,isMuted:track.muted != 0,isSolo:track.solo != 0,isAutomationRead:automationMode == 0))
+            mixerKinds[track.id] = .track;mixerStrips.append(MixerStripModel(id:track.id,kind:.track,title:name,color:accent,volumeDb:track.gain_db,pan:track.pan,outputName:trackOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_TRACK),ownerID:track.id),sends:mixerSendSummaries(trackID:track.id,count:track.send_count),isSelected:selectedMixerID == track.id,isArmed:armedTrackID == track.id,isMuted:track.muted != 0,isSolo:track.solo != 0,isAutomationRead:automationMode == 0,outputID:track.output_bus_id,automationLabel:consoleAutomationLabel(.track,id:track.id)))
             remove.contentTintColor = .systemRed
             let output=routingPopup(selected:track.output_bus_id);output.target=self;output.action=#selector(changeOutput(_:));output.setAccessibilityLabel("Выход \(name)");outputTargets[ObjectIdentifier(output)]=(track.id,false)
             let addSend=NSPopUpButton();addSend.addItem(withTitle:"＋ Send…");addSend.lastItem?.representedObject=NSNumber(value:UInt64(0));for bus in orderedBuses{addSend.addItem(withTitle:bus.name);addSend.lastItem?.representedObject=NSNumber(value:bus.id)};addSend.target=self;addSend.action=#selector(addSend(_:));addSend.isEnabled = !orderedBuses.isEmpty;addSend.widthAnchor.constraint(equalToConstant:130).isActive=true;newSendTargets[ObjectIdentifier(addSend)]=track.id
@@ -1389,13 +1393,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             busControlTargets[ObjectIdentifier(mute)]=bus.id;busControlTargets[ObjectIdentifier(gainSlider)]=bus.id;busControlTargets[ObjectIdentifier(panSlider)]=bus.id
             automationTargets.append((automationBusGain,bus.id,"\(name) · Volume"))
             let busOutputName = orderedBuses.first(where: { $0.id == bus.output_bus_id })?.name ?? "Main"
-            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0))
+            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0,outputID:bus.output_bus_id,automationLabel:consoleAutomationLabel(.bus,id:bus.id)))
             let row=NSStackView(views:[badge,mute,field,flexibleSpace(),label("VOL",size:10,color:.tertiaryLabelColor),gainSlider,gainValue,busAutomation,label("PAN",size:10,color:.tertiaryLabelColor),panSlider,panValue,label("OUT",size:10,color:.tertiaryLabelColor),output]);row.spacing=7;row.edgeInsets=NSEdgeInsets(top:7,left:10,bottom:7,right:10);row.wantsLayer=true;row.layer?.backgroundColor=NSColor(calibratedRed:0.16,green:0.10,blue:0.22,alpha:0.18).cgColor;row.layer?.cornerRadius=2
             let group=NSStackView();group.orientation = .vertical;group.alignment = .leading;group.spacing = 2;group.addArrangedSubview(row);row.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id,title:name);group.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             consoleRows.addArrangedSubview(group);group.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
-        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
+        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording;mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
         exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
         dawprojectButton.isEnabled = !exportBusy && !isRecording
@@ -1509,7 +1513,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func toggleInsertDisclosure(_ sender: NSButton) { guard let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return};let key=insertOwnerKey(target.owner,target.ownerID);if expandedInsertOwners.contains(key){expandedInsertOwners.remove(key)}else{expandedInsertOwners.insert(key)};refresh() }
     @objc func addOwnerInsert(_ sender: NSButton) {
-        guard !isRecording,let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return};let choices=auCatalog.map{("AU · \($0.name)",false,$0.type,$0.subtype,$0.manufacturer,UInt32(0))}+vst3Catalog.filter{$0.available}.map{("\($0.instrument ? "🎹 ":"")VST3 · \($0.name)\($0.vendor.isEmpty ? "":" — \($0.vendor)")",true,UInt32(0),UInt32(0),UInt32(0),$0.index)}
+        guard !isRecording,let target=insertDisclosureTargets[ObjectIdentifier(sender)] else{return}
+        addInsertOnChannel(owner:target.owner,ownerID:target.ownerID,title:target.title)
+    }
+    func addInsertOnChannel(owner:Int32,ownerID:UInt64,title:String) {
+        guard !isRecording else { return }
+        let target=(owner:owner,ownerID:ownerID,title:title)
+        let choices=auCatalog.map{("AU · \($0.name)",false,$0.type,$0.subtype,$0.manufacturer,UInt32(0))}+vst3Catalog.filter{$0.available}.map{("\($0.instrument ? "🎹 ":"")VST3 · \($0.name)\($0.vendor.isEmpty ? "":" — \($0.vendor)")",true,UInt32(0),UInt32(0),UInt32(0),$0.index)}
         guard !choices.isEmpty else{storageMessage("Сначала отсканируй AU или VST3 плагины.");return};let popup=NSPopUpButton();for choice in choices{popup.addItem(withTitle:choice.0)};popup.widthAnchor.constraint(equalToConstant:440).isActive=true;let alert=NSAlert();alert.messageText="Добавить insert: \(target.title)";alert.informativeText="Плагин создаётся на выбранной полосе.";alert.accessoryView=popup;alert.addButton(withTitle:"Добавить");alert.addButton(withTitle:"Отмена");guard alert.runModal() == .alertFirstButtonReturn else{return};let choice=choices[popup.indexOfSelectedItem];_ = daw_stop(session);let result=choice.1 ? daw_add_insert_vst3(session,target.owner,target.ownerID,choice.5,revision):daw_add_insert_au(session,target.owner,target.ownerID,choice.2,choice.3,choice.4,revision);if check(result){expandedInsertOwners.insert(insertOwnerKey(target.owner,target.ownerID));refresh();pollTransport()}
     }
     @objc func toggleOwnerInsert(_ sender:NSButton){guard !isRecording,let target=insertControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_set_insert_bypass(session,target.owner,target.ownerID,target.id,target.bypassed ? 0:1,revision)){refresh();pollTransport()}}
@@ -1519,6 +1529,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func changeInsertHostingMode(_ sender:NSPopUpButton){guard !isRecording,let target=insertHostingTargets[ObjectIdentifier(sender)],let mode=(sender.selectedItem?.representedObject as? NSNumber)?.uint32Value else{return};_=daw_stop(session);if check(daw_set_insert_hosting_mode(session,target.owner,target.ownerID,target.id,mode,revision)){refresh();pollTransport()}}
     @objc func editOwnerInsert(_ sender:NSButton){
         guard !isRecording,let target=insertEditorTargets[ObjectIdentifier(sender)]else{return}
+        editInsertOnChannel(owner:target.owner,ownerID:target.ownerID,id:target.id,isolatedVST3:target.isolatedVST3)
+    }
+    func editInsertOnChannel(owner:Int32,ownerID:UInt64,id:UInt64,isolatedVST3:Bool) {
+        guard !isRecording else { return }
+        let target=(owner:owner,ownerID:ownerID,id:id,isolatedVST3:isolatedVST3)
         var hosting=daw_insert_hosting_status();hosting.struct_size=UInt32(MemoryLayout<daw_insert_hosting_status>.size)
         guard daw_get_insert_hosting_status(session,target.owner,target.ownerID,target.id,&hosting) == 0 else{return}
         let isolated=hosting.selected_mode == UInt32(DAW_INSERT_HOSTING_MODE_OUT_OF_PROCESS)
@@ -1597,30 +1612,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerEndVolume(){if automationGesture != nil{endAutomationGesture()}else{refresh()}}
     func mixerSetPan(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_pan(session,id,value,revision)){syncRevision()};case .bus:if check(daw_set_bus_pan(session,id,value,revision)){syncRevision()};case .master:return}}
     func mixerSetMute(_ id:UInt64,_ muted:Bool){guard let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
-    func mixerSetSolo(_ id:UInt64,_ solo:Bool){
-        guard let kind=mixerKinds[id] else { return }
-        if case .track = kind {
-            // Option+click solo: exclusive solo (only this track)
-            if NSEvent.modifierFlags.contains(.option) {
-                // Unsolo all tracks first
-                for (trackID, trackKind) in mixerKinds {
-                    if case .track = trackKind {
-                        _ = check(daw_set_solo(session, trackID, 0, revision))
-                    }
-                }
-                // If we're turning solo ON, then solo this track
-                if solo {
-                    if check(daw_set_solo(session, id, 1, revision)) { refresh() }
-                } else {
-                    refresh()
-                }
-            } else {
-                // Normal solo toggle
-                if check(daw_set_solo(session, id, solo ? 1 : 0, revision)) { refresh() }
-            }
-        }
+    func mixerSetSolo(_ id:UInt64,_ solo:Bool) {
+        guard !isRecording,mixerKinds[id] == .track else { return }
+        let result = NSEvent.modifierFlags.contains(.option)
+            ? daw_set_solo_exclusive(session,id,solo ? 1:0,revision)
+            : daw_set_solo(session,id,solo ? 1:0,revision)
+        if check(result) { refresh() }
     }
     func setProjectControlsEnabled(_ enabled: Bool) {
+        mixerWorkspace.editingEnabled = enabled
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
             if let button = view as? NSButton, button !== recordButton, button !== metronomeButton { button.isEnabled = enabled }

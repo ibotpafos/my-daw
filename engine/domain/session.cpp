@@ -259,6 +259,7 @@ std::vector<WorkflowOperation> prepareVocalTracks(const State& state,const std::
     return batch;
 }
 void Session::check(uint64_t expected) const {
+    if(mixerGesture)throw Error("Mixer gesture is active");
     if(gesture||pluginParameterGesture)throw Error("Automation gesture is active");
     if (expected != current.revision) throw Error("Revision conflict: refresh the project");
 }
@@ -855,5 +856,5 @@ void Session::redo(uint64_t expected) {
     next.nextID = current.nextID; validate(next);
     past.push_back(current); future.pop_back(); current = std::move(next);
 }
-void Session::replace(State state) { if(gesture||pluginParameterGesture)throw Error("Automation gesture is active");validate(state); current = std::move(state); past.clear(); future.clear(); }
+void Session::replace(State state) { if(mixerGesture)throw Error("Mixer gesture is active"); if(gesture||pluginParameterGesture)throw Error("Automation gesture is active");validate(state); current = std::move(state); past.clear(); future.clear(); }
 }
