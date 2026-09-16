@@ -300,7 +300,8 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         // The meter and fader have different scales. Explicitly label each.
         let attrs: [NSAttributedString.Key:Any] = [.font:NSFont.monospacedDigitSystemFont(ofSize:8,weight:.regular),.foregroundColor:DAWDesignTokens.Color.secondaryText]
         for db in [-60.0,-18,-6,0,12] where fader.frame.height > 100 {
-            let y = fader.frame.maxY - 8 - (fader.frame.height-16)*MixerScale.position(db)
+            let position = CGFloat(MixerScale.position(db))
+            let y: CGFloat = fader.frame.maxY - 8 - (fader.frame.height - 16) * position
             (String(format:"%g",db) as NSString).draw(at:NSPoint(x:4,y:y-4),withAttributes:attrs)
         }
     }
