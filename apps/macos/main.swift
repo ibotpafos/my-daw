@@ -764,19 +764,22 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 prerollMenu.addItem(item)
             }
             prerollRoot.submenu=prerollMenu; prerollRoot.toolTip="Транспорт прокручивается перед punch-in с кликом; преролл не попадает в дубль"; projectMenu.addItem(prerollRoot)
-            // Professional DAW keyboard shortcuts
+            // Профессиональные клавиши транспорта и дорожек. Соло/мьют/арм
+            // едут на ⌥S/⌥M/⌥A: без модификатора эти буквы уже живут в слое
+            // волны (S = разрезать клип, M = mute клипа), а эквивалент главного
+            // меню перехватывает клавишу раньше view.keyDown.
             projectMenu.addItem(.separator())
             let playStop = NSMenuItem(title: "Воспроизведение / Стоп", action: #selector(togglePlayStop), keyEquivalent: " ")
             playStop.target = self; playStop.keyEquivalentModifierMask = []
             projectMenu.addItem(playStop)
             let soloKey = NSMenuItem(title: "Solo выбранной дорожки", action: #selector(soloSelectedTrack), keyEquivalent: "s")
-            soloKey.target = self; soloKey.keyEquivalentModifierMask = []
+            soloKey.target = self; soloKey.keyEquivalentModifierMask = [.option]
             projectMenu.addItem(soloKey)
             let muteKey = NSMenuItem(title: "Mute выбранной дорожки", action: #selector(muteSelectedTrack), keyEquivalent: "m")
-            muteKey.target = self; muteKey.keyEquivalentModifierMask = []
+            muteKey.target = self; muteKey.keyEquivalentModifierMask = [.option]
             projectMenu.addItem(muteKey)
             let armKey = NSMenuItem(title: "Arm выбранной дорожки", action: #selector(armSelectedTrack), keyEquivalent: "a")
-            armKey.target = self; armKey.keyEquivalentModifierMask = []
+            armKey.target = self; armKey.keyEquivalentModifierMask = [.option]
             projectMenu.addItem(armKey)
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
@@ -794,7 +797,23 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         edit.submenu = submenu; main.addItem(edit); NSApp.mainMenu = main
     }
+    /// true, пока фокус в текстовом поле: клавиши меню приходят раньше
+    /// field editor, и без этого guard набор имени дорожки или маркера
+    /// ронял бы транспорт и solo/mute.
+    var isEditingText: Bool {
+        guard let responder = window?.firstResponder else { return false }
+        if responder is NSTextView { return true }
+        if let control = responder as? NSControl, control.currentEditor() != nil { return true }
+        return false
+    }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(togglePlayStop) || menuItem.action == #selector(soloSelectedTrack)
+            || menuItem.action == #selector(muteSelectedTrack) || menuItem.action == #selector(armSelectedTrack) {
+            if isEditingText { return false }
+            if menuItem.action == #selector(togglePlayStop) { return true }
+            let selected = inspectorTrackID ?? selectedMixerID
+            return selected.map { mixerKinds[$0] == .track } == true
+        }
         if menuItem.action == #selector(deleteCurrentSelectedTrack) || menuItem.action == #selector(moveSelectedTrackUp) || menuItem.action == #selector(moveSelectedTrackDown) || menuItem.action == #selector(menuTrackDuplicate) {
             let selected = inspectorTrackID ?? selectedMixerID
             return !isRecording && automationGesture == nil && pluginParameterGesture == nil && selected.map { mixerKinds[$0] == .track } == true
@@ -2437,15 +2456,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func playAudio() { guard !isRecording else{return}; finishEditing(); if check(daw_play(session)) { pollTransport() } }
     @objc func stopAudio() { _ = check(daw_stop(session)); pollTransport() }
     @objc func togglePlayStop() {
-        // Get current transport state
-        var snap = daw_snapshot(); snap.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
-        guard check(daw_get_snapshot(session, &snap)) else { return }
-        // Check if playing (need to check transport state - use isRecording as proxy for now)
-        if isRecording {
-            stopAudio()
-        } else {
-            playAudio()
-        }
+        // Пробел — честный тумблер. Во время записи он обязан завершить тейк:
+        // голый daw_stop оставил бы активный рекордер «висячим».
+        if isRecording { finishRecording(); return }
+        if isPlaying { stopAudio() } else { playAudio() }
     }
     @objc func soloSelectedTrack() {
         guard let id = selectedMixerID ?? inspectorTrackID, let kind = mixerKinds[id], case .track = kind else { return }

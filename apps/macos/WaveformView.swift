@@ -211,8 +211,11 @@ final class WaveformView: NSView {
             gesture = nil; let current=clips[selectedIndex]; clips[selectedIndex]=ClipGeometry(start:g.start,sourceOffset:g.offset,length:g.length,fadeIn:g.fadeIn,fadeOut:g.fadeOut,takeIndex:current.takeIndex,sourceFramesForTake:current.sourceFramesForTake,sourcePeaks:current.sourcePeaks,color:current.color,gainDb:current.gainDb,muted:current.muted,looped:current.looped,pan:current.pan); needsDisplay = true; return
         }
         // Редакторские горячие клавиши работают только без модификаторов и при
-        // пустом тексте ввода: Cmd+S остаётся «Сохранить» в главном меню.
-        if gesture == nil, !event.modifierFlags.contains(.command), !clips.isEmpty {
+        // пустом тексте ввода: Cmd+S остаётся «Сохранить» в главном меню,
+        // а ⌥S/⌥M/⌥A принадлежат меню дорожек.
+        if gesture == nil, !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control),
+           !clips.isEmpty {
             if event.keyCode == 51 || event.keyCode == 117 { onClipHotkey?("delete"); return }
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "s": onClipHotkey?("s"); return

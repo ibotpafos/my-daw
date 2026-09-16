@@ -44,9 +44,13 @@
 
 [1.48.0](76-clip-track-editing.md) — полный набор операций над клипами и дорожками в движке: десять revision-команд (track mute/solo/color/gain/duplicate, clip color/gain в dB, MIDI color/transpose с клампом питчей/quantize по темпо-карте), черновик v19, `Voice.gain` в renderer (dB→linear в mix-in, 0 dB = бит-совместимо), восемь вызовов и append-поля `color`/`gain_db` в C-ABI (`daw_midi_clip` v2); CTest `clip_track_model` + clip-gain/fade секции + живая rev-секвенция в `pure_c_bridge`.
 
+[1.72.0](51-pinned-headers-keyboard.md) — хоткеи не перехватывают набор текста (validateMenuItem), дорожные команды на ⌥S/⌥M/⌥A, Space завершает тейк.
+
+[1.71.0](78-e2e-suite.md) — сквозной чёрноящикный e2e-набор (14 джорни через публичный C ABI), харнес, ledger покрытия ABI как CI-гейт.
+
 [1.70.0](25-offline-export.md) — экспорт одной дорожки в WAV из меню «•••»: реюз `daw_begin_stem_export_tracks` с одним ID.
 
-[1.69.0](35-routing-buses-sends.md) — Solo exclusive (Option+клик),快捷键 Space/S/M/A для транспорта и дорожек.
+[1.69.0](35-routing-buses-sends.md) — Solo exclusive (Option+клик), хоткеи Space/S/M/A для транспорта и дорожек.
 
 [1.68.0](35-routing-buses-sends.md) — удаление шин из UI: кнопка «✕» на bus-стрипе, подтверждение, домен+мост.
 
