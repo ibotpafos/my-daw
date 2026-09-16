@@ -9,7 +9,6 @@
 #include <iostream>
 #include <optional>
 #include <string>
-#include <thread>
 
 namespace {
 
@@ -49,40 +48,32 @@ std::optional<MIDIUniqueID> endpointUniqueID(MIDIEndpointRef endpoint) {
     return static_cast<MIDIUniqueID>(value);
 }
 
-void readProc(const MIDIPacketList* packetList, void* readProcRefCon, void*) {
-    auto* counters = static_cast<Counters*>(readProcRefCon);
-    if (packetList == nullptr || counters == nullptr) return;
+void receive(const MIDIEventList* eventList, Counters& counters) {
+    if (eventList == nullptr) return;
 
-    const MIDIPacket* packet = &packetList->packet[0];
-    for (UInt32 packetIndex = 0; packetIndex < packetList->numPackets; ++packetIndex) {
-        counters->packets.fetch_add(1, std::memory_order_relaxed);
-        counters->bytes.fetch_add(packet->length, std::memory_order_relaxed);
+    const MIDIEventPacket* packet = &eventList->packet[0];
+    for (UInt32 packetIndex = 0; packetIndex < eventList->numPackets; ++packetIndex) {
+        counters.packets.fetch_add(1, std::memory_order_relaxed);
+        counters.bytes.fetch_add(static_cast<std::uint64_t>(packet->wordCount) * sizeof(UInt32),
+                                 std::memory_order_relaxed);
 
-        std::size_t offset = 0;
-        while (offset < packet->length) {
-            const auto status = packet->data[offset];
-            if ((status & 0x80U) == 0U) {
-                ++offset;
-                continue;
+        for (UInt32 wordIndex = 0; wordIndex < packet->wordCount; ++wordIndex) {
+            const UInt32 word = packet->words[wordIndex];
+            const UInt32 messageType = (word >> 28U) & 0x0fU;
+            // We request kMIDIProtocol_1_0 below. CoreMIDI therefore delivers
+            // MIDI 1.0 Channel Voice UMP (message type 0x2) regardless of the
+            // source's native protocol. Layout: type/group/status+channel/data1/data2.
+            if (messageType != 0x2U) continue;
+            const UInt32 command = (word >> 20U) & 0x0fU;
+            const UInt32 velocity = word & 0xffU;
+            if (command == 0x9U) {
+                if (velocity == 0U) counters.note_off.fetch_add(1, std::memory_order_relaxed);
+                else counters.note_on.fetch_add(1, std::memory_order_relaxed);
+            } else if (command == 0x8U) {
+                counters.note_off.fetch_add(1, std::memory_order_relaxed);
             }
-
-            const auto command = static_cast<std::uint8_t>(status & 0xF0U);
-            const std::size_t messageSize =
-                (command == 0xC0U || command == 0xD0U) ? 2U :
-                (command >= 0x80U && command <= 0xE0U) ? 3U : 1U;
-            if (offset + messageSize > packet->length) break;
-
-            if (command == 0x90U) {
-                const auto velocity = packet->data[offset + 2U];
-                if (velocity == 0U) counters->note_off.fetch_add(1, std::memory_order_relaxed);
-                else counters->note_on.fetch_add(1, std::memory_order_relaxed);
-            } else if (command == 0x80U) {
-                counters->note_off.fetch_add(1, std::memory_order_relaxed);
-            }
-            offset += messageSize;
         }
-
-        packet = MIDIPacketNext(packet);
+        packet = MIDIEventPacketNext(packet);
     }
 }
 
@@ -159,9 +150,11 @@ int main(int argc, char** argv) {
         std::cerr << "MIDIClientCreate failed: " << status << '\n';
         return 4;
     }
-    status = MIDIInputPortCreate(client, CFSTR("Probe input"), readProc, &counters, &port);
+    status = MIDIInputPortCreateWithProtocol(
+        client, CFSTR("Probe input"), kMIDIProtocol_1_0, &port,
+        ^(const MIDIEventList* eventList, void*) { receive(eventList, counters); });
     if (status != noErr) {
-        std::cerr << "MIDIInputPortCreate failed: " << status << '\n';
+        std::cerr << "MIDIInputPortCreateWithProtocol failed: " << status << '\n';
         MIDIClientDispose(client);
         return 5;
     }
