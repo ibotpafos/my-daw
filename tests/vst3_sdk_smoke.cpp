@@ -56,13 +56,14 @@ void verifyImpulse(const daw::PluginInsert &plugin) {
 
 int main(int argc, char **argv) {
     try {
-        check(argc == 4, "Expected ADelay bundle, scanned FUID and runtime helper");
+        check(argc == 5, "Expected ADelay bundle, scanned FUID, runtime helper and fingerprint");
         const auto fuid = daw::parseTextualVst3Fuid(argv[2]);
         check(fuid.has_value(), "Bad scanned class ID");
         daw::Vst3StateEnvelope envelope;
         envelope.descriptor.format = daw::PluginFormat::VST3;
         envelope.descriptor.vst3ClassFuid = *fuid;
         envelope.descriptor.modulePath = argv[1];
+        envelope.descriptor.fingerprint = argv[4];
         daw::PluginInsert plugin;
         plugin.type = plugin.subtype = plugin.manufacturer = daw::kVst3PluginComponentSentinel;
         plugin.name = "ADelay SDK fixture";
@@ -120,6 +121,16 @@ int main(int argc, char **argv) {
         const auto remoteRead = daw::vst3Parameters(plugin);
         check(std::abs(delayParameter(remoteRead).normalizedValue - 0.5f) < 1e-6f,
               "Real isolated helper failed state restoration");
+        const auto restoredRemote = daw::decodeVst3StateEnvelope(plugin.state);
+        check(restoredRemote && restoredRemote->descriptor.fingerprint.size() == 64,
+              "Isolated helper lost the scanned module fingerprint");
+        auto mismatched = *restoredRemote;
+        mismatched.descriptor.fingerprint[0] = mismatched.descriptor.fingerprint[0] == '0' ? '1' : '0';
+        plugin.state = daw::encodeVst3StateEnvelope(mismatched);
+        bool refused = false;
+        try { (void)daw::vst3Parameters(plugin); }
+        catch (const daw::Error &) { refused = true; }
+        check(refused, "Isolated helper accepted a mismatched module fingerprint");
         std::cout << "PASS: real ADelay processing, exact stereo impulse timing, parameter/state, "
                      "project reopen and isolated control\n";
         return 0;

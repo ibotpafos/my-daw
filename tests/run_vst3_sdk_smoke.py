@@ -29,7 +29,7 @@ def main() -> None:
     if probe.stdout.strip() != "ok":
         raise ValueError("Real component probe did not acknowledge initialization")
     print(f"PASS: real SDK scanner + probe, ADelay class={row[0]}", flush=True)
-    subprocess.run([host, str(plugin), row[0], runtime], check=True, timeout=30)
+    subprocess.run([host, str(plugin), row[0], runtime, unquote(row[2])], check=True, timeout=30)
 
 
 if __name__ == "__main__":
