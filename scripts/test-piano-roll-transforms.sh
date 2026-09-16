@@ -17,3 +17,8 @@ swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
   "$ROOT/apps/macos/PianoRoll/PianoRollProState.swift" \
   "$ROOT/tests/piano_roll/ProStateCoreTests.swift" -o "$BUILD/pro-state-tests"
 "$BUILD/pro-state-tests"
+swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
+  "$ROOT/apps/macos/PianoRoll/PianoRollProState.swift" \
+  "$ROOT/apps/macos/PianoRoll/PianoRollProPreview.swift" \
+  "$ROOT/tests/piano_roll/PreviewCoreTests.swift" -o "$BUILD/preview-tests"
+"$BUILD/preview-tests"
