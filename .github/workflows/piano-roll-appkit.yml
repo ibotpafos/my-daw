@@ -1,10 +1,12 @@
-name: Piano roll AppKit typecheck
+name: Piano roll AppKit
 on:
   pull_request:
     paths:
       - 'apps/macos/**'
       - 'engine/bridge/daw.h'
+      - 'tests/piano_roll/AppKitSmokeTests.swift'
       - 'scripts/typecheck-macos-ui.sh'
+      - 'scripts/test-piano-roll-appkit.sh'
       - '.github/workflows/piano-roll-appkit.yml'
   workflow_dispatch:
 concurrency:
@@ -13,10 +15,12 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  typecheck:
+  typecheck-and-smoke:
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Typecheck Swift AppKit application
         run: bash scripts/typecheck-macos-ui.sh
+      - name: Run native Piano Roll AppKit smoke checks
+        run: bash scripts/test-piano-roll-appkit.sh
