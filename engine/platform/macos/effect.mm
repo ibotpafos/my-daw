@@ -374,7 +374,9 @@ public:
     size_t capacity = 0;
     for (const auto &lane : plugin.parameterAutomation)
       capacity += lane.points.size() + 2;
-    scheduled.resize(capacity);
+    // A live Touch/Latch override may exist before a durable automation lane.
+    // Reserve one slot up front so the RT path never allocates for that case.
+    scheduled.resize(std::max<size_t>(1, capacity));
   }
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
                std::span<const PreparedParameterEvent> parameterEvents,
@@ -423,12 +425,16 @@ class AppleMusicDevice final : public PreparedEffect {
   std::vector<ParameterRange> parameters;
   std::vector<AudioUnitParameterEvent> scheduled;
 
+  void allNotesOff() noexcept {
+    for (UInt32 channel = 0; channel < 16; ++channel)
+      (void)MusicDeviceMIDIEvent(unit.value, 0xB0u | channel, 123u, 0u, 0u);
+  }
   bool failDry(float *left, float *right, uint32_t frames) noexcept {
     std::copy_n(dryLeft.begin(), frames, left);
     std::copy_n(dryRight.begin(), frames, right);
     // Prevent a failed block from leaving a note stuck inside a synth. This is
     // best-effort only; the original failure remains the caller-visible result.
-    (void)MusicDeviceMIDIEvent(unit.value, 0xB0u, 123u, 0u, 0u);
+    allNotesOff();
     return false;
   }
 
@@ -446,12 +452,12 @@ public:
     size_t capacity = 0;
     for (const auto &lane : plugin.parameterAutomation)
       capacity += lane.points.size() + 2;
-    scheduled.resize(capacity);
+    scheduled.resize(std::max<size_t>(1, capacity));
   }
 
   ~AppleMusicDevice() override {
     if (unit.value)
-      (void)MusicDeviceMIDIEvent(unit.value, 0xB0u, 123u, 0u, 0u);
+      allNotesOff();
   }
 
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
