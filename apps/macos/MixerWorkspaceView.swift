@@ -137,7 +137,6 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     private var focused = false
     private var latestMeters: [UInt64:MixerMeterSnapshot] = [:]
     private var lastStripWidth: CGFloat = 110
-    // Read-only compatibility for existing layout diagnostics/tests.
     var documentView: NSView? { scroll.documentView }
     var contentView: NSClipView { scroll.contentView }
 
@@ -178,11 +177,11 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         sendTarget.setAccessibilityLabel("Fader target: main or send destination")
         undoButton.setAccessibilityLabel("Undo mixer change")
         redoButton.setAccessibilityLabel("Redo mixer change")
-        visibilityButton.setAccessibilityLabel("Mixer channel visibility")
+        visibilityButton.setAccessibilityLabel("Mixer visibility and channel sections")
         zonesButton.setAccessibilityLabel("Pinned mixer channels")
         overviewButton.setAccessibilityLabel("Show mixer meter bridge")
         sendTarget.toolTip = "Sends on faders: only existing sends are editable. Bus and master faders retain their main level."
-        visibilityButton.toolTip = "Show/hide channels without changing project routing."
+        visibilityButton.toolTip = "Show/hide channels and focus inserts, sends or faders."
         zonesButton.toolTip = "Pin up to three channels outside horizontal scrolling."
         empty.textColor = DAWDesignTokens.Color.secondaryText
         for popup in [density,sendTarget] { popup.controlSize = .small; popup.font = .systemFont(ofSize:11) }
@@ -209,6 +208,13 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
 
     private func presentationChanged() {
         meterBridge.needsDisplay = true
+        needsLayout = true
+    }
+
+    func setRackMode(_ mode: MixerConsoleState.RackMode) {
+        consoleState.rackMode = mode
+        for view in stripViews.values { view.rackMode = mode }
+        inspector?.rackMode = mode
         needsLayout = true
     }
 
@@ -240,6 +246,15 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         }
         menu.addItem(submenu("Tracks",strips.filter{$0.kind == .track}))
         menu.addItem(submenu("Buses",strips.filter{$0.kind == .bus}))
+        menu.addItem(.separator())
+        let sections = NSMenu(); sections.autoenablesItems = false
+        let sectionModes: [(String,MixerConsoleState.RackMode)] = [("Full channel",.full),("Inserts focus",.inserts),("Sends focus",.sends),("Faders focus",.faders)]
+        for (title, mode) in sectionModes {
+            let item=MixerMenuItem(title) { [weak self] in self?.setRackMode(mode) }
+            item.state = consoleState.rackMode == mode ? .on:.off
+            sections.addItem(item)
+        }
+        let sectionsItem=NSMenuItem(title:"Channel sections",action:nil,keyEquivalent:"");sectionsItem.submenu=sections;menu.addItem(sectionsItem)
         menu.popUp(positioning:nil,at:NSPoint(x:0,y:visibilityButton.bounds.maxY),in:visibilityButton)
     }
 
@@ -311,9 +326,9 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         for id in Array(stripViews.keys) where !allValid.contains(id) { stripViews.removeValue(forKey:id)?.removeFromSuperview() }
         for (i, original) in strips.enumerated() {
             var model=original;model.channelNumber=i+1
-            if let existing=stripViews[model.id] { existing.apply(model) }
+            if let existing=stripViews[model.id] { existing.apply(model); existing.rackMode=consoleState.rackMode }
             else {
-                let view=MixerStripView(model:model);view.workspace=self;stripViews[model.id]=view
+                let view=MixerStripView(model:model);view.workspace=self;view.rackMode=consoleState.rackMode;stripViews[model.id]=view
                 if model.kind == .master { addSubview(view) } else { canvas.addSubview(view) }
                 view.apply(model)
             }
@@ -326,6 +341,7 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
                 inspector?.removeFromSuperview();inspector=MixerStripView(model:selected);inspector?.workspace=self
                 if let inspector { addSubview(inspector) }
             }
+            inspector?.rackMode=consoleState.rackMode
             inspector?.apply(selected)
             if selected.totalInsertLatencyFrames > 0 {
                 inspectorCaption.stringValue=String(format:"SELECTED · INSERT LAT %.2f ms",selected.totalInsertLatencyMilliseconds)
