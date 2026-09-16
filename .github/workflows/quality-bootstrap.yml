@@ -1,0 +1,28 @@
+name: Project cleanup snapshot
+on:
+  push:
+    branches: [codex/project-quality-baseline]
+    paths: [.github/workflows/quality-bootstrap.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Capture source and inventory
+        run: |
+          mkdir -p /tmp/my-daw-audit
+          git archive --format=tar HEAD > /tmp/my-daw-audit/source.tar
+          git ls-files > /tmp/my-daw-audit/files.txt
+          git rev-parse HEAD > /tmp/my-daw-audit/revision.txt
+          git ls-files -z | xargs -0 wc -l | sort -nr | head -40 || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: project-cleanup-source
+          path: /tmp/my-daw-audit/
+          retention-days: 3
+          if-no-files-found: error
