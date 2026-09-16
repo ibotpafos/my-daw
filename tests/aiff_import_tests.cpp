@@ -2,6 +2,7 @@
 #include "domain/session.hpp"
 #include "jobs/limiter.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -70,14 +71,10 @@ static std::vector<unsigned char> makeAiff(uint32_t rate, uint16_t channels, uin
         if (kind == Kind::Float) {
             uint32_t u; std::memcpy(&u, &v, 4); putBE(b, d, u, 4); d += 4;
         } else {
-            int32_t iv;
-            if (bits == 16) iv = static_cast<int32_t>(std::lround(v * 32767.0f));
-            else if (bits == 24) iv = static_cast<int32_t>(std::lround(v * 8388607.0f));
-            else iv = static_cast<int32_t>(std::lround(v * 2147483647.0f));
-            const int32_t lim = static_cast<int32_t>(1) << (bits - 1);
-            if (iv > lim - 1) iv = lim - 1;
-            if (iv < -lim) iv = -lim;
-            putBE(b, d, static_cast<uint32_t>(static_cast<uint32_t>(iv)), width); d += width;
+            const int64_t limit = int64_t{1} << (bits - 1);
+            const int64_t scaled = static_cast<int64_t>(std::llround(double(v) * double(limit - 1)));
+            const int64_t sample = std::clamp(scaled, -limit, limit - 1);
+            putBE(b, d, static_cast<uint32_t>(sample), width); d += width;
         }
     }
     return b;
