@@ -249,4 +249,19 @@ if(BUILD_TESTING)
   target_include_directories(daw_clip_track_tests PRIVATE engine)
   target_link_libraries(daw_clip_track_tests PRIVATE daw_core)
   add_test(NAME clip_track_model COMMAND daw_clip_track_tests)
+  # End-to-end scenario suite: one executable per user journey, each driving
+  # the product through the same public C ABI as the macOS app and asserting
+  # on durable artifacts. Files are discovered so adding a scenario is just
+  # adding tests/e2e/e2e_<journey>.cpp; all carry the "e2e" CTest label
+  # (run the group with: ctest --preset debug -L e2e).
+  file(GLOB DAW_E2E_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/e2e/e2e_*.cpp")
+  foreach(e2e_source ${DAW_E2E_SOURCES})
+    get_filename_component(e2e_name ${e2e_source} NAME_WE)
+    add_executable(${e2e_name} ${e2e_source})
+    target_include_directories(${e2e_name} PRIVATE engine tests/e2e)
+    target_link_libraries(${e2e_name} PRIVATE daw_core)
+    target_compile_options(${e2e_name} PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME ${e2e_name} COMMAND ${e2e_name})
+    set_tests_properties(${e2e_name} PROPERTIES LABELS "e2e" TIMEOUT 300)
+  endforeach()
 endif()

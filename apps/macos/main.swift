@@ -1314,7 +1314,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;if armed{var auto:Int32=0;if daw_get_auto_monitor_on_arm(self?.session,&auto)==0,auto==1{var mon:Int32=0;if daw_get_record_monitor(self?.session,&mon)==0,mon==0{_=daw_set_record_monitor(self?.session,1)}}};self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
-            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)}
+            header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)};header.onExportTrackWav={[weak self] id in self?.exportTrackAsWav(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }
         let masterHeading=label("MASTER / PLUG-INS",size:10,color:.tertiaryLabelColor);masterHeading.font = .systemFont(ofSize:10,weight:.semibold)
@@ -2126,6 +2126,46 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if check(daw_delete_bus(session, busID, bridgeRevision())) {
             refresh(); pollTransport()
             status.stringValue = "Шина «\(busName)» удалена, дорожки перенаправлены на мастер"
+        }
+    }
+    /// Экспорт одной дорожки в WAV-файл (реюз логики стемов).
+    func exportTrackAsWav(_ trackID:UInt64){
+        guard !isRecording else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.wav]
+        panel.nameFieldStringValue = "track-\(trackID).wav"
+        panel.title = "Экспорт дорожки в WAV"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let dir = url.deletingLastPathComponent().path
+        let format: Int32 = 1  // WAV float32
+        var options = daw_export_options()
+        options.struct_size = UInt32(MemoryLayout<daw_export_options>.stride)  // stride returns Int, cast to UInt32
+        options.tail_mode = UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT)
+        options.manual_tail_frames = 48000
+        let ids: [UInt64] = [trackID]
+        let job: OpaquePointer? = ids.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, dir, format, &options, $0.baseAddress, UInt32(ids.count)) }
+        guard let job else { _ = check(1); return }
+        var status: Int32 = 0
+        var exportStatus = daw_export_status()
+        exportStatus.struct_size = UInt32(MemoryLayout<daw_export_status>.stride)
+        while true {
+            daw_poll_export(job, &exportStatus)
+            if exportStatus.status == 1 || exportStatus.status == 2 { status = exportStatus.status; break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        daw_release_export(job)
+        if status == 1 {
+            // Find the exported file and rename it
+            let stemDir = URL(fileURLWithPath: dir)
+            if let enumerator = FileManager.default.enumerator(at: stemDir, includingPropertiesForKeys: nil) {
+                for case let fileURL as URL in enumerator where fileURL.pathExtension == "wav" {
+                    try? FileManager.default.moveItem(at: fileURL, to: url)
+                    break
+                }
+            }
+            storageMessage("Дорожка экспортирована в \(url.lastPathComponent)")
+        } else {
+            storageMessage("Ошибка экспорта дорожки.")
         }
     }
     /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
