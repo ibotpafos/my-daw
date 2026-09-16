@@ -522,7 +522,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let core = daw_create() else { NSApp.terminate(nil); return }
+        DAWLog.lifecycle.info("Запуск My DAW \(DAWLog.buildStamp, privacy: .public)")
+        guard let core = daw_create() else {
+            DAWLog.lifecycle.critical("daw_create вернул nullptr: сессия не создана, приложение закрывается")
+            NSApp.terminate(nil); return
+        }
         applyStoredPreroll(core)
         session = core
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -710,6 +714,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         arrangementConsoleSplit.setPosition(arrangementHeight,ofDividerAt:0)
         applyWorkspaceMode(workspaceMode.selectedSegment)
         workspaceLayoutReady = true
+        layoutAudit("restore")
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
@@ -726,7 +731,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let modeKey = workspaceMode.selectedSegment == 3 ? "mastering" : "mixing"
             UserDefaults.standard.set(Double(ratio),forKey:"workspace.\(modeKey).arrangementHeightRatio")
         }
+        layoutAudit("divider")
     }
+
+    func windowDidResize(_ notification: Notification) { layoutAudit("resize") }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         if splitView === trackTimelineSplit{return 195}
@@ -830,10 +838,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let target=targetScroll.contentView;guard abs(target.bounds.origin.y-source.bounds.origin.y)>0.5 else{return}
         synchronizingArrangementScroll=true;target.scroll(to:NSPoint(x:target.bounds.origin.x,y:source.bounds.origin.y));targetScroll.reflectScrolledClipView(target);synchronizingArrangementScroll=false
     }
-    func check(_ result: Int32) -> Bool {
+    /// Отказ команды движка. Кроме модального окна пишет строку в unified log:
+    /// только так «что-то не сработало» остаётся проверяемым фактом, когда alert
+    /// уже закрыт, а экран недоступен. Вызов не меняется: координаты снимаются
+    /// аргументами по умолчанию в точке вызова.
+    func check(_ result: Int32, site: String = #function, line: UInt = #line) -> Bool {
         guard result != 0 else { return true }
         var bytes = [CChar](repeating: 0, count: 512); daw_error(session, &bytes, bytes.count)
-        let alert = NSAlert(); alert.messageText = "Изменение не выполнено"; alert.informativeText = String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let reason = String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        DAWLog.bridge.error("Команда отклонена в \(site, privacy: .public):\(line, privacy: .public): \(reason, privacy: .public)")
+        let alert = NSAlert(); alert.messageText = "Изменение не выполнено"; alert.informativeText = reason
         alert.runModal(); return false
     }
     func routingPopup(selected: UInt64, excluding: UInt64? = nil) -> NSPopUpButton {
@@ -1184,7 +1198,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func loadSupportedAudioUnits(){
         var count:UInt32=0;var quarantined:UInt32=0
         let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_au_scan_helper").path;var invalidated:UInt32=0
-        if let cache=auCacheURL,daw_load_installed_au_scan_cache(session,helper,cache.path,&count,&quarantined,&invalidated)==0,count>0{reloadAudioUnitPopup(count);let stale=invalidated>0 ? ", обновить \(invalidated)":"";scanAUButton.title=quarantined==0 ? "AU: \(count)\(stale)":"AU: \(count), карантин \(quarantined)\(stale)";return}
+        if let cache=auCacheURL,daw_load_installed_au_scan_cache(session,helper,cache.path,&count,&quarantined,&invalidated)==0,count>0{DAWLog.plugins.info("Кэш AU применён: доступно \(count, privacy: .public), карантин \(quarantined, privacy: .public), устаревших \(invalidated, privacy: .public)");reloadAudioUnitPopup(count);let stale=invalidated>0 ? ", обновить \(invalidated)":"";scanAUButton.title=quarantined==0 ? "AU: \(count)\(stale)":"AU: \(count), карантин \(quarantined)\(stale)";return}
         guard check(daw_scan_supported_au(session,&count))else{return};auCatalog.removeAll();while masterAUPopup.numberOfItems>1{masterAUPopup.removeItem(at:1)}
         for index in 0..<count{var item=daw_au_component();item.struct_size=UInt32(MemoryLayout<daw_au_component>.size);guard check(daw_get_supported_au(session,index,&item))else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};auCatalog.append((item.type,item.subtype,item.manufacturer,name));masterAUPopup.addItem(withTitle:name)}
         masterAUPopup.isEnabled = !auCatalog.isEmpty
@@ -1619,6 +1633,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         recordButton.isEnabled = true
     }
     func recordingAlert(_ message: String) {
+        DAWLog.audio.error("Запись недоступна: \(message, privacy: .public)")
         let alert=NSAlert(); alert.messageText="Запись недоступна"; alert.informativeText=message; alert.runModal()
     }
     @objc func toggleRecording() {

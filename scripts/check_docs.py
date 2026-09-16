@@ -135,6 +135,28 @@ def check_script_hygiene():
     print(f"PASS: script hygiene ({scanned} files, no cyrillic/latin glue, no cjk)")
 
 
+
+def check_version_sync():
+    """Версия живёт в одном месте (VERSION), остальное обязано ей следовать.
+
+    build-macos.sh берёт VERSION и кладёт его в собираемый бандл вместе с
+    короткой ревизией git. Гейд ловит обратное: когда исходный plist или баннер
+    README уехали вперёд либо отстали, а по версии билда невозможно понять,
+    какая сборка перед человеком.
+    """
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), f"VERSION must be X.Y.Z, got {version!r}"
+    plist = (ROOT / "apps/macos/Info.plist").read_text(encoding="utf-8")
+    match = re.search(r"<key>CFBundleShortVersionString</key><string>([^<]*)</string>", plist)
+    assert match and match.group(1) == version, (
+        f"apps/macos/Info.plist says {match and match.group(1)!r}, VERSION says {version!r}"
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"прототип {version}" in readme, f"README banner is missing the current version {version}"
+    roadmap = (ROOT / "docs/11-roadmap.md").read_text(encoding="utf-8")
+    assert f"[{version}](" in roadmap, f"docs/11-roadmap.md has no entry for {version}"
+    print(f"PASS: version {version} matches Info.plist, README banner and roadmap")
+
 def check_sql():
     db = sqlite3.connect(":memory:")
     db.executescript((ROOT / "specs/project-v0.sql").read_text())
@@ -184,5 +206,6 @@ if __name__ == "__main__":
     check_links()
     check_schemas(args.require_schemas)
     check_script_hygiene()
+    check_version_sync()
     check_sql()
     print("Documentation/contracts checked. This checker does not execute app, audio or recovery tests.")

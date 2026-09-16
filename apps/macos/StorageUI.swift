@@ -225,7 +225,7 @@ extension DraftApp {
             releaseImportJob(cancel: false); setImportMessage("Импорт WAV/AIFF отменён")
         case Int32(DAW_IMPORT_FAILED):
             let error = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
-            releaseImportJob(cancel: false); setImportMessage("Ошибка импорта WAV/AIFF: \(error.isEmpty ? "неизвестная ошибка" : error)")
+            releaseImportJob(cancel: false); DAWLog.jobs.error("Импорт WAV/AIFF сорвался: \(error.isEmpty ? "неизвестная ошибка" : error, privacy: .public)"); setImportMessage("Ошибка импорта WAV/AIFF: \(error.isEmpty ? "неизвестная ошибка" : error)")
         default:
             releaseImportJob(cancel: true); setImportMessage("Импорт WAV/AIFF остановлен из-за неизвестного состояния")
         }
@@ -468,10 +468,13 @@ extension DraftApp {
                         }
                     }
                     exportMessage = message
+                    DAWLog.jobs.info("Экспорт готов: статус \(result.status, privacy: .public), ревизия \(result.revision, privacy: .public)")
                 } else if result.status == 3 {
+                    DAWLog.jobs.info("Экспорт отменён пользователем")
                     exportMessage = "Экспорт отменён · готовый файл не заменён"
                 } else {
                     let error = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+                    DAWLog.jobs.error("Экспорт сорвался: \(error, privacy: .public)")
                     exportMessage = "Ошибка экспорта: \(error)"
                     storageMessage("Не удалось экспортировать WAV: \(error)")
                 }
@@ -510,6 +513,7 @@ extension DraftApp {
                     completion?()
                 } else {
                     saveError = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+                    DAWLog.jobs.error("Сохранение проекта не удалось: \(self.saveError ?? "ошибка записи", privacy: .public)")
                     storageMessage("Не удалось сохранить: \(saveError ?? "ошибка записи"). Проект остаётся в памяти.")
                 }
             }
