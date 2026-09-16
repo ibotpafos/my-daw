@@ -24,6 +24,14 @@ extension DraftApp {
         mixerWorkspace.onInsert = { [weak self] id, action in self?.consoleInsert(id,action) }
         mixerWorkspace.onSend = { [weak self] id, action in self?.consoleSend(id,action) }
         mixerWorkspace.onCreateBus = { [weak self] in self?.addBus() }
+        mixerWorkspace.onUndo = { [weak self] in self?.undo() }
+        mixerWorkspace.onRedo = { [weak self] in self?.redo() }
+        mixerWorkspace.historyState = { [weak self] in
+            guard let self else { return (false,false) }
+            var snapshot=daw_snapshot();snapshot.struct_size=UInt32(MemoryLayout<daw_snapshot>.size)
+            guard daw_get_snapshot(session,&snapshot) == 0 else { return (false,false) }
+            return (snapshot.can_undo != 0,snapshot.can_redo != 0)
+        }
         mixerWorkspace.onClearSolo = { [weak self] in
             guard let self, !isRecording else { return }
             if check(daw_set_solo_exclusive(session,0,0,revision)) { refresh() }
