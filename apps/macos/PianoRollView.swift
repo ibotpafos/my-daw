@@ -1,62 +1,261 @@
 import AppKit
 
 @MainActor
-private final class PRCanvas: NSView {
-    var notes:[PianoRollNote]=[]{didSet{selected=selected.filter{$0<notes.count};needsDisplay=true}}
-    var enabled=true{didSet{needsDisplay=true}}
-    var onChange:(([PianoRollNote])->Void)?
-    var onSelection:((IndexSet)->Void)?
-    var selected=IndexSet(){didSet{needsDisplay=true;onSelection?(selected)}}
-    var zoom:CGFloat=1{didSet{zoom=min(8,max(0.5,zoom));needsDisplay=true}}
-    var snapFrames:UInt64=12_000
-    private let keyboard:CGFloat=52, ruler:CGFloat=24, velocity:CGFloat=78, row:CGFloat=13
-    private var dragStart:NSPoint?, original:[PianoRollNote]=[], dragIndex:Int?
-    override var isFlipped:Bool{true}
-    override var acceptsFirstResponder:Bool{true}
-    private var gridRect:NSRect{NSRect(x:keyboard,y:ruler,width:max(1,bounds.width-keyboard),height:max(1,bounds.height-ruler-velocity))}
-    private var visibleFrames:UInt64{max(48_000,notes.map{$0.startFrames+$0.lengthFrames}.max() ?? 192_000)}
-    private func x(_ frame:UInt64)->CGFloat{keyboard+CGFloat(Double(frame)/Double(visibleFrames))*gridRect.width*zoom}
-    private func frame(_ x:CGFloat)->UInt64{UInt64(max(0,min(Double(visibleFrames),Double((x-keyboard)/(gridRect.width*zoom))*Double(visibleFrames))))}
-    private func y(_ pitch:UInt8)->CGFloat{ruler+CGFloat(127-Int(pitch))*row}
-    private func pitch(_ y:CGFloat)->UInt8{UInt8(max(0,min(127,127-Int((y-ruler)/row))))}
-    private func noteRect(_ n:PianoRollNote)->NSRect{NSRect(x:x(n.startFrames),y:y(n.pitch),width:max(5,x(n.startFrames+n.lengthFrames)-x(n.startFrames)),height:row-1)}
-    override func draw(_ dirty:NSRect){
-        DAWDesignTokens.Color.canvas.setFill();bounds.fill();let g=gridRect
-        for p in 0...127 { let yy=ruler+CGFloat(127-p)*row; (PRPitch.isBlack(p) ? NSColor.black.withAlphaComponent(0.18):NSColor.white.withAlphaComponent(0.018)).setFill();NSRect(x:g.minX,y:yy,width:g.width,height:row).fill(); if p%12==0{NSColor.white.withAlphaComponent(0.09).setStroke();let b=NSBezierPath();b.move(to:NSPoint(x:g.minX,y:yy));b.line(to:NSPoint(x:g.maxX,y:yy));b.stroke()} }
-        let step=max(UInt64(1),snapFrames);var f:UInt64=0;while f<=visibleFrames{let xx=x(f);NSColor.white.withAlphaComponent(f%(step*4)==0 ? 0.16:0.06).setStroke();let b=NSBezierPath();b.move(to:NSPoint(x:xx,y:ruler));b.line(to:NSPoint(x:xx,y:g.maxY));b.stroke();f += step}
-        NSColor(white:0.08,alpha:1).setFill();NSRect(x:0,y:0,width:keyboard,height:bounds.height-velocity).fill();NSRect(x:keyboard,y:0,width:bounds.width-keyboard,height:ruler).fill()
-        for p in 0...127 { let yy=ruler+CGFloat(127-p)*row;if yy>g.maxY{continue};let black=PRPitch.isBlack(p);(black ? NSColor(white:0.10,alpha:1):NSColor(white:0.72,alpha:1)).setFill();NSRect(x:0,y:yy,width:black ? 34:50,height:row-1).fill();if p%12==0{PRPitch.name(UInt8(p)).draw(at:NSPoint(x:4,y:yy),withAttributes:[.font:NSFont.systemFont(ofSize:8),.foregroundColor:black ? NSColor.white:NSColor.black])}}
-        for (i,n) in notes.enumerated(){let r=noteRect(n);(selected.contains(i) ? DAWDesignTokens.Color.mint:DAWDesignTokens.Color.accent).setFill();NSBezierPath(roundedRect:r,xRadius:3,yRadius:3).fill();if r.width>28{PRPitch.name(n.pitch).draw(at:NSPoint(x:r.minX+4,y:r.minY),withAttributes:[.font:NSFont.systemFont(ofSize:9,weight:.semibold),.foregroundColor:NSColor.white])}}
-        let vy=bounds.height-velocity;DAWDesignTokens.Color.surface.setFill();NSRect(x:0,y:vy,width:bounds.width,height:velocity).fill();for(i,n)in notes.enumerated(){let xx=x(n.startFrames),h=CGFloat(n.velocity)/127*(velocity-18);(selected.contains(i) ? DAWDesignTokens.Color.mint:DAWDesignTokens.Color.accent.withAlphaComponent(0.75)).setFill();NSRect(x:xx,y:bounds.height-h-4,width:3,height:h).fill()}
-        "VELOCITY".draw(at:NSPoint(x:8,y:vy+5),withAttributes:[.font:DAWDesignTokens.Typography.caption,.foregroundColor:DAWDesignTokens.Color.secondaryText])
+private final class PRMiniPreviewView: NSView {
+    let state: PRProState
+    var onOpen: (() -> Void)?
+    override var isFlipped: Bool { true }
+
+    init(state: PRProState) {
+        self.state = state
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = DAWDesignTokens.Radius.control
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Миниатюра Piano Roll")
+        setAccessibilityHelp("Двойной клик открывает полноценный редактор MIDI-нот.")
     }
-    override func mouseDown(with e:NSEvent){guard enabled else{return};window?.makeFirstResponder(self);let p=convert(e.locationInWindow,from:nil);if p.y>=bounds.height-velocity{return};if let i=notes.indices.reversed().first(where:{noteRect(notes[$0]).contains(p)}){if !e.modifierFlags.contains(.shift){selected=IndexSet(integer:i)}else{selected.insert(i)};dragStart=p;original=notes;dragIndex=i}else{selected.removeAll();if e.clickCount==2,p.x>keyboard,p.y>ruler{let raw=frame(p.x),s=snapFrames>0 ? (raw/snapFrames)*snapFrames:raw;var n=PianoRollNote(startFrames:s,lengthFrames:max(480,snapFrames),pitch:pitch(p.y),channel:0,velocity:100);if n.startFrames+n.lengthFrames>visibleFrames{n.lengthFrames=max(1,visibleFrames-n.startFrames)};notes.append(n);selected=IndexSet(integer:notes.count-1);onChange?(notes)}}}
-    override func mouseDragged(with e:NSEvent){guard enabled,let start=dragStart,!selected.isEmpty else{return};let p=convert(e.locationInWindow,from:nil),df=Int64(frame(p.x))-Int64(frame(start.x)),dp=Int(pitch(p.y))-Int(pitch(start.y));notes=original.enumerated().map{idx,n in guard selected.contains(idx)else{return n};var c=n;let ns=max(Int64(0),min(Int64(visibleFrames-c.lengthFrames),Int64(n.startFrames)+df));c.startFrames=UInt64(ns);c.pitch=UInt8(max(0,min(127,Int(n.pitch)+dp)));return c}}
-    override func mouseUp(with e:NSEvent){if dragStart != nil,notes != original{onChange?(notes)};dragStart=nil;original=[];dragIndex=nil}
-    override func keyDown(with e:NSEvent){guard enabled else{return};let flags=e.modifierFlags.intersection(.deviceIndependentFlagsMask);if flags.contains(.command),e.charactersIgnoringModifiers?.lowercased()=="a"{selected=IndexSet(integersIn:0..<notes.count);return};if e.keyCode==51||e.keyCode==117{deleteSelection();return};if e.keyCode==123||e.keyCode==124||e.keyCode==125||e.keyCode==126{let semitone=e.keyCode==126 ? 1:e.keyCode==125 ? -1:0;let delta:Int64=e.keyCode==124 ? Int64(snapFrames):e.keyCode==123 ? -Int64(snapFrames):0;notes=notes.enumerated().map{i,n in guard selected.contains(i)else{return n};var c=n;c.pitch=UInt8(max(0,min(127,Int(n.pitch)+semitone)));c.startFrames=UInt64(max(0,min(Int64(visibleFrames-c.lengthFrames),Int64(n.startFrames)+delta)));return c};onChange?(notes);return};super.keyDown(with:e)}
-    func deleteSelection(){guard !selected.isEmpty else{return};notes=notes.enumerated().filter{!selected.contains($0.offset)}.map(\.element);selected.removeAll();onChange?(notes)}
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        PRProDrawing.canvas.setFill(); bounds.fill()
+        guard let map = state.timeMap else {
+            PRProDrawing.label("Выберите MIDI-клип", in: bounds.insetBy(dx: 10, dy: 10),
+                               color: PRProDrawing.secondary, size: 10)
+            return
+        }
+        let columns = max(1, min(64, Int(bounds.width / 18)))
+        for column in 0...columns {
+            let x = CGFloat(column) / CGFloat(columns) * bounds.width
+            PRProDrawing.line(NSPoint(x: x, y: 0), NSPoint(x: x, y: bounds.height),
+                              color: PRProDrawing.border.withAlphaComponent(column % 4 == 0 ? 0.36 : 0.13))
+        }
+        let notes = state.entities
+        let low = Int(notes.map(\.note.pitch).min() ?? 48)
+        let high = Int(notes.map(\.note.pitch).max() ?? 72)
+        let pitchSpan = max(12, high - low + 4)
+        let bottom = max(0, low - 2)
+        for entity in notes {
+            let note = entity.note
+            let start = map.start(note) / map.durationBeats
+            let length = map.length(note) / map.durationBeats
+            let normalizedPitch = Double(Int(note.pitch) - bottom) / Double(pitchSpan)
+            let x = start * bounds.width
+            let width = max(2, length * bounds.width)
+            let y = bounds.height - CGFloat(normalizedPitch) * max(1, bounds.height - 8) - 5
+            let rect = NSRect(x: x, y: min(bounds.height - 6, max(2, y)), width: width, height: 5)
+            let color = state.selection.contains(entity.id) ? PRProDrawing.mint : PRProDrawing.noteColor(note)
+            color.withAlphaComponent(0.9).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+        }
+        if state.playheadFrame >= map.clipStart, state.playheadFrame <= map.clipStart + map.clipLength {
+            let beat = map.beat(at: state.playheadFrame - map.clipStart)
+            let x = CGFloat(beat / map.durationBeats) * bounds.width
+            PRProDrawing.line(NSPoint(x: x, y: 0), NSPoint(x: x, y: bounds.height),
+                              color: PRProDrawing.mint, width: 1.2)
+        }
+        PRProDrawing.label("\(notes.count) notes · Double-click to open",
+                           in: NSRect(x: 8, y: 5, width: max(0, bounds.width - 16), height: 16),
+                           color: PRProDrawing.secondary, size: 9)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 { onOpen?() }
+    }
 }
 
 @MainActor
-final class PianoRollEditorView:NSView {
-    var notes:[PianoRollNote]=[]{didSet{canvas.notes=notes}}
-    var clips:[PianoRollClipModel]=[]{didSet{reloadClips()}}
-    var selectedClip:Int?{didSet{syncClipSelection()}}
-    var editorEnabled=false{didSet{canvas.enabled=editorEnabled;applyEnabled()}}
-    var onClipSelect:((Int)->Void)?,onNotesChange:(([PianoRollNote])->Void)?,onAddNote:(()->Void)?,onRemoveNote:((Int)->Void)?,onAddClip:(()->Void)?,onRemoveClip:((Int)->Void)?
-    private let clipPopup=NSPopUpButton(),grid=NSPopUpButton(),canvas=PRCanvas(),zoom=NSSlider(value:1,minValue:0.5,maxValue:4,target:nil,action:nil),addClip=NSButton(title:"+ Клип",target:nil,action:nil),removeClip=NSButton(title:"− Клип",target:nil,action:nil),quantize=NSButton(title:"Quantize",target:nil,action:nil),legato=NSButton(title:"Legato",target:nil,action:nil)
-    override init(frame:NSRect){super.init(frame:frame);wantsLayer=true;layer?.backgroundColor=DAWDesignTokens.Color.raisedSurface.cgColor;setup()}
-    required init?(coder:NSCoder){fatalError()}
-    private func setup(){clipPopup.target=self;clipPopup.action=#selector(selectClip);grid.addItems(withTitles:["1/4","1/8","1/16","1/32"]);grid.selectItem(at:2);grid.target=self;grid.action=#selector(changeGrid);zoom.target=self;zoom.action=#selector(changeZoom);zoom.isContinuous=true;addClip.target=self;addClip.action=#selector(addClipNow);removeClip.target=self;removeClip.action=#selector(removeClipNow);quantize.target=self;quantize.action=#selector(quantizeNow);legato.target=self;legato.action=#selector(legatoNow);for b in [addClip,removeClip,quantize,legato]{b.bezelStyle = .texturedRounded;b.font=DAWDesignTokens.Typography.caption};canvas.onChange={ [weak self] n in self?.notes=n;self?.onNotesChange?(n)};let top=NSStackView(views:[clipPopup,addClip,removeClip,grid,quantize,legato,NSTextField(labelWithString:"Zoom"),zoom]);top.spacing=6;top.alignment=.centerY;let stack=NSStackView(views:[top,canvas]);stack.orientation=.vertical;stack.alignment=.width;stack.spacing=6;stack.translatesAutoresizingMaskIntoConstraints=false;addSubview(stack);NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:leadingAnchor,constant:6),stack.trailingAnchor.constraint(equalTo:trailingAnchor,constant:-6),stack.topAnchor.constraint(equalTo:topAnchor,constant:6),stack.bottomAnchor.constraint(equalTo:bottomAnchor,constant:-6),canvas.heightAnchor.constraint(greaterThanOrEqualToConstant:360)]);setAccessibilityLabel("Пианоролл MIDI-клипа");applyEnabled()}
-    private func reloadClips(){clipPopup.removeAllItems();clips.forEach{clipPopup.addItem(withTitle:$0.title)};syncClipSelection();applyEnabled()}
-    private func syncClipSelection(){if let s=selectedClip,let i=clips.firstIndex(where:{$0.index==s}){clipPopup.selectItem(at:i)}}
-    private func applyEnabled(){let on=editorEnabled && !clips.isEmpty;clipPopup.isEnabled=on;addClip.isEnabled=editorEnabled;removeClip.isEnabled=on;quantize.isEnabled=on;legato.isEnabled=on;canvas.enabled=on}
-    @objc private func selectClip(){let i=clipPopup.indexOfSelectedItem;guard clips.indices.contains(i)else{return};onClipSelect?(clips[i].index)}
-    @objc private func addClipNow(){onAddClip?()};@objc private func removeClipNow(){if let i=selectedClip{onRemoveClip?(i)}}
-    @objc private func changeGrid(){canvas.snapFrames=[48_000,24_000,12_000,6_000][max(0,grid.indexOfSelectedItem)]}
-    @objc private func changeZoom(){canvas.zoom=CGFloat(zoom.doubleValue)}
-    @objc private func quantizeNow(){let s=max(UInt64(1),canvas.snapFrames);notes=notes.map{n in var c=n;let q=Double(n.startFrames)/Double(s);c.startFrames=UInt64(q.rounded())*s;return c};canvas.notes=notes;onNotesChange?(notes)}
-    @objc private func legatoNow(){let ordered=notes.indices.sorted{notes[$0].startFrames<notes[$1].startFrames};for k in 0..<ordered.count{let i=ordered[k];if let j=ordered.dropFirst(k+1).first(where:{notes[$0].pitch==notes[i].pitch && notes[$0].channel==notes[i].channel}){let end=notes[j].startFrames;if end>notes[i].startFrames{notes[i].lengthFrames=min(PRLimits.noteFrames,end-notes[i].startFrames)}}};canvas.notes=notes;onNotesChange?(notes)}
-    static func noteName(_ pitch:UInt8)->String{PRPitch.name(pitch)}
-    static func parsePitch(_ raw:String)->UInt8?{PRPitch.parse(raw)}
+final class PianoRollEditorView: NSView {
+    var notes: [PianoRollNote] = [] { didSet { syncState() } }
+    var clips: [PianoRollClipModel] = [] { didSet { reloadClips(); syncState() } }
+    var selectedClip: Int? { didSet { syncClipSelection(); syncState() } }
+    var editorEnabled = false { didSet { applyEnabled(); syncState() } }
+    var timeMap: PRTimeMap? { didSet { syncState() } }
+    var playheadFrame: UInt64 = 0 {
+        didSet {
+            state.playheadFrame = playheadFrame
+            preview.needsDisplay = true
+            windowController?.workspace.updatePlayhead(playheadFrame)
+        }
+    }
+
+    var onClipSelect: ((Int) -> Void)?
+    var onNotesChange: (([PianoRollNote]) -> Void)?
+    var onAddNote: (() -> Void)?
+    var onRemoveNote: ((Int) -> Void)?
+    var onAddClip: (() -> Void)?
+    var onRemoveClip: ((Int) -> Void)?
+    var onSeek: ((UInt64) -> Void)?
+    var onUndo: (() -> Void)?
+    var onRedo: (() -> Void)?
+    var onPlayToggle: (() -> Void)?
+
+    private let state = PRProState()
+    private lazy var preview = PRMiniPreviewView(state: state)
+    private let clipPopup = NSPopUpButton()
+    private let gridPopup = NSPopUpButton()
+    private let openButton = NSButton(title: "Open Piano Roll", target: nil, action: nil)
+    private let addClipButton = NSButton(title: "+ Clip", target: nil, action: nil)
+    private let removeClipButton = NSButton(title: "− Clip", target: nil, action: nil)
+    private let addNoteButton = NSButton(title: "+ Note", target: nil, action: nil)
+    private let quantizeButton = NSButton(title: "Quantize all", target: nil, action: nil)
+    private let legatoButton = NSButton(title: "Legato all", target: nil, action: nil)
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private var windowController: PRProWindowController?
+    private var syncing = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = DAWDesignTokens.Color.raisedSurface.cgColor
+        setup()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    private func setup() {
+        clipPopup.target = self; clipPopup.action = #selector(selectClip)
+        clipPopup.font = DAWDesignTokens.Typography.caption
+        gridPopup.addItems(withTitles: PRGridDivision.allCases.map(\.title))
+        gridPopup.selectItem(at: PRGridDivision.sixteenth.rawValue)
+        gridPopup.target = self; gridPopup.action = #selector(changeGrid)
+        for button in [openButton, addClipButton, removeClipButton, addNoteButton, quantizeButton, legatoButton] {
+            button.bezelStyle = .texturedRounded
+            button.font = DAWDesignTokens.Typography.caption
+        }
+        openButton.target = self; openButton.action = #selector(openPianoRoll)
+        addClipButton.target = self; addClipButton.action = #selector(addClipNow)
+        removeClipButton.target = self; removeClipButton.action = #selector(removeClipNow)
+        addNoteButton.target = self; addNoteButton.action = #selector(addNoteNow)
+        quantizeButton.target = self; quantizeButton.action = #selector(quantizeAll)
+        legatoButton.target = self; legatoButton.action = #selector(legatoAll)
+        openButton.contentTintColor = DAWDesignTokens.Color.accent
+        preview.onOpen = { [weak self] in self?.openPianoRoll() }
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        preview.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        statusLabel.font = DAWDesignTokens.Typography.caption
+        statusLabel.textColor = DAWDesignTokens.Color.secondaryText
+        statusLabel.maximumNumberOfLines = 2
+
+        let clipRow = NSStackView(views: [clipPopup, addClipButton, removeClipButton])
+        clipRow.spacing = 5; clipRow.alignment = .centerY
+        let quickRow = NSStackView(views: [openButton, addNoteButton, quantizeButton, legatoButton])
+        quickRow.spacing = 5; quickRow.alignment = .centerY
+        let gridRow = NSStackView(views: [NSTextField(labelWithString: "Grid"), gridPopup])
+        gridRow.spacing = 5; gridRow.alignment = .centerY
+        let stack = NSStackView(views: [clipRow, gridRow, quickRow, preview, statusLabel])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6)
+        ])
+
+        state.onCommit = { [weak self] committed in
+            self?.onNotesChange?(committed)
+        }
+        state.onChange = { [weak self] in self?.refreshFromState() }
+        setAccessibilityLabel("MIDI Piano Roll")
+        openButton.setAccessibilityLabel("Открыть полноразмерный Piano Roll")
+        preview.setAccessibilityLabel("Предпросмотр выбранного MIDI-клипа")
+        applyEnabled()
+        refreshFromState()
+    }
+
+    private func syncState() {
+        guard !syncing else { return }
+        syncing = true
+        state.playheadFrame = playheadFrame
+        state.receive(notes: notes, map: timeMap,
+                      editable: editorEnabled && selectedClip != nil && !clips.isEmpty)
+        syncing = false
+    }
+
+    private func refreshFromState() {
+        statusLabel.stringValue = state.status
+        preview.needsDisplay = true
+        windowController?.workspace.refreshFromState()
+    }
+
+    private func reloadClips() {
+        clipPopup.removeAllItems()
+        clips.forEach { clipPopup.addItem(withTitle: $0.title) }
+        syncClipSelection()
+        applyEnabled()
+    }
+
+    private func syncClipSelection() {
+        guard let selectedClip,
+              let position = clips.firstIndex(where: { $0.index == selectedClip }) else {
+            if !clips.isEmpty { clipPopup.selectItem(at: 0) }
+            return
+        }
+        clipPopup.selectItem(at: position)
+    }
+
+    private func applyEnabled() {
+        let hasClip = selectedClip != nil && !clips.isEmpty
+        clipPopup.isEnabled = editorEnabled && hasClip
+        addClipButton.isEnabled = editorEnabled
+        removeClipButton.isEnabled = editorEnabled && hasClip
+        openButton.isEnabled = editorEnabled && hasClip && timeMap != nil
+        addNoteButton.isEnabled = editorEnabled && hasClip
+        quantizeButton.isEnabled = editorEnabled && hasClip
+        legatoButton.isEnabled = editorEnabled && hasClip
+        gridPopup.isEnabled = editorEnabled && hasClip
+    }
+
+    @objc private func selectClip() {
+        let position = clipPopup.indexOfSelectedItem
+        guard clips.indices.contains(position) else { return }
+        onClipSelect?(clips[position].index)
+    }
+
+    @objc private func addClipNow() { onAddClip?() }
+    @objc private func removeClipNow() { if let selectedClip { onRemoveClip?(selectedClip) } }
+    @objc private func addNoteNow() { onAddNote?() }
+
+    @objc private func changeGrid() {
+        state.grid.division = PRGridDivision(rawValue: gridPopup.indexOfSelectedItem) ?? .sixteenth
+        state.changed()
+    }
+
+    @objc private func quantizeAll() {
+        state.selectAll(); state.quantize()
+    }
+
+    @objc private func legatoAll() {
+        state.selectAll(); state.legato()
+    }
+
+    @objc private func openPianoRoll() {
+        guard editorEnabled, selectedClip != nil, timeMap != nil else {
+            state.fail(PREditError.unavailable)
+            return
+        }
+        let controller: PRProWindowController
+        if let existing = windowController {
+            controller = existing
+        } else {
+            let created = PRProWindowController(state: state)
+            created.onClose = { [weak self] in self?.preview.needsDisplay = true }
+            windowController = created
+            controller = created
+        }
+        controller.workspace.onSeek = { [weak self] frame in self?.onSeek?(frame) }
+        controller.workspace.onUndo = { [weak self] in self?.onUndo?() }
+        controller.workspace.onRedo = { [weak self] in self?.onRedo?() }
+        controller.workspace.onPlayToggle = { [weak self] in self?.onPlayToggle?() }
+        let title = clips.first(where: { $0.index == selectedClip })?.title
+        controller.present(relativeTo: window, title: title)
+    }
+
+    static func noteName(_ pitch: UInt8) -> String { PRPitch.name(pitch) }
+    static func parsePitch(_ raw: String) -> UInt8? { PRPitch.parse(raw) }
 }
