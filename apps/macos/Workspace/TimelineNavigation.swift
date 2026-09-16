@@ -35,9 +35,20 @@ extension DraftApp {
         guard !isRecording, !midiTakeArmed, let session else { return false }
         // The ABI validates against the *current* project duration and stops
         // playback on a loop edit. No revision or undo entry is consumed.
-        guard check(daw_set_loop(session, 1, range.start, range.end)) else { syncTimelineRange(); return false }
+        guard daw_set_loop(session, 1, range.start, range.end) == 0 else {
+            // A stale drag is recoverable. Keep the previous range and surface
+            // the actual bridge reason without blocking editing in a modal loop.
+            var bytes = [CChar](repeating: 0, count: 512)
+            daw_error(session, &bytes, bytes.count)
+            let reason = String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            DAWLog.bridge.error("Изменение цикла отклонено: \(reason, privacy: .public)")
+            setProjectMessage("Цикл не изменён: \(reason)")
+            updateStorageStatus(); syncTimelineRange()
+            return false
+        }
         rangeStart = range.start; rangeEnd = range.end; loopEnabled = true
-        updateTimelineTools(); pollTransport()
+        setProjectMessage("Диапазон цикла обновлён")
+        updateStorageStatus(); updateTimelineTools(); pollTransport()
         return true
     }
     @objc func setRangeStart() {

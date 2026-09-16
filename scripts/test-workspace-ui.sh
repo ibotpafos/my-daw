@@ -23,4 +23,16 @@ xcrun swiftc -swift-version 6 -D DAW_WORKSPACE_TESTS \
   -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers \
   -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \
   -o build/workspace-ui/workspace-tests
-build/workspace-ui/workspace-tests
+# An unexpected modal dialog or deadlock must fail CI, not occupy a Mac runner
+# until the entire job limit. Preserve the child failure and collect its logs.
+python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(["build/workspace-ui/workspace-tests"], timeout=120, check=False)
+except subprocess.TimeoutExpired:
+    print("Native workspace tests timed out after 120 seconds; check for a modal dialog or deadlock.", file=sys.stderr)
+    sys.exit(124)
+sys.exit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
+PY
