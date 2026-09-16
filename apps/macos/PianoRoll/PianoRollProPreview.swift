@@ -2,16 +2,14 @@ import Foundation
 
 @MainActor
 extension PRProState {
-    var hasTransformPreview: Bool {
-        isGesturing && status.hasPrefix("Предпросмотр ·")
-    }
+    var hasTransformPreview: Bool { isTransformPreview }
 
     private func prepareTransformPreview() -> (Gesture, PRTimeMap)? {
-        if isGesturing {
-            guard hasTransformPreview, let gesture, let map = timeMap else { return nil }
+        if let gesture {
+            guard gesture.source == .transform, let map = timeMap else { return nil }
             return (gesture, map)
         }
-        guard beginGesture(), let gesture, let map = timeMap else { return nil }
+        guard beginGesture(source: .transform), let gesture, let map = timeMap else { return nil }
         return (gesture, map)
     }
 
@@ -24,7 +22,7 @@ extension PRProState {
 
     func previewRatchet(count: Int, gate: Double) {
         guard let (gesture, map) = prepareTransformPreview() else {
-            fail(PREditError.unavailable)
+            if !isTransformPreview { fail(PREditError.unavailable) }
             return
         }
         do {
@@ -46,7 +44,7 @@ extension PRProState {
 
     func previewStrum(spreadBeats: Double, descending: Bool) {
         guard let (gesture, map) = prepareTransformPreview() else {
-            fail(PREditError.unavailable)
+            if !isTransformPreview { fail(PREditError.unavailable) }
             return
         }
         do {
@@ -67,7 +65,7 @@ extension PRProState {
 
     func previewVelocityRamp(from: Int, to: Int) {
         guard let (gesture, map) = prepareTransformPreview() else {
-            fail(PREditError.unavailable)
+            if !isTransformPreview { fail(PREditError.unavailable) }
             return
         }
         do {
@@ -87,12 +85,12 @@ extension PRProState {
     }
 
     func applyTransformPreview() {
-        guard hasTransformPreview else { return }
+        guard isTransformPreview else { return }
         finishGesture()
     }
 
     func cancelTransformPreview() {
-        guard hasTransformPreview else { return }
+        guard isTransformPreview else { return }
         cancelGesture()
         status = "Предпросмотр преобразования отменён"
         changed()
