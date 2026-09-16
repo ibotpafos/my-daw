@@ -60,6 +60,48 @@ clip reset, multiple sizes and a 256-strip presentation. It writes
 `build/mixer-ui.png` from AppKit offscreen rendering. This test and full macOS app
 build must be run on macOS; local Swift syntax parsing is not typechecking.
 
+## Native validation recorded — 16 September 2026
+
+Verified source: `2616c534b377e5882daf154e93ed12cf9652cd18`.
+The [native run](https://github.com/ibotpafos/my-daw/actions/runs/35114763374)
+finished successfully in both `appkit` and `core-and-app` jobs:
+
+- 32/32 macOS core tests passed with ASan/UBSan, including the new mixer gesture
+  test, routing, automation, Session/storage, plug-ins and Undo/Redo.
+- Actual AppKit controls compiled and their tests passed: insert/send click action
+  IDs, search/type filtering, send fader mapping, clip latch/reset, retained views,
+  three window sizes and 256-strip presentation. An offscreen PNG was produced
+  and visually inspected. Its channels, insert names and levels are test fixtures,
+  not a recording or evidence of real-device audio/plugin processing.
+- The complete arm64 `My DAW.app` built and passed strict code-signature verification.
+  Bundle version is 1.73.0, build commit `2616c53`, minimum macOS 14.0.
+  The build used Apple Swift 6.1.2 / SDK 15.5 on macOS 15.7.9.
+- The delivered candidate is **ad-hoc signed, not notarized**. This CI build did
+  not bootstrap the optional VST3 SDK, so it contains the VST3 fallback, not the
+  optional VST3 runtime helpers. The normal developer build still packages/signs
+  those helpers when the pinned SDK is present.
+- Native documentation links, script hygiene, version and SQL checks passed.
+  Full JSON Schema validation was skipped there because `jsonschema` was absent;
+  local full schema validation passed separately. The unrelated generic Ubuntu
+  workflow still fails at build; the dedicated native success is not an all-platform
+  green-CI claim.
+
+These checks distinguish a built complete application, tested native components,
+and tested core audio from an interactive full-app/device listening session.
+
+## Using the candidate
+
+Open the **Сведение** workspace and use **Focus** to expand the console. The Master
+stays visible when the channel bank scrolls. Click a channel title for selection;
+use its context menu for rename, processing menus, unity reset and bus deletion.
+Choose **Faders: Main** or **Send → destination** in the toolbar. Missing-send tracks
+become non-editable instead of silently changing their main level. Click an insert
+for the existing parameter editor; its context menu exposes bypass/reorder/remove.
+Click a send for exact dB entry and use its context menu for PRE/POST or removal.
+The numeric fader field accepts decimal comma; double-clicking the fader resets
+it to 0 dB. Structural routing/tap changes still stop/rebuild transport by design;
+only existing-send gain changes use the non-stopping live-target path.
+
 ## Remaining acceptance / explicit limitations
 
 Physical device listening, third-party plug-in GUI compatibility, audible automation
