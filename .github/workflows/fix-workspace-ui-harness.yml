@@ -17,37 +17,11 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import base64
           path = Path('tests/workspace_ui_tests.swift')
           text = path.read_text()
-          old = '''                var notes = (0..<24).map { number -> daw_midi_note in
-                    var note = daw_midi_note(); note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); note.version = UInt32(DAW_MIDI_NOTE_VERSION)
-                    note.start = UInt64(number / 3 * 24000); note.length = 18000
-                    note.pitch = UInt8(40 + index * 9 + [0, 4, 7][number % 3] + (number / 6 % 2) * 2); note.velocity = 90; return note
-                }
-                expect(daw_add_midi_clip(session, track.id, &clip, &notes, UInt32(notes.count), revision()) == 0, "Create MIDI clip")
-'''
-          new = '''                let intervals = [0, 4, 7]
-                var notes: [daw_midi_note] = []
-                notes.reserveCapacity(24)
-                for number in 0..<24 {
-                    var note = daw_midi_note()
-                    note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size)
-                    note.version = UInt32(DAW_MIDI_NOTE_VERSION)
-                    let group = number / 3
-                    note.start = UInt64(group * 24000)
-                    note.length = 18000
-                    let interval = intervals[number % intervals.count]
-                    let octaveOffset = (number / 6 % 2) * 2
-                    let pitch = 40 + index * 9 + interval + octaveOffset
-                    note.pitch = UInt8(pitch)
-                    note.velocity = 90
-                    notes.append(note)
-                }
-                let addMidiResult = notes.withUnsafeBufferPointer { buffer in
-                    daw_add_midi_clip(session, track.id, &clip, buffer.baseAddress, UInt32(buffer.count), revision())
-                }
-                expect(addMidiResult == 0, "Create MIDI clip")
-'''
+          old = base64.b64decode('ICAgICAgICAgICAgICAgIHZhciBub3RlcyA9ICgwLi48MjQpLm1hcCB7IG51bWJlciAtPiBkYXdfbWlkaV9ub3RlIGluCiAgICAgICAgICAgICAgICAgICAgdmFyIG5vdGUgPSBkYXdfbWlkaV9ub3RlKCk7IG5vdGUuc3RydWN0X3NpemUgPSBVSW50MzIoTWVtb3J5TGF5b3V0PGRhd19taWRpX25vdGU+LnNpemUpOyBub3RlLnZlcnNpb24gPSBVSW50MzIoREFXX01JRElfTk9URV9WRVJTSU9OKQogICAgICAgICAgICAgICAgICAgIG5vdGUuc3RhcnQgPSBVSW50NjQobnVtYmVyIC8gMyAqIDI0MDAwKTsgbm90ZS5sZW5ndGggPSAxODAwMAogICAgICAgICAgICAgICAgICAgIG5vdGUucGl0Y2ggPSBVSW50OCg0MCArIGluZGV4ICogOSArIFswLCA0LCA3XVtudW1iZXIgJSAzXSArIChudW1iZXIgLyA2ICUgMikgKiAyKTsgbm90ZS52ZWxvY2l0eSA9IDkwOyByZXR1cm4gbm90ZQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgZXhwZWN0KGRhd19hZGRfbWlkaV9jbGlwKHNlc3Npb24sIHRyYWNrLmlkLCAmY2xpcCwgJm5vdGVzLCBVSW50MzIobm90ZXMuY291bnQpLCByZXZpc2lvbigpKSA9PSAwLCAiQ3JlYXRlIE1JREkgY2xpcCIpCg==').decode()
+          new = base64.b64decode('ICAgICAgICAgICAgICAgIGxldCBpbnRlcnZhbHMgPSBbMCwgNCwgN10KICAgICAgICAgICAgICAgIHZhciBub3RlczogW2Rhd19taWRpX25vdGVdID0gW10KICAgICAgICAgICAgICAgIG5vdGVzLnJlc2VydmVDYXBhY2l0eSgyNCkKICAgICAgICAgICAgICAgIGZvciBudW1iZXIgaW4gMC4uPDI0IHsKICAgICAgICAgICAgICAgICAgICB2YXIgbm90ZSA9IGRhd19taWRpX25vdGUoKQogICAgICAgICAgICAgICAgICAgIG5vdGUuc3RydWN0X3NpemUgPSBVSW50MzIoTWVtb3J5TGF5b3V0PGRhd19taWRpX25vdGU+LnNpemUpCiAgICAgICAgICAgICAgICAgICAgbm90ZS52ZXJzaW9uID0gVUludDMyKERBV19NSURJX05PVEVfVkVSU0lPTikKICAgICAgICAgICAgICAgICAgICBsZXQgZ3JvdXAgPSBudW1iZXIgLyAzCiAgICAgICAgICAgICAgICAgICAgbm90ZS5zdGFydCA9IFVJbnQ2NChncm91cCAqIDI0MDAwKQogICAgICAgICAgICAgICAgICAgIG5vdGUubGVuZ3RoID0gMTgwMDAKICAgICAgICAgICAgICAgICAgICBsZXQgaW50ZXJ2YWwgPSBpbnRlcnZhbHNbbnVtYmVyICUgaW50ZXJ2YWxzLmNvdW50XQogICAgICAgICAgICAgICAgICAgIGxldCBvY3RhdmVPZmZzZXQgPSAobnVtYmVyIC8gNiAlIDIpICogMgogICAgICAgICAgICAgICAgICAgIGxldCBwaXRjaCA9IDQwICsgaW5kZXggKiA5ICsgaW50ZXJ2YWwgKyBvY3RhdmVPZmZzZXQKICAgICAgICAgICAgICAgICAgICBub3RlLnBpdGNoID0gVUludDgocGl0Y2gpCiAgICAgICAgICAgICAgICAgICAgbm90ZS52ZWxvY2l0eSA9IDkwCiAgICAgICAgICAgICAgICAgICAgbm90ZXMuYXBwZW5kKG5vdGUpCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBsZXQgYWRkTWlkaVJlc3VsdCA9IG5vdGVzLndpdGhVbnNhZmVCdWZmZXJQb2ludGVyIHsgYnVmZmVyIGluCiAgICAgICAgICAgICAgICAgICAgZGF3X2FkZF9taWRpX2NsaXAoc2Vzc2lvbiwgdHJhY2suaWQsICZjbGlwLCBidWZmZXIuYmFzZUFkZHJlc3MsIFVJbnQzMihidWZmZXIuY291bnQpLCByZXZpc2lvbigpKQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgZXhwZWN0KGFkZE1pZGlSZXN1bHQgPT0gMCwgIkNyZWF0ZSBNSURJIGNsaXAiKQo=').decode()
           if text.count(old) != 1:
               raise SystemExit(f'Expected one reviewed MIDI fixture block, got {text.count(old)}')
           path.write_text(text.replace(old, new, 1))
