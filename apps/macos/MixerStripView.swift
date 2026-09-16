@@ -96,7 +96,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         needsLayout = true; needsDisplay = true
     }
     func updateMeter(_ snapshot: MixerMeterSnapshot) {
-        meter.snapshot = snapshot // Deliberately not model.didSet / whole-strip refresh.
+        meter.snapshot = snapshot
         if model.kind == .master, let m = snapshot.momentaryLufs, let s = snapshot.shortTermLufs {
             loudness.stringValue = m < -99 ? "LUFS · silence" : String(format: "M %.1f  S %.1f", m, s)
             loudness.toolTip = "BS.1770 momentary / short-term LUFS. Not integrated loudness."
@@ -141,7 +141,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     func controlTextDidBeginEditing(_ obj: Notification) { editingGain = true }
     func controlTextDidEndEditing(_ obj: Notification) { editingGain = false; commitGain() }
     @objc private func commitGain() {
-        guard !editingGain else { return } // End-editing owns a single commit, including Return.
+        guard !editingGain else { return }
         guard let value = MixerScale.parseDb(gainField.stringValue), fader.isEnabled else { updateFaderMode(); return }
         if abs(value - fader.valueDb) > 0.00001 { fader.commit(value) }
         updateFaderMode()
@@ -250,7 +250,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     override func layout() {
         super.layout()
         let w = bounds.width, h = bounds.height, inset: CGFloat = 7
-        let detailed = h >= 600, tall = h >= 780
+        let detailed = h >= 600, tall = h >= 780, ultraCompact = h < 240
         let showInserts = detailed && (rackMode == .full || rackMode == .inserts)
         let showSends = detailed && model.kind == .track && (rackMode == .full || rackMode == .sends)
         icon.isHidden = !detailed
@@ -279,18 +279,23 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
             addSend.frame = NSRect(x:inset,y:y,width:w-14,height:23); y += 33
         }
 
-        // Compact workspace keeps processing accessible without forcing tall racks.
-        if !detailed && h >= 350 && (rackMode == .full || rackMode == .inserts) {
+        if !detailed && !ultraCompact && h >= 350 && (rackMode == .full || rackMode == .inserts) {
             addInsert.isHidden = false; addInsert.frame = NSRect(x:inset,y:y,width:w-14,height:22); y += 28
         }
-        route.frame = NSRect(x:inset,y:y,width:w-14,height:24); y += 30
-        let showPan = h >= 300 && model.kind != .master
+        route.isHidden = ultraCompact
+        if !ultraCompact {
+            route.frame = NSRect(x:inset,y:y,width:w-14,height:24); y += 30
+        }
+        let showPan = !ultraCompact && h >= 300 && model.kind != .master
         balanceLabel.isHidden = !showPan; pan.isHidden = !showPan
         balanceLabel.frame = NSRect(x:inset,y:y,width:w-14,height:12)
         pan.frame = NSRect(x:inset,y:y+15,width:w-14,height:18)
         if showPan { y += 42 }
-        else if model.kind == .master && h >= 400 { y += 42 }
-        let meterBottom = h - 112, meterHeight = max(24,meterBottom-y)
+        else if !ultraCompact && model.kind == .master && h >= 400 { y += 42 }
+
+        let nominalMeterBottom = h - 112
+        let meterBottom = max(y + 8, nominalMeterBottom)
+        let meterHeight = max(8, meterBottom - y)
         fader.frame = NSRect(x:w*0.35-14,y:y,width:28,height:meterHeight)
         meter.frame = NSRect(x:w*0.67,y:y,width:max(14,w*0.18),height:meterHeight)
         gainField.frame = NSRect(x:inset,y:meterBottom+7,width:w-14,height:22)
@@ -298,9 +303,10 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         mute.frame = NSRect(x:inset,y:h-76,width:bw,height:25)
         solo.frame = NSRect(x:inset+bw+2,y:h-76,width:bw,height:25)
         arm.frame = NSRect(x:inset+2*(bw+2),y:h-76,width:bw,height:25)
+        autoLabel.isHidden = h < 170
         autoLabel.frame = NSRect(x:inset,y:h-48,width:w-14,height:13)
         loudness.isHidden = model.kind != .master || h < 400
-        loudness.frame = NSRect(x:inset,y:y-39,width:w-14,height:30)
+        loudness.frame = NSRect(x:inset,y:max(0,y-39),width:w-14,height:30)
         footer.frame = NSRect(x:1,y:h-30,width:w-2,height:29)
     }
     override func draw(_ dirtyRect: NSRect) {
@@ -308,7 +314,6 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         let tint = model.color ?? DAWDesignTokens.Color.accent
         tint.withAlphaComponent(model.isSelected ? 0.25 : 0.12).setFill()
         NSRect(x:1,y:1,width:bounds.width-2,height:bounds.height >= 600 ? 73 : 31).fill()
-        // The meter and fader have different scales. Explicitly label each.
         let attrs: [NSAttributedString.Key:Any] = [.font:NSFont.monospacedDigitSystemFont(ofSize:8,weight:.regular),.foregroundColor:DAWDesignTokens.Color.secondaryText]
         for db in [-60.0,-18,-6,0,12] where fader.frame.height > 100 {
             let position = CGFloat(MixerScale.position(db))
