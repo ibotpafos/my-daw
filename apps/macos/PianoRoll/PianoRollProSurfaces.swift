@@ -12,7 +12,7 @@ final class PRProRulerView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Линейка Piano Roll")
-        setAccessibilityHelp("Клик перемещает позицию воспроизведения внутри MIDI-клипа.")
+        setAccessibilityHelp("Показывает реальные такты и размеры проекта. Клик перемещает позицию воспроизведения внутри MIDI-клипа.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
@@ -24,6 +24,48 @@ final class PRProRulerView: NSView {
         PRProDrawing.line(NSPoint(x: 0, y: bounds.maxY - 1),
                           NSPoint(x: bounds.maxX, y: bounds.maxY - 1),
                           color: PRProDrawing.border)
+        if !drawProjectBars(map: map, offset: offset) {
+            drawBeatFallback(map: map, offset: offset)
+        }
+        PRProDrawing.drawPlayhead(state: state, offsetX: offset, height: bounds.height)
+    }
+
+    private func drawProjectBars(map: PRTimeMap, offset: CGFloat) -> Bool {
+        guard let app = NSApp.delegate as? DraftApp, !app.tempoBars.isEmpty else { return false }
+        let clipFirstBeat = map.originBeat
+        let clipLastBeat = clipFirstBeat + map.durationBeats
+        let visibleLeft = max(0, Double(offset) / state.pixelsPerBeat)
+        let visibleRight = min(map.durationBeats, Double(offset + bounds.width) / state.pixelsPerBeat)
+        var drew = false
+        var lastSignature: String?
+        var lastLabelX: CGFloat = -100
+        for mark in app.tempoBars where mark.beats >= clipFirstBeat - 1e-9 && mark.beats <= clipLastBeat + 1e-9 {
+            let relativeBeat = mark.beats - clipFirstBeat
+            guard relativeBeat >= visibleLeft - 1, relativeBeat <= visibleRight + 1 else { continue }
+            let x = CGFloat(relativeBeat * state.pixelsPerBeat) - offset
+            guard x >= -2, x <= bounds.width + 2 else { continue }
+            drew = true
+            PRProDrawing.line(NSPoint(x: x, y: 0), NSPoint(x: x, y: bounds.height),
+                              color: PRProDrawing.text.withAlphaComponent(0.32), width: 1.15)
+            if x - lastLabelX >= 24 {
+                PRProDrawing.label(String(mark.number),
+                                   in: NSRect(x: x + 4, y: 4, width: 44, height: 16),
+                                   color: PRProDrawing.text, size: 10, weight: .semibold)
+                lastLabelX = x
+            }
+            let signature = app.tempoMap.signature(atFrame: mark.frame)
+            let signatureText = "\(signature.numerator)/\(signature.denominator)"
+            if signatureText != lastSignature {
+                PRProDrawing.label(signatureText,
+                                   in: NSRect(x: x + 25, y: 5, width: 44, height: 15),
+                                   color: PRProDrawing.mint, size: 8)
+                lastSignature = signatureText
+            }
+        }
+        return drew
+    }
+
+    private func drawBeatFallback(map: PRTimeMap, offset: CGFloat) {
         let left = max(0, Double(offset) / state.pixelsPerBeat)
         let right = min(map.durationBeats, Double(offset + bounds.width) / state.pixelsPerBeat)
         let labelStep = max(1.0, ceil(48 / max(1, state.pixelsPerBeat)))
@@ -33,14 +75,13 @@ final class PRProRulerView: NSView {
             let relative = beat - map.originBeat
             let x = CGFloat(relative * state.pixelsPerBeat) - offset
             if x >= -30, x <= bounds.width {
-                let value = String(format: "%.2f", beat + 1)
-                PRProDrawing.label(value, in: NSRect(x: x + 4, y: 5, width: 70, height: 16),
+                PRProDrawing.label(String(format: "%.2f", beat + 1),
+                                   in: NSRect(x: x + 4, y: 5, width: 70, height: 16),
                                    color: PRProDrawing.secondary, size: 9)
             }
             beat += labelStep
             guardCount += 1
         }
-        PRProDrawing.drawPlayhead(state: state, offsetX: offset, height: bounds.height)
     }
 
     override func mouseDown(with event: NSEvent) {
