@@ -7,8 +7,9 @@ final class MixerRoutingPresenter: NSObject, NSWindowDelegate {
     static let shared = MixerRoutingPresenter()
     private var controller: NSWindowController?
     private var matrix: MixerRoutingMatrixView?
+    private var stripsProvider: (() -> [MixerStripModel])?
 
-    func present(strips:[MixerStripModel], onOutput:@escaping (UInt64,UInt64)->Void, onSend:@escaping (UInt64,MixerSendAction)->Void) {
+    func present(strips:@escaping ()->[MixerStripModel], onOutput:@escaping (UInt64,UInt64)->Void, onSend:@escaping (UInt64,MixerSendAction)->Void) {
         let matrix: MixerRoutingMatrixView
         let window: NSWindow
         if let existing=self.matrix,let existingWindow=controller?.window {
@@ -24,16 +25,24 @@ final class MixerRoutingPresenter: NSObject, NSWindowDelegate {
             controller=NSWindowController(window:window)
             self.matrix=matrix
         }
-        matrix.strips=strips
-        matrix.onOutput=onOutput
-        matrix.onSend=onSend
+        stripsProvider=strips
+        matrix.strips=strips()
+        matrix.onOutput={ [weak self] id,bus in
+            onOutput(id,bus)
+            DispatchQueue.main.async { [weak self] in self?.reload() }
+        }
+        matrix.onSend={ [weak self] id,action in
+            onSend(id,action)
+            DispatchQueue.main.async { [weak self] in self?.reload() }
+        }
         window.center()
         controller?.showWindow(nil)
         NSApp.activate(ignoringOtherApps:true)
         window.makeKeyAndOrderFront(nil)
     }
 
-    func update(strips:[MixerStripModel]) { matrix?.strips=strips }
-    func close() { controller?.close();controller=nil;matrix=nil }
-    func windowWillClose(_ notification:Notification){controller=nil;matrix=nil}
+    func reload() { if let stripsProvider { matrix?.strips=stripsProvider() } }
+    func close() { controller?.close();controller=nil;matrix=nil;stripsProvider=nil }
+    func windowDidBecomeKey(_ notification:Notification){reload()}
+    func windowWillClose(_ notification:Notification){controller=nil;matrix=nil;stripsProvider=nil}
 }
