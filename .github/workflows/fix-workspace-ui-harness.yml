@@ -1,0 +1,60 @@
+name: Fix workspace UI harness
+on:
+  push:
+    branches: ["codex/reference-workspace"]
+    paths: [".github/workflows/fix-workspace-ui-harness.yml"]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Split MIDI fixture construction into explicit Swift steps
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/workspace_ui_tests.swift')
+          text = path.read_text()
+          old = '''                var notes = (0..<24).map { number -> daw_midi_note in
+                    var note = daw_midi_note(); note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); note.version = UInt32(DAW_MIDI_NOTE_VERSION)
+                    note.start = UInt64(number / 3 * 24000); note.length = 18000
+                    note.pitch = UInt8(40 + index * 9 + [0, 4, 7][number % 3] + (number / 6 % 2) * 2); note.velocity = 90; return note
+                }
+                expect(daw_add_midi_clip(session, track.id, &clip, &notes, UInt32(notes.count), revision()) == 0, "Create MIDI clip")
+'''
+          new = '''                let intervals = [0, 4, 7]
+                var notes: [daw_midi_note] = []
+                notes.reserveCapacity(24)
+                for number in 0..<24 {
+                    var note = daw_midi_note()
+                    note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size)
+                    note.version = UInt32(DAW_MIDI_NOTE_VERSION)
+                    let group = number / 3
+                    note.start = UInt64(group * 24000)
+                    note.length = 18000
+                    let interval = intervals[number % intervals.count]
+                    let octaveOffset = (number / 6 % 2) * 2
+                    let pitch = 40 + index * 9 + interval + octaveOffset
+                    note.pitch = UInt8(pitch)
+                    note.velocity = 90
+                    notes.append(note)
+                }
+                let addMidiResult = notes.withUnsafeBufferPointer { buffer in
+                    daw_add_midi_clip(session, track.id, &clip, buffer.baseAddress, UInt32(buffer.count), revision())
+                }
+                expect(addMidiResult == 0, "Create MIDI clip")
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one reviewed MIDI fixture block, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git add tests/workspace_ui_tests.swift
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test(macos): simplify workspace MIDI fixture construction'
+          git push origin HEAD:refs/heads/codex/reference-workspace
