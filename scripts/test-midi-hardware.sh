@@ -10,7 +10,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 OUT="${TMPDIR:-/tmp}/my-daw-midi-input-probe"
-xcrun clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror \
+xcrun clang++ -std=c++20 -fblocks -Wall -Wextra -Wpedantic -Werror \
   tools/midi_input_probe.cpp -framework CoreMIDI -framework CoreFoundation -o "$OUT"
 
 if [ "$#" -eq 0 ]; then
