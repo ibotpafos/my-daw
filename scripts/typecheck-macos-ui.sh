@@ -4,14 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 SDK="$(xcrun --show-sdk-path)"
-PIANO_ROLL_SOURCES=(
-  apps/macos/PianoRoll/PianoRollModel.swift
-  apps/macos/PianoRoll/PianoRollTiming.swift
-  apps/macos/PianoRoll/PianoRollEdits.swift
-  apps/macos/PianoRoll/PianoRollTransforms.swift
-  apps/macos/PianoRoll/PianoRollHarmony.swift
-  apps/macos/PianoRoll/PianoRollProState.swift
-)
+PIANO_ROLL_SOURCES=(apps/macos/PianoRoll/*.swift)
 APP_SOURCES=(
   apps/macos/Diagnostics.swift
   apps/macos/main.swift
