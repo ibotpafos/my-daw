@@ -32,6 +32,9 @@ public:
     virtual uint64_t frames() const noexcept = 0;
     virtual uint64_t callbacks() const noexcept = 0;
     virtual bool overflowed() const noexcept = 0;
+    // Copies 512- or 2048-bin normalized absolute capture peaks; never performs control or
+    // device work, so a UI can poll it at 10 Hz.
+    virtual void previewPeaks(float* out,uint32_t count) const noexcept = 0;
     virtual void discardRecovery() noexcept = 0;
 };
 

@@ -6,6 +6,7 @@
 
 - `mute` всегда выключает дорожку.
 - Если хотя бы одна дорожка в solo, звучат только `solo && !muted`.
+- Если хотя бы один bus в solo, звучат только дорожки и buses с активным solo && !muted;ToMaster по-прежнему идёт полная сумма (мастер-соло не реализован).
 - Pan в этом срезе — stereo balance: слева сохраняется L и ослабляется R, справа сохраняется R и ослабляется L.
 - После clip fades применяется track gain/balance/gate, затем сумма дорожек, master gain и существующий safety clamp.
 - Track L/R targets и master target атомарны; изменения сглаживаются примерно за 5 мс без пересоздания playback transport.

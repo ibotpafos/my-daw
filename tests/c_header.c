@@ -20,6 +20,7 @@ _Static_assert(sizeof(daw_export_options) == 16, "export options ABI size");
 _Static_assert(offsetof(daw_export_tail_summary, struct_size) == 0, "export tail summary prefix");
 _Static_assert(sizeof(daw_export_tail_summary) == 20, "export tail summary ABI size");
 _Static_assert(DAW_IMPORT_STATUS_VERSION == 1, "import status ABI version");
+_Static_assert(DAW_RECORDING_PREVIEW_DETAIL_BINS == 2048, "detailed recording preview bin count");
 _Static_assert(DAW_IMPORT_RUNNING == 0 && DAW_IMPORT_READY == 1 && DAW_IMPORT_FAILED == 2 && DAW_IMPORT_CANCELED == 3 && DAW_IMPORT_APPLIED == 4, "import status ABI values");
 _Static_assert(DAW_IMPORT_PHASE_NONE == 0 && DAW_IMPORT_PHASE_READING == 1 && DAW_IMPORT_PHASE_DECODING == 2 && DAW_IMPORT_PHASE_CONVERTING == 3 && DAW_IMPORT_PHASE_READY == 4, "import phase ABI values");
 _Static_assert(offsetof(daw_import_status, struct_size) == 0, "import status prefix");
@@ -47,6 +48,8 @@ int main(void) {
     if (!session) return 1;
     daw_snapshot snapshot = {0}; snapshot.struct_size = sizeof(snapshot);
     daw_recording recording = {0}; recording.struct_size = sizeof(recording);
+    daw_recording_preview recording_preview = {0}; recording_preview.struct_size = sizeof(recording_preview); recording_preview.version = DAW_RECORDING_PREVIEW_VERSION;
+    float recording_preview_detail[DAW_RECORDING_PREVIEW_DETAIL_BINS] = {0};
     daw_export_status export_status = {0}; export_status.struct_size = sizeof(export_status);
     daw_import_status import_status = {0}; import_status.struct_size = sizeof(import_status);
     daw_output_status output_status = {0}; output_status.struct_size = sizeof(output_status);
@@ -60,6 +63,11 @@ int main(void) {
     daw_export_tail_summary tail_summary = {0}; tail_summary.struct_size = sizeof(tail_summary);
     int result = daw_get_snapshot(session, &snapshot);
     result |= daw_get_recording(session, &recording);
+    result |= daw_get_recording_preview(session, &recording_preview);
+    if (recording_preview.active || recording_preview.captured_frames || recording_preview.target_track_id || recording_preview.project_start_frame || recording_preview.peaks[0] != 0.0f) result |= 1;
+    result |= daw_get_recording_preview_detail(session, recording_preview_detail, DAW_RECORDING_PREVIEW_DETAIL_BINS);
+    if (recording_preview_detail[0] != 0.0f || recording_preview_detail[DAW_RECORDING_PREVIEW_DETAIL_BINS - 1] != 0.0f) result |= 1;
+    if (daw_get_recording_preview_detail(session, recording_preview_detail, DAW_RECORDING_PREVIEW_DETAIL_BINS - 1) == 0) result |= 1;
     result |= daw_get_output_status(session, &output_status);
     result |= daw_set_loop(session, 0, 0, 0);
     result |= daw_add_track(session, "Header track", 0);

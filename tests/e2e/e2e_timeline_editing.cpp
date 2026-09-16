@@ -409,22 +409,21 @@ int main() {
         const auto stillThere = regions(cut, 1);
         CHECK(stillThere.size() == nudged.size());
         for (size_t index = 0; index < stillThere.size(); ++index) CHECK(stillThere[index].start == nudged[index].start);
-        // Deleting the whole group costs one revision, and the last clip of a
-        // track may never go away: its audio would be orphaned (docs/76).
+        // Deleting a group costs one revision.  Deleting the final remaining
+        // clip leaves a real empty track that can be recorded to again.
         const uint32_t doomed[2] = {1, 2};
-        const uint32_t allThree[3] = {0, 1, 2};
         const auto deleteBase = rev(cut);
-        CHECK_REJ(cut, daw_delete_clips(cut, 1, allThree, 3, deleteBase)); // would empty the track
-        CHECK(rev(cut) == deleteBase);
-        CHECK(trackById(cut, 1).clip_count == 3);
         CHECK_OK(cut, daw_delete_clips(cut, 1, doomed, 2, deleteBase));
         CHECK(rev(cut) == deleteBase + 1);
         const auto survivor = regions(cut, 1);
         CHECK(survivor.size() == 1 && survivor[0].start == kProjectRate);
-        CHECK_REJ(cut, daw_delete_clip(cut, 1, 0, rev(cut))); // the last clip stays
-        CHECK(trackById(cut, 1).clip_count == 1);
+        CHECK_OK(cut, daw_delete_clip(cut, 1, 0, rev(cut)));
+        CHECK(trackById(cut, 1).clip_count == 0 && trackById(cut, 1).audio_frames == 0 && trackById(cut, 1).take_count == 0);
+        CHECK_OK(cut, daw_undo(cut, rev(cut))); // keep B7's base take below available
+        CHECK(trackById(cut, 1).clip_count == 1 && trackById(cut, 1).audio_frames == 2 * kProjectRate);
+        const auto restoredRevision = rev(cut);
         CHECK_REJ(cut, daw_delete_clips(cut, 1, badIndex, 2, rev(cut))); // atomic rejection
-        CHECK(trackById(cut, 1).clip_count == 1 && rev(cut) == deleteBase + 1);
+        CHECK(trackById(cut, 1).clip_count == 1 && rev(cut) == restoredRevision);
 
         // B7. Take lanes and comping over two takes.
         CHECK_OK(cut, daw_import_take_wav(cut, 1, shortPath.string().c_str(), "Take B", kProjectRate, rev(cut)));

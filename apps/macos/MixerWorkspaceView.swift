@@ -38,7 +38,9 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
     var isSelected = false
     var isArmed = false
     var isMuted = false
-    var isSolo = false
+    var isSolo = false                // track solo
+    var busSolo: Bool = false        // bus solo
+    var masterSolo: Bool = false     // master solo
     var isAutomationRead = true
 }
 
@@ -212,6 +214,11 @@ private final class MixerStripView: NSView {
         arm.state = model.isArmed ? .on : .off
         mute.state = model.isMuted ? .on : .off
         solo.state = model.isSolo ? .on : .off
+        if model.kind == .bus {
+            solo.state = model.busSolo ? .on : .off
+        } else if model.kind == .master {
+            solo.state = model.masterSolo ? .on : .off
+        }
         routing.stringValue = model.kind == .master ? "MAIN  \(model.outputName)" : "OUT  \(model.outputName)"
         if model.kind == .master, let momentary = model.meter.momentaryLufs {
             loudness.isHidden = false
@@ -248,9 +255,8 @@ private final class MixerStripView: NSView {
         let canMute = model.kind != .master
         mute.isHidden = !canMute
         mute.isEnabled = canMute
-        let canSolo = model.kind == .track
-        solo.isHidden = !canSolo
-        solo.isEnabled = canSolo
+        solo.isHidden = false
+        solo.isEnabled = true
         let canPan = model.kind != .master
         pan.isHidden = !canPan
         pan.isEnabled = canPan
@@ -330,7 +336,9 @@ private final class MixerStripView: NSView {
     }
     @objc private func toggleArm(){onArm?(model.id,arm.state == .on)}
     @objc private func toggleMute(){onMute?(model.id,mute.state == .on)}
-    @objc private func toggleSolo(){onSolo?(model.id,solo.state == .on)}
+    @objc private func toggleSolo(){
+        onSolo?(model.id,solo.state == .on)
+    }
     @objc private func changePan(){onPan?(model.id,pan.doubleValue)}
     @objc private func deleteBus(){onDeleteBus?(model.id)}
 }
@@ -356,7 +364,21 @@ final class MixerWorkspaceView: NSScrollView {
         canvas.subviews.forEach { $0.removeFromSuperview() }
         stripViews.removeAll()
         for (index, model) in strips.enumerated() {
-            var displayModel=model;displayModel.channelNumber=index + 1
+            var displayModel=model
+            displayModel.channelNumber=index + 1
+            if displayModel.kind == .track {
+                displayModel.isSolo = model.isSolo
+                displayModel.busSolo = false
+                displayModel.masterSolo = false
+            } else if displayModel.kind == .bus {
+                displayModel.isSolo = false
+                displayModel.busSolo = model.busSolo
+                displayModel.masterSolo = false
+            } else {
+                displayModel.isSolo = false
+                displayModel.busSolo = false
+                displayModel.masterSolo = model.masterSolo
+            }
             let strip = MixerStripView(model: displayModel)
             stripViews[model.id] = strip
             strip.onSelect = { [weak self] in self?.onSelect?($0) }

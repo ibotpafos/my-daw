@@ -21,9 +21,11 @@ int main(int argc,char** argv){try{
     struct Cleanup{std::filesystem::path p;~Cleanup(){std::filesystem::remove_all(p);}}cleanup{root};
 
     auto normal=(root/"normal.mydawtake").string();float values[]={0.25f,-0.5f,NAN,20.0f,0.75f};
-    daw::RecordingWriter writer(normal,12000,20,16);writer.writeMono(values,5);auto clip=writer.finish();
+    daw::RecordingWriter writer(normal,12000,20,16);writer.writeMono(values,5);float preview[512]{};float detailedPreview[daw::kRecordingPreviewDetailBins]{};writer.previewPeaks(preview,512);writer.previewPeaks(detailedPreview,daw::kRecordingPreviewDetailBins);CHECK(preview[0]>0.0f&&preview[0]<=1.0f);CHECK(preview[511]>0.0f&&preview[511]<=1.0f);CHECK(detailedPreview[0]>0.0f&&detailedPreview[0]<=1.0f);CHECK(detailedPreview[daw::kRecordingPreviewDetailBins-1]>0.0f&&detailedPreview[daw::kRecordingPreviewDetailBins-1]<=1.0f);auto clip=writer.finish();
     CHECK(clip->frames()==5&&clip->samples()[0]==0.25f&&clip->samples()[1]==0.25f&&clip->samples()[4]==0&&clip->samples()[6]==16);
     auto recovered=daw::recoverTake(normal);CHECK(recovered.startFrame==12000&&recovered.clip->samples()==clip->samples());
+    auto detailedPath=(root/"detailed.mydawtake").string();std::vector<float> detailedInput(daw::kRecordingPreviewDetailBins);detailedInput.back()=0.75f;
+    daw::RecordingWriter detailWriter(detailedPath,0,daw::kRecordingPreviewDetailBins,daw::kRecordingPreviewDetailBins);detailWriter.writeMono(detailedInput.data(),detailedInput.size());float latePeak[daw::kRecordingPreviewDetailBins]{};detailWriter.previewPeaks(latePeak,daw::kRecordingPreviewDetailBins);CHECK(latePeak[daw::kRecordingPreviewDetailBins-1]==0.75f);detailWriter.discard();
     std::vector<float> loopAudio(20);for(size_t i=0;i<10;++i)loopAudio[i*2]=loopAudio[i*2+1]=float(i);
     daw::Clip loopRecording(std::move(loopAudio));auto passes=daw::splitLoopPasses(loopRecording,4);
     CHECK(passes.size()==3&&passes[0]->frames()==4&&passes[1]->frames()==4&&passes[2]->frames()==2);

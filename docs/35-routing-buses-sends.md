@@ -12,7 +12,7 @@
 
 `Renderer::prepare` компилирует ID в индексы, send gains и порядок bus graph алгоритмом Kahn. Callback работает с заранее выделенными фиксированными track/bus buffers и не обходит hash maps, не выделяет память и не блокируется. Gain и pan дорожек/buses сглаживаются; структурное изменение routing останавливает transport и публикует новый plan.
 
-Post-fader send снимает сигнал после track gain/pan/mute/solo. Pre-fader tap обходит gain и pan, но подчиняется общему mute/solo gate с тем же коротким smoothing. Bus sends, bus solo, meters, inserts, sidechain и PDC ещё не реализованы.
+Post-fader send снимает сигнал после track gain/pan/mute/solo. Pre-fader tap обходит gain и pan, но подчиняется общему mute/solo gate с тем же коротким smoothing. Bus sends, meters, inserts, sidechain и PDC ещё не реализованы.
 
 ## Формат проекта и UI
 

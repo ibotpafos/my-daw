@@ -117,6 +117,7 @@ public:
     uint64_t frames() const noexcept override { return capture?capture->frames():0; }
     uint64_t callbacks() const noexcept override { return callbackCount.load(std::memory_order_relaxed); }
     bool overflowed() const noexcept override { return capture&&capture->overflowed(); }
+    void previewPeaks(float* out,uint32_t count) const noexcept override { if(capture)capture->previewPeaks(out,count); else if(out&&(count==512||count==kRecordingPreviewDetailBins))std::fill_n(out,count,0.0f); }
     void discardRecovery() noexcept override { if(capture)capture->discard(); }
 };
 }

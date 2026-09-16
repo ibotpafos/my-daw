@@ -27,6 +27,11 @@ int main() {
         auto recording = abi<daw_recording>();
         CHECK_OK(session.get(), daw_get_recording(session.get(), &recording));
         CHECK(recording.recording == 0 && recording.frames == 0 && recording.callbacks == 0 && recording.target_track_id == 0);
+        float detailedRecordingPreview[DAW_RECORDING_PREVIEW_DETAIL_BINS]{};
+        CHECK_OK(session.get(), daw_get_recording_preview_detail(session.get(), detailedRecordingPreview, DAW_RECORDING_PREVIEW_DETAIL_BINS));
+        CHECK(detailedRecordingPreview[0] == 0.0f && detailedRecordingPreview[DAW_RECORDING_PREVIEW_DETAIL_BINS - 1] == 0.0f);
+        CHECK_REJ(session.get(), daw_get_recording_preview_detail(session.get(), detailedRecordingPreview, DAW_RECORDING_PREVIEW_DETAIL_BINS - 1));
+        CHECK_REJ(session.get(), daw_get_recording_preview_detail(session.get(), nullptr, DAW_RECORDING_PREVIEW_DETAIL_BINS));
         recording.struct_size = sizeof(daw_recording) - 4;
         CHECK_REJ(session.get(), daw_get_recording(session.get(), &recording)); // ABI gate
         CHECK_REJ(session.get(), daw_record_stop(session.get(), "Orphan", revision)); // never started
@@ -34,6 +39,25 @@ int main() {
         CHECK_REJ(session.get(), daw_recover_take(session.get(), (root / "missing.mydawtake").string().c_str(),
                                                    "Ghost", revision)); // missing recovery file
         CHECK(rev(session.get()) == revision);
+
+        // 1b. Recording into an empty armed track materializes it into an
+        // audio track on stop. Therefore it must reserve the same eight-track
+        // budget before opening the microphone, rather than bypassing the
+        // policy merely because the target has no audio yet.
+        {
+            Bridge limited;
+            for (uint32_t index = 0; index < 8; ++index) {
+                CHECK_OK(limited.get(), daw_import_wav(limited.get(), tonePath.string().c_str(), "Audio", rev(limited.get())));
+            }
+            const uint64_t emptyTarget = addTrack(limited.get(), "Armed empty audio");
+            const auto beforeLimit = snapshotOf(limited.get());
+            CHECK_REJ(limited.get(), daw_record_start_take(limited.get(), emptyTarget, 0,
+                                                           (root / "limit.mydawtake").string().c_str()));
+            CHECK(bridgeError(limited.get()) == "Prototype supports at most 8 audio tracks");
+            const auto afterLimit = snapshotOf(limited.get());
+            CHECK(afterLimit.revision == beforeLimit.revision && afterLimit.track_count == beforeLimit.track_count);
+            CHECK(trackById(limited.get(), emptyTarget).audio_frames == 0);
+        }
 
         // 2. MIDI source enumeration is bounded: whatever the environment
         // reports, indexed reads must match the count and out-of-range rejects.

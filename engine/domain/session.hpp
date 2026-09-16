@@ -8,7 +8,11 @@
 #include <vector>
 namespace daw {
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
-struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; double pan=0.0; bool operator==(const Region&) const = default; };
+enum class FadeShape : uint8_t { Linear=0, Smooth=1, EqualPower=2 };
+constexpr bool isFadeShape(FadeShape shape) noexcept { return shape==FadeShape::Linear || shape==FadeShape::Smooth || shape==FadeShape::EqualPower; }
+// Shapes deliberately trail the historic aggregate fields, so old aggregate
+// initializers keep their exact linear behaviour.
+struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; double pan=0.0; FadeShape fadeInShape=FadeShape::Linear, fadeOutShape=FadeShape::Linear; bool autoFadeIn=false, autoFadeOut=false; bool operator==(const Region&) const = default; };
 struct Take { std::string name; uint64_t start=0; std::shared_ptr<const Clip> audio; bool operator==(const Take&) const = default; };
 struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operator==(const Send&) const = default; };
 // Ordered timeline points for the track fader. Frames are project frames at
@@ -79,12 +83,13 @@ struct Marker { uint64_t frame=0; std::string name; bool operator==(const Marker
 struct PluginInsert { uint64_t id=0; uint32_t type=0, subtype=0, manufacturer=0; std::string name; bool bypassed=false; uint32_t latencyFrames=0; std::vector<uint8_t> state; std::vector<PluginParameterAutomationLane> parameterAutomation; PluginHostingMode hostingMode=PluginHostingMode::InProcess; bool operator==(const PluginInsert&) const = default; };
 bool isVst3PluginInsert(const PluginInsert& plugin) noexcept;
 struct Track { uint64_t id; std::string name; double gain; uint32_t color = 0; std::shared_ptr<const Clip> audio = {}; std::vector<Region> regions; double pan=0; bool muted=false, solo=false; uint64_t baseStart=0; std::vector<Take> takes; uint64_t outputBus=0; std::vector<Send> sends; std::vector<AutomationPoint> volumeAutomation; std::vector<AutomationPoint> panAutomation; std::vector<PluginInsert> inserts; std::vector<MidiClip> midiClips; bool operator==(const Track&) const = default; };
-struct Bus { uint64_t id=0; std::string name; double gain=0; double pan=0; bool muted=false; uint64_t outputBus=0; std::vector<AutomationPoint> gainAutomation; std::vector<PluginInsert> inserts; bool operator==(const Bus&) const = default; };
+struct Bus { uint64_t id=0; std::string name; double gain=0; double pan=0; bool muted=false; bool solo=false; uint64_t outputBus=0; std::vector<AutomationPoint> gainAutomation; std::vector<PluginInsert> inserts; bool operator==(const Bus&) const = default; };
 struct State {
     uint64_t revision = 0;
     uint64_t nextID = 1;
     std::vector<Track> tracks;
     double masterGain=0;
+    bool masterSolo=false;
     std::vector<AutomationPoint> masterGainAutomation;
     std::vector<Bus> buses;
     std::vector<PluginInsert> masterInserts;
@@ -97,6 +102,15 @@ struct State {
     // it sorted by frame, so readers and undo snapshots never see a gap or a
     // duplicate position.
     std::vector<Marker> markers;
+    // VST3 editor proxy state for isolated inserts. One editor per insert; the
+    // view is managed in a disposable helper process via shared memory.
+    struct Vst3EditorState {
+        std::string viewType;   // e.g. "editor", "generic"
+        int32_t width = 0;
+        int32_t height = 0;
+        bool attached = false;
+    };
+    std::vector<Vst3EditorState> vst3Editors;
     // Beat positions count whole quarter notes from frame 0 across the tempo
     // map: one beat spans 60/bpm seconds at the fixed 48 kHz project rate.
     // Conversion accumulates per-segment durations in long double and rounds
@@ -145,12 +159,14 @@ public:
     void setTrackGain(uint64_t id, double gainDb, uint64_t expected);
     uint64_t duplicateTrack(uint64_t id, uint64_t expected);
     void masterGain(double value, uint64_t expected);
+    void setMasterSolo(bool solo, uint64_t expected);
     void addBus(const std::string& name,uint64_t expected);
     void deleteBus(uint64_t id,uint64_t expected);
     void renameBus(uint64_t id,const std::string& name,uint64_t expected);
     void busGain(uint64_t id,double value,uint64_t expected);
     void busPan(uint64_t id,double value,uint64_t expected);
     void busMute(uint64_t id,bool value,uint64_t expected);
+    void busSolo(uint64_t id,bool value,uint64_t expected);
     void routeTrack(uint64_t trackID,uint64_t busID,uint64_t expected);
     void routeBus(uint64_t busID,uint64_t outputBusID,uint64_t expected);
     void upsertSend(uint64_t trackID,uint64_t busID,double gain,bool preFader,uint64_t expected);
@@ -205,6 +221,12 @@ public:
     void deleteClip(uint64_t id, uint32_t index, uint64_t expected);
     void setClipFades(uint64_t id, uint32_t index, uint64_t fadeIn, uint64_t fadeOut, uint64_t expected);
     void setCrossfade(uint64_t id,uint32_t leftIndex,uint64_t duration,uint64_t expected);
+    // Atomically creates, resizes, or removes a crossfade and assigns its
+    // shared curve. This is intentionally separate from setCrossfade() so the
+    // legacy operation keeps its exact linear/no-op semantics.
+    void setCrossfadeShaped(uint64_t id,uint32_t leftIndex,uint64_t duration,FadeShape shape,uint64_t expected);
+    void setClipFadeShapes(uint64_t id,uint32_t index,FadeShape fadeIn,FadeShape fadeOut,uint64_t expected);
+    void setCrossfadeShape(uint64_t id,uint32_t leftIndex,FadeShape shape,uint64_t expected);
     // MIDI clip commands follow the audio-clip convention: positional vector
     // index, expected revision, silent no-op when the target value is already
     // identical, and one snapshot-based undo entry per committed command.
@@ -237,19 +259,23 @@ public:
     // unity-center law as the track fader's pan.
     void setClipPan(uint64_t id, uint32_t clipIndex, double pan, uint64_t expected);
     // Multi-selection group operations: one revision for the whole group.
-    // deleteClips sorts/uniques indices and keeps the track non-empty through
-    // validate(); nudgeClips translates selected regions together and re-sorts
-    // by start, so overlaps/crossfades stay validate()'s business.
+    // deleteClips sorts/uniques indices; when they cover every audio region it
+    // clears the media and leaves the same reusable empty track. nudgeClips
+    // translates selected regions together and re-sorts by start, so
+    // overlapping audio clips automatically receive a linear crossfade whose
+    // duration equals their overlap; validate() retains the geometry limits.
     void deleteClips(uint64_t id, std::vector<uint32_t> indices, uint64_t expected);
     void nudgeClips(uint64_t id, std::vector<uint32_t> indices, int64_t deltaFrames, uint64_t expected);
     void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
     void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
     void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);
-    // Cross-track clipboard moves. Copy keeps the source; move erases it, so a
-    // lone region cannot leave its imported track (same rule as deleteClip).
+    // Cross-track clipboard moves. Copy keeps the source; a move retains the
+    // source track's media ownership, so its lone region cannot leave even
+    // though deleteClip may instead turn that source track empty.
     // Paste of an audio region requires the target track to carry the very same
     // take at the region's take index (take indices are track-local). MIDI keeps
-    // its lane: validate() only requires non-negativity. start/limits/overlaps
+    // its lane: validate() only requires non-negativity. Audio paste/move may
+    // overlap and automatically assigns a linear crossfade; timeline limits
     // and every capacity rule stay owned by validate().
     void copyClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     void moveClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
@@ -273,10 +299,23 @@ public:
     void renameMarker(uint64_t frame,const std::string& name,uint64_t expected);
     void addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip>,uint64_t start,uint64_t expected);
     void addTakes(uint64_t id,std::vector<Take> takes,uint64_t expected);
+    // First audio recorded into an otherwise ordinary empty track becomes its
+    // base clip, preserving the selected track identity and settings.
+    void materializeRecordedTrack(uint64_t id,const std::string& name,std::shared_ptr<const Clip>,uint64_t start,uint64_t expected);
     void compRange(uint64_t id,uint32_t take,uint64_t start,uint64_t length,uint64_t expected);
     void undo(uint64_t expected);
     void redo(uint64_t expected);
     void replace(State state);
+
+    // VST3 editor proxy for isolated inserts. Requires OutOfProcess hosting mode
+    // and the VST3 editor helper (DAW_BUILD_VST3_EDITOR_HELPER).
+    void openVst3Editor(const PluginInsert& insert, const std::string& viewType, uint64_t expected);
+    void closeVst3Editor(const PluginInsert& insert, uint64_t expected);
+    bool resizeVst3Editor(const PluginInsert& insert, int32_t width, int32_t height, uint64_t expected);
+    float getVst3EditorParameter(const PluginInsert& insert, uint32_t parameterID, uint64_t expected);
+    void setVst3EditorParameter(const PluginInsert& insert, uint32_t parameterID, float normalizedValue, uint64_t expected);
+    void idleVst3Editor(const PluginInsert& insert, uint64_t expected);
+    State::Vst3EditorState vst3EditorView(const PluginInsert& insert) const;
 private:
     State current;
     std::vector<State> past, future;

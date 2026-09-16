@@ -54,13 +54,17 @@ Clip::Clip(std::vector<float> samples, const ImportControl& control): samples_(s
         if ((index&0x3fffU)==0) checkImportCanceled(control);
         const float value=samples_[index]; if (!std::isfinite(value) || std::abs(value)>16) throw Error("Invalid audio sample");
     }
-    for(size_t bin=0;bin<peaks_.size();++bin) {
-        const size_t begin=bin*frames()/peaks_.size(), end=(bin+1)*frames()/peaks_.size();
-        for(size_t f=begin;f<end;++f) {
-            if ((f&0x3fffU)==0) checkImportCanceled(control);
-            peaks_[bin]=std::max({peaks_[bin],std::abs(samples_[f*2]),std::abs(samples_[f*2+1])});
+    const auto buildPeaks = [this, &control](auto& cache) {
+        for(size_t bin=0;bin<cache.size();++bin) {
+            const size_t begin=bin*frames()/cache.size(), end=(bin+1)*frames()/cache.size();
+            for(size_t f=begin;f<end;++f) {
+                if ((f&0x3fffU)==0) checkImportCanceled(control);
+                cache[bin]=std::max({cache[bin],std::abs(samples_[f*2]),std::abs(samples_[f*2+1])});
+            }
         }
-    }
+    };
+    buildPeaks(peaks_);
+    buildPeaks(detailPeaks_);
 }
 std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> b) {
     return decodeWav(b, {});

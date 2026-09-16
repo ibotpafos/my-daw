@@ -9,6 +9,7 @@ set(DAW_VST3_SDK_DIR "${CMAKE_SOURCE_DIR}/build/dependencies/vst3sdk" CACHE PATH
     "Pinned VST3 SDK checkout; bootstrap it explicitly with scripts/bootstrap-vst3-sdk.sh")
 option(DAW_BUILD_VST3_SCAN_HELPER "Build the isolated VST3 scanner helper when the pinned SDK is present" OFF)
 option(DAW_BUILD_VST3_RUNTIME_HELPER "Build the managed isolated VST3 runtime helper when the pinned SDK is present" OFF)
+option(DAW_BUILD_VST3_EDITOR_HELPER "Build the VST3 editor proxy helper when the pinned SDK is present" OFF)
 if(DAW_SANITIZERS AND DAW_THREAD_SANITIZER)
   message(FATAL_ERROR "Choose ASan/UBSan or TSan, not both")
 endif()
@@ -150,6 +151,38 @@ if(APPLE)
     target_compile_options(daw_vst3_runtime_helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(daw_vst3_runtime_helper PRIVATE "-framework Cocoa" "-framework CoreFoundation" "-framework Foundation")
     target_compile_definitions(daw_core PRIVATE DAW_VST3_RUNTIME_AVAILABLE=1)
+  endif()
+  if(DAW_BUILD_VST3_EDITOR_HELPER)
+    if(NOT EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
+      message(FATAL_ERROR "DAW_BUILD_VST3_EDITOR_HELPER requires the pinned VST3 SDK at ${DAW_VST3_SDK_DIR}")
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/tools/vst3_editor_helper.cpp")
+      add_executable(daw_vst3_editor_helper
+        tools/vst3_editor_helper.cpp
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp"
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm"
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp")
+      target_sources(daw_vst3_editor_helper PRIVATE
+        "${DAW_VST3_SDK_DIR}/pluginterfaces/base/coreiids.cpp"
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/vstinitiids.cpp")
+      set_source_files_properties(
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm"
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+      set_source_files_properties(
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp"
+        "${DAW_VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp"
+        PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
+      target_include_directories(daw_vst3_editor_helper PRIVATE
+        "${DAW_VST3_SDK_DIR}"
+        "${DAW_VST3_SDK_DIR}/pluginterfaces"
+        "${DAW_VST3_SDK_DIR}/base/source")
+      target_compile_options(daw_vst3_editor_helper PRIVATE -Wall -Wextra -Wpedantic -Werror)
+      target_link_libraries(daw_vst3_editor_helper PRIVATE "-framework Cocoa" "-framework CoreFoundation" "-framework Foundation")
+      target_compile_definitions(daw_core PRIVATE DAW_VST3_EDITOR_AVAILABLE=1)
+    else()
+      message(STATUS "Pinned VST3 SDK found; daw_vst3_editor_helper is deferred until tools/vst3_editor_helper.cpp exists")
+    endif()
   endif()
 else()
   target_sources(daw_core PRIVATE engine/audio/clip_resampler_stub.cpp engine/audio/input_stub.cpp engine/audio/output_stub.cpp engine/audio/duplex_stub.cpp engine/audio/effect_stub.cpp engine/audio/vst3_effect_stub.cpp engine/audio/plugin_parameters_stub.cpp)

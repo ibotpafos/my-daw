@@ -75,9 +75,11 @@ int main(){try{
     // Source duration is checked before conversion, including high-rate PCM.
     rejects([&]{daw::decodeWav(wavAtRate(44100, 44100 * 60 + 1));});
     CHECK(clip->peaks().size()==512); for(auto peak:clip->peaks()) CHECK(peak==0.25f);
+    CHECK(clip->detailPeaks().size()==2048); for(auto peak:clip->detailPeaks()) CHECK(peak==0.25f);
     std::vector<float> impulse(2000,0); impulse[1500]=0.5f;
     auto transient=std::make_shared<const daw::Clip>(std::move(impulse));
     CHECK(*std::max_element(transient->peaks().begin(),transient->peaks().end())==0.5f);
+    CHECK(*std::max_element(transient->detailPeaks().begin(),transient->detailPeaks().end())==0.5f);
     daw::Session seekSession;seekSession.import("Transient",transient,0);
     daw::Renderer seekRenderer;seekRenderer.prepare(seekSession.state(),700);seekRenderer.playing=true;
     std::vector<float> seekLeft(512),seekRight(512);seekRenderer.render(seekLeft.data(),seekRight.data(),512);
@@ -124,17 +126,41 @@ int main(){try{
     rejects([&]{clipOps.setClipFades(1,0,300,300,5);}); CHECK(clipOps.state().revision==5);
     clipOps.duplicateClip(1,0,5); CHECK(clipOps.state().tracks[0].regions.size()==3 && clipOps.state().tracks[0].regions.back().start==1000);
     clipOps.deleteClip(1,1,6); CHECK(clipOps.state().tracks[0].regions.size()==2);
-    clipOps.deleteClip(1,1,7); rejects([&]{clipOps.deleteClip(1,0,8);});
-    clipOps.undo(8); CHECK(clipOps.state().tracks[0].regions.size()==2);
+    clipOps.deleteClip(1,1,7); CHECK(clipOps.state().tracks[0].regions.size()==1);
+    clipOps.deleteClip(1,0,8); CHECK(!clipOps.state().tracks[0].audio && clipOps.state().tracks[0].regions.empty());
+    clipOps.undo(9); CHECK(clipOps.state().tracks[0].audio && clipOps.state().tracks[0].regions.size()==1);
+    clipOps.undo(10); CHECK(clipOps.state().tracks[0].regions.size()==2);
     auto constantClip=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.5f));
     daw::Session crossfade;crossfade.import("X",constantClip,0);crossfade.splitClip(1,0,500,1);crossfade.setCrossfade(1,0,100,2);
     CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500,0,100},{400,400,600,100,0}}));
     crossfade.setCrossfade(1,0,100,3);CHECK(crossfade.state().revision==3);rejects([&]{crossfade.setCrossfade(1,0,1,3);});
     daw::Renderer crossfadeRenderer;crossfadeRenderer.prepare(crossfade.state());crossfadeRenderer.playing=true;std::vector<float> crossLeft(1000),crossRight(1000);crossfadeRenderer.render(crossLeft.data(),crossRight.data(),1000);
     for(size_t i=400;i<500;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(crossLeft[i]-0.5f*smoothed)<0.00002f);}
+    // Ordinary timeline editing may overlap two otherwise identical constant
+    // clips. It must create the same linear unity-sum crossfade as the
+    // explicit crossfade command, rather than doubling the level.
+    daw::Session autoCrossfade;autoCrossfade.import("Auto X",constantClip,0);autoCrossfade.splitClip(1,0,500,1);
+    autoCrossfade.editClip(1,1,400,500,500,2);
+    { const auto& regions=autoCrossfade.state().tracks[0].regions;
+      CHECK(regions[0].fadeOut==100&&regions[1].fadeIn==100&&regions[0].autoFadeOut&&regions[1].autoFadeIn);
+      CHECK(regions[0].fadeOutShape==daw::FadeShape::Linear&&regions[1].fadeInShape==daw::FadeShape::Linear); }
+    daw::Renderer autoCrossfadeRenderer;autoCrossfadeRenderer.prepare(autoCrossfade.state());autoCrossfadeRenderer.playing=true;
+    std::vector<float> autoCrossLeft(1000),autoCrossRight(1000);autoCrossfadeRenderer.render(autoCrossLeft.data(),autoCrossRight.data(),1000);
+    for(size_t i=400;i<500;++i){const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(i+1));CHECK(std::abs(autoCrossLeft[i]-0.5f*smoothed)<0.00002f&&autoCrossLeft[i]==autoCrossRight[i]);}
     crossfade.setCrossfade(1,0,0,3);CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500},{500,500,500}}));
     crossfade.undo(4);CHECK(crossfade.state().tracks[0].regions[1].start==400);crossfade.redo(5);CHECK(crossfade.state().tracks[0].regions[1].start==500);
     crossfade.undo(6);CHECK(crossfade.state().tracks[0].regions[1].start==400);rejects([&]{crossfade.setCrossfade(1,0,600,7);});
+    {   daw::Session shaped;shaped.import("Shape",constantClip,0);shaped.setClipFades(1,0,100,0,1);
+        shaped.setClipFadeShapes(1,0,daw::FadeShape::Smooth,daw::FadeShape::EqualPower,2);
+        CHECK(shaped.state().tracks[0].regions[0].fadeInShape==daw::FadeShape::Smooth);
+        daw::Renderer shapedRenderer;shapedRenderer.prepare(shaped.state());shapedRenderer.playing=true;std::vector<float> shapedLeft(100),shapedRight(100);shapedRenderer.render(shapedLeft.data(),shapedRight.data(),100);
+        CHECK(shapedLeft[50] < 0.5f*float(50)/99.0f); // smoothstep below linear before midpoint
+        const auto shapePath=(std::filesystem::temp_directory_path()/"mydaw-fade-shapes.mydawdraft").string();daw::writeDraft(shaped.state(),shapePath);auto loaded=daw::readDraft(shapePath);CHECK(loaded.tracks[0].regions[0].fadeInShape==daw::FadeShape::Smooth&&loaded.tracks[0].regions[0].fadeOutShape==daw::FadeShape::EqualPower);std::filesystem::remove(shapePath);
+        shaped.splitClip(1,0,500,3);shaped.setCrossfadeShaped(1,0,100,daw::FadeShape::EqualPower,4);CHECK(shaped.state().revision==5&&shaped.state().tracks[0].regions[0].fadeOutShape==daw::FadeShape::EqualPower&&shaped.state().tracks[0].regions[1].fadeInShape==daw::FadeShape::EqualPower);
+        daw::Renderer equalPowerRenderer;equalPowerRenderer.prepare(shaped.state());equalPowerRenderer.playing=true;std::vector<float> equalPowerLeft(1000),equalPowerRight(1000);equalPowerRenderer.render(equalPowerLeft.data(),equalPowerRight.data(),1000);
+        for(size_t frame=400;frame<500;++frame){const auto fadeOut=std::sin(float(499-frame)/99.0f*1.57079632679489661923f);const auto fadeIn=std::sin(float(frame-400)/99.0f*1.57079632679489661923f);const auto smoothed=1.0f-std::pow(1.0f-0.004166667f,float(frame+1));const auto expected=0.5f*(fadeOut+fadeIn)*smoothed;CHECK(std::abs(equalPowerLeft[frame]-expected)<0.00002f&&equalPowerLeft[frame]==equalPowerRight[frame]);}
+        shaped.undo(5);CHECK(shaped.state().tracks[0].regions[1].start==500&&shaped.state().tracks[0].regions[0].fadeOutShape==daw::FadeShape::Linear);
+    }
     // Per-region clip gain folds into the voice mix: -6.0206 dB halves the level.
     {   daw::Session clipGain;clipGain.import("G",constantClip,0);
         clipGain.setClipGain(1,0,-6.020599913,1);CHECK(clipGain.state().tracks[0].regions[0].gain==-6.020599913);
@@ -264,7 +290,8 @@ int main(){try{
     CHECK(daw_set_clip_fades(bridge.get(),1,1,10,10,splitSnap.revision+1)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.fade_in==10);
     CHECK(daw_set_crossfade(bridge.get(),1,0,10,splitSnap.revision+2)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.start==240 && bridgeClip.fade_in==10);
     CHECK(daw_set_crossfade(bridge.get(),1,0,0,splitSnap.revision+3)==0);CHECK(daw_get_clip(bridge.get(),1,1,&bridgeClip)==0 && bridgeClip.start==250 && bridgeClip.fade_in==0);
-    CHECK(daw_duplicate_clip(bridge.get(),1,1,splitSnap.revision+4)==0);CHECK(daw_delete_clip(bridge.get(),1,2,splitSnap.revision+5)==0);
+    CHECK(daw_set_crossfade_shaped(bridge.get(),1,0,10,2,splitSnap.revision+4)==0);daw_clip_fade_shapes bridgeShapes{sizeof(bridgeShapes),1};CHECK(daw_get_clip_fade_shapes(bridge.get(),1,0,&bridgeShapes)==0&&bridgeShapes.fade_out_shape==2);CHECK(daw_get_clip_fade_shapes(bridge.get(),1,1,&bridgeShapes)==0&&bridgeShapes.fade_in_shape==2);
+    CHECK(daw_duplicate_clip(bridge.get(),1,1,splitSnap.revision+5)==0);CHECK(daw_delete_clip(bridge.get(),1,2,splitSnap.revision+6)==0);
     daw::writeDraft(seekSession.state(),path);auto edited=daw::readDraft(path);
     CHECK(edited.tracks[0].regions.size()==2 && edited.tracks[0].regions[0].start==200 && edited.tracks[0].regions[1].sourceOffset==750);
     daw::Renderer persisted;persisted.prepare(edited);persisted.playing=true;persisted.render(seekLeft.data(),seekRight.data(),512);CHECK(seekLeft[250]>0 && seekLeft[300]==0);

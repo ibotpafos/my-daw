@@ -2,6 +2,7 @@
 #include "audio/clip.hpp"
 #include "domain/session.hpp"
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -14,6 +15,10 @@ struct RecoveredTake {
     std::shared_ptr<const Clip> clip;
 };
 
+// The live capture cache has the same resolution as the editor's immutable
+// clip preview.  Callers may still request the legacy 512-column overview.
+inline constexpr uint32_t kRecordingPreviewDetailBins=2048;
+
 // One producer (audio callback), one consumer (writer thread). The producer
 // allocates nothing, locks nothing and performs no file I/O.
 class RecordingWriter {
@@ -22,6 +27,9 @@ class RecordingWriter {
     uint64_t skipFrames_=0; // pre-roll: drop this many leading captured frames
     std::vector<float> ring_;
     std::atomic<uint64_t> read_{0}, written_{0}, accepted_{0}, committed_{0};
+    // Fixed bins are updated by the sole audio producer.  Integer bit patterns
+    // keep this lock-free even on platforms where atomic<float> is not.
+    std::array<std::atomic<uint32_t>,kRecordingPreviewDetailBins> previewPeaks_{};
     std::atomic<bool> stopping_{false}, overflow_{false}, failed_{false};
     std::thread worker_;
     int fd_=-1;
@@ -38,6 +46,7 @@ public:
     void discard() noexcept;
     uint64_t frames() const noexcept { return accepted_.load(std::memory_order_acquire); }
     uint64_t committedFrames() const noexcept { return committed_.load(std::memory_order_acquire); }
+    void previewPeaks(float* out,uint32_t count) const noexcept;
     bool overflowed() const noexcept { return overflow_.load(std::memory_order_acquire) || failed_.load(std::memory_order_acquire); }
     const std::string& path() const noexcept { return path_; }
 };

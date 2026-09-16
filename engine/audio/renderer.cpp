@@ -445,6 +445,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
         const float panRight = pan < 0 ? float(1 + pan) : 1.0f;
         nextVoices.push_back({i, source, region.start, region.sourceOffset,
                               region.length, region.fadeIn, region.fadeOut,
+                              region.fadeInShape, region.fadeOutShape,
                               gain(region.gain), loopSpan, panLeft, panRight});
         end = std::max(end, region.start + region.length);
       }
@@ -1042,16 +1043,19 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
           const auto local = t - voice.start;
           const auto source = voice.offset + (voice.loopSpan ? local % voice.loopSpan : local);
           float envelope = 1;
+          const auto shaped = [](float value, FadeShape shape) {
+            if (shape == FadeShape::Linear) return value; // exact legacy path
+            // Non-linear curves only describe the normalized fade interval.
+            // Without this clamp smoothstep/sine would extrapolate before or
+            // after the fade and could invert or mute ordinary clip material.
+            value = std::clamp(value, 0.0f, 1.0f);
+            if (shape == FadeShape::Smooth) return value * value * (3.0f - 2.0f * value);
+            return std::sin(value * 1.57079632679489661923f);
+          };
           if (voice.fadeIn)
-            envelope = std::min(envelope,
-                                voice.fadeIn == 1
-                                    ? 0.0f
-                                    : float(local) / float(voice.fadeIn - 1));
+            envelope = std::min(envelope, shaped(voice.fadeIn == 1 ? 0.0f : float(local) / float(voice.fadeIn - 1), voice.fadeInShape));
           if (voice.fadeOut)
-            envelope = std::min(
-                envelope, voice.fadeOut == 1 ? 0.0f
-                                             : float(voice.length - 1 - local) /
-                                                   float(voice.fadeOut - 1));
+            envelope = std::min(envelope, shaped(voice.fadeOut == 1 ? 0.0f : float(voice.length - 1 - local) / float(voice.fadeOut - 1), voice.fadeOutShape));
           const auto &pcm = voice.clip->samples();
           // Envelope and per-clip gain fold into one scalar; both are
           // prepared off-thread so the callback only multiplies.

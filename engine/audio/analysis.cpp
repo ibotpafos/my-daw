@@ -9,9 +9,17 @@ const Clip& sourceFor(const Track& track,const Region& region) {
     return *track.takes[region.take-1].audio;
 }
 float envelope(const Region& region,uint64_t local) {
+    const auto shaped=[](float value,FadeShape shape){
+        if(shape==FadeShape::Linear)return value; // exact legacy path
+        // Smooth and equal-power are curves over [0, 1], not polynomial or
+        // sine extrapolations before/after the actual fade interval.
+        value=std::clamp(value,0.0f,1.0f);
+        if(shape==FadeShape::Smooth)return value*value*(3.0f-2.0f*value);
+        return std::sin(value*1.57079632679489661923f);
+    };
     float value=1;
-    if(region.fadeIn)value=std::min(value,region.fadeIn==1?0.0f:float(local)/float(region.fadeIn-1));
-    if(region.fadeOut)value=std::min(value,region.fadeOut==1?0.0f:float(region.length-1-local)/float(region.fadeOut-1));
+    if(region.fadeIn)value=std::min(value,shaped(region.fadeIn==1?0.0f:float(local)/float(region.fadeIn-1),region.fadeInShape));
+    if(region.fadeOut)value=std::min(value,shaped(region.fadeOut==1?0.0f:float(region.length-1-local)/float(region.fadeOut-1),region.fadeOutShape));
     return value;
 }
 }

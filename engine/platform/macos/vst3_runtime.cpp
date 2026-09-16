@@ -1,4 +1,5 @@
 #include "platform/macos/vst3_runtime.hpp"
+#include "platform/macos/vst3_editor_protocol.hpp"
 
 #include "platform/macos/vst3_effect.hpp"
 
@@ -27,6 +28,7 @@ extern char **environ;
 namespace daw {
 namespace {
 using namespace vst3runtime;
+using namespace vst3editor;
 
 constexpr uint32_t kPipelineLatencyFrames = kMaximumFrames;
 
@@ -371,6 +373,192 @@ Vst3EffectSnapshot remoteSnapshotVst3Effect(const PluginInsert &plugin, uint32_t
 Vst3EffectSnapshot remoteSetVst3Parameter(const PluginInsert &plugin, uint32_t parameterID, float normalizedValue, uint32_t sampleRate, uint32_t maxFrames) {
   auto reply = control(plugin, ControlOperation::SetNormalized, parameterID, normalizedValue, sampleRate, maxFrames);
   return {reply.latency, reply.tail, std::move(reply.state), decodeParameters(reply.parameters)};
+}
+
+namespace {
+std::string &testEditorHelperPath() { static std::string path; return path; }
+
+std::string editorHelperPath() {
+    if (!testEditorHelperPath().empty()) return testEditorHelperPath();
+    std::array<char, PROC_PIDPATHINFO_MAXSIZE> executable{};
+    const int count = proc_pidpath(getpid(), executable.data(), static_cast<uint32_t>(executable.size()));
+    if (count <= 0) throw Error("Cannot resolve VST3 editor helper beside executable");
+    std::string path(executable.data(), static_cast<size_t>(count));
+    const auto slash = path.find_last_of('/');
+    if (slash == std::string::npos) throw Error("Cannot resolve VST3 editor helper beside executable");
+    return path.substr(0, slash + 1) + "daw_vst3_editor_helper";
+}
+
+class Vst3EditorProxyImpl final : public Vst3EditorProxy {
+public:
+    Vst3EditorProxyImpl(const PluginInsert& plugin, uint32_t sampleRate, uint32_t maxFrames) {
+        if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames)
+            throw Error("VST3 editor proxy requires 48 kHz and 1..4096 frame blocks");
+        if (plugin.hostingMode != PluginHostingMode::OutOfProcess)
+            throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+        if (plugin.state.size() > kMaximumStateBytes)
+            throw Error("VST3 isolated state exceeds 16 MiB");
+        plugin_ = plugin;
+    }
+
+    ~Vst3EditorProxyImpl() override { close(); }
+
+    bool open(const PluginInsert& plugin, const std::string& viewType = "editor") override {
+        if (mapping_) return false;
+        plugin_ = plugin;
+        viewType_ = viewType;
+        name_ = uniqueMappingName();
+        fd_ = shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
+        if (fd_ < 0) throw Error("Create VST3 editor shared memory failed: " + std::string(std::strerror(errno)));
+        const size_t bytes = sizeof(EditorMapping) + plugin_.state.size() + 1 + viewType_.size() + 1;
+        mapBytes_ = bytes;
+        if (ftruncate(fd_, static_cast<off_t>(mapBytes_)) != 0)
+            throw Error("Size VST3 editor shared memory failed: " + std::string(std::strerror(errno)));
+        mapping_ = static_cast<EditorMapping*>(mmap(nullptr, mapBytes_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0));
+        if (mapping_ == MAP_FAILED) { mapping_ = nullptr; throw Error("Map VST3 editor shared memory failed: " + std::string(std::strerror(errno))); }
+        new (mapping_) EditorMapping();
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::Open);
+        mapping_->requestStateBytes = static_cast<uint32_t>(plugin_.state.size()) + 1 + static_cast<uint32_t>(viewType_.size()) + 1;
+        auto* payload = editorRequestPayload(mapping_);
+        std::copy(plugin_.state.begin(), plugin_.state.end(), payload);
+        payload[plugin_.state.size()] = '\0';
+        std::copy(viewType_.begin(), viewType_.end(), payload + plugin_.state.size() + 1);
+        payload[plugin_.state.size() + 1 + viewType_.size()] = '\0';
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        const int status = posix_spawn(&child_, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status != 0) { closeFd(fd_); if (mapping_) { mapping_->~EditorMapping(); (void)munmap(mapping_, mapBytes_); mapping_ = nullptr; } (void)shm_unlink(name_.c_str()); name_.clear(); throw Error("Start VST3 editor helper failed: " + std::string(std::strerror(status))); }
+        bool timedOut = false; int exitStatus = 0;
+        const bool ok = waitAndReap(child_, std::chrono::seconds(5), timedOut, exitStatus); child_ = -1;
+        const uint32_t completion = mapping_->completion.load(std::memory_order_acquire);
+        if (timedOut || !ok || completion != 1) {
+            std::string err = mapping_->error[0] ? mapping_->error : "Editor open failed";
+            cleanup();
+            throw Error("VST3 editor open failed: " + err);
+        }
+        attached_ = false;
+        return true;
+    }
+
+    void close() override {
+        if (!mapping_) return;
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::Close);
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        pid_t child = -1;
+        const int status = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status == 0) {
+            bool timedOut = false; int exitStatus = 0;
+            waitAndReap(child, std::chrono::seconds(2), timedOut, exitStatus);
+        }
+        cleanup();
+    }
+
+    bool resize(int32_t width, int32_t height) override {
+        if (!mapping_) return false;
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::Resize);
+        mapping_->width = width;
+        mapping_->height = height;
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        pid_t child = -1;
+        const int status = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status != 0) return false;
+        bool timedOut = false; int exitStatus = 0;
+        const bool ok = waitAndReap(child, std::chrono::seconds(2), timedOut, exitStatus);
+        if (!ok || timedOut) return false;
+        const uint32_t completion = mapping_->completion.load(std::memory_order_acquire);
+        if (completion == 1) {
+            viewWidth_ = width;
+            viewHeight_ = height;
+            return true;
+        }
+        return false;
+    }
+
+    bool getParameter(uint32_t id, float& outValue) override {
+        if (!mapping_) return false;
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::GetParameter);
+        mapping_->parameterID = id;
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        pid_t child = -1;
+        const int status = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status != 0) return false;
+        bool timedOut = false; int exitStatus = 0;
+        const bool ok = waitAndReap(child, std::chrono::seconds(2), timedOut, exitStatus);
+        if (!ok || timedOut) return false;
+        const uint32_t completion = mapping_->completion.load(std::memory_order_acquire);
+        if (completion == 1) {
+            const auto* response = editorResponsePayload(mapping_);
+            outValue = *reinterpret_cast<const float*>(response);
+            return true;
+        }
+        return false;
+    }
+
+    bool setParameter(uint32_t id, float normalizedValue) override {
+        if (!mapping_) return false;
+        if (!std::isfinite(normalizedValue) || normalizedValue < 0 || normalizedValue > 1) return false;
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::SetParameter);
+        mapping_->parameterID = id;
+        mapping_->normalizedValue = normalizedValue;
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        pid_t child = -1;
+        const int status = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status != 0) return false;
+        bool timedOut = false; int exitStatus = 0;
+        const bool ok = waitAndReap(child, std::chrono::seconds(2), timedOut, exitStatus);
+        if (!ok || timedOut) return false;
+        const uint32_t completion = mapping_->completion.load(std::memory_order_acquire);
+        return completion == 1;
+    }
+
+    void idle() override {
+        if (!mapping_) return;
+        mapping_->operation = static_cast<uint32_t>(EditorOperation::Idle);
+        const std::string helper = editorHelperPath();
+        std::array<char*, 4> argv{const_cast<char*>(helper.c_str()), const_cast<char*>("--control-shared-memory"), const_cast<char*>(name_.c_str()), nullptr};
+        pid_t child = -1;
+        const int status = posix_spawn(&child, helper.c_str(), nullptr, nullptr, argv.data(), environ);
+        if (status != 0) return;
+        bool timedOut = false; int exitStatus = 0;
+        waitAndReap(child, std::chrono::milliseconds(100), timedOut, exitStatus);
+    }
+
+    Vst3EditorView view() const override {
+        return {viewType_, viewWidth_, viewHeight_, attached_};
+    }
+
+private:
+    void cleanup() {
+        if (mapping_) { mapping_->~EditorMapping(); (void)munmap(mapping_, mapBytes_); mapping_ = nullptr; }
+        closeFd(fd_);
+        if (!name_.empty()) (void)shm_unlink(name_.c_str());
+        name_.clear();
+        child_ = -1;
+        attached_ = false;
+    }
+
+    PluginInsert plugin_;
+    std::string viewType_ = "editor";
+    int32_t viewWidth_ = 0;
+    int32_t viewHeight_ = 0;
+    bool attached_ = false;
+    std::string name_;
+    int fd_ = -1;
+    EditorMapping* mapping_ = nullptr;
+    size_t mapBytes_ = 0;
+    pid_t child_ = -1;
+};
+
+} // namespace
+
+void setVst3EditorHelperPathForTesting(std::string path) { testEditorHelperPath() = std::move(path); }
+
+std::unique_ptr<Vst3EditorProxy> createVst3EditorProxy(const PluginInsert& plugin, uint32_t sampleRate, uint32_t maxFrames) {
+    return std::make_unique<Vst3EditorProxyImpl>(plugin, sampleRate, maxFrames);
 }
 
 } // namespace daw

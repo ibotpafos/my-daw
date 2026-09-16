@@ -2,6 +2,11 @@ import AppKit
 import AVFoundation
 import UniformTypeIdentifiers
 
+// Matches DAW_TAKE_WAVEFORM_DETAIL_BINS and DAW_RECORDING_PREVIEW_DETAIL_BINS
+// in the bridge. The source data is cached by the engine, so this controls UI
+// transfer/detail rather than an audio-thread or redraw-time analysis pass.
+private let detailedWaveformPeakCount: UInt32 = 2048
+
 let automationTrackVolume = Int32(DAW_AUTOMATION_TRACK_VOLUME)
 let automationTrackPan = Int32(DAW_AUTOMATION_TRACK_PAN)
 let automationBusGain = Int32(DAW_AUTOMATION_BUS_GAIN)
@@ -222,6 +227,15 @@ final class TimelineRulerView: NSView {
 
 @MainActor
 final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate, NSSplitViewDelegate {
+    /// Read-only bridge snapshot for the temporary REC clip.  It never enters
+    /// the project model or Undo history; the durable clip appears only when
+    /// recording finishes successfully.
+    struct RecordingPreview {
+        var targetTrackID: UInt64
+        var startFrame: UInt64
+        var frames: UInt64
+        var peaks: [Float]
+    }
     var session: OpaquePointer!
     var window: DAWWindow!
     var revision: UInt64 = 0
@@ -276,6 +290,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let timelineRuler = TimelineRulerView(frame: .zero)
     var timelineDocument: DraftCanvas!
     var timelineScroll: NSScrollView!
+    /// A local magnify monitor catches a trackpad pinch even when a clip view,
+    /// ruler, or empty lane is the hit-tested view rather than the scroll view.
+    /// The event is consumed only inside the arrangement canvas.
+    var timelineMagnifyMonitor: Any?
     var trackHeaderScroll: NSScrollView!
     var synchronizingArrangementScroll = false
     var timelineWidthConstraint: NSLayoutConstraint?
@@ -348,6 +366,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var waveforms: [WaveformView] = []
     var isPlaying = false
     var isRecording = false
+    var recordingPreview: RecordingPreview?
     var recordingNumber = 1
     let undoButton = NSButton(title: "Отменить", target: nil, action: nil)
     let redoButton = NSButton(title: "Повторить", target: nil, action: nil)
@@ -450,7 +469,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func updateRecordButton(_ recording: Bool) {
         styleIconButton(recordButton, icon: recording ? .stop : .record)
         recordButton.contentTintColor = DAWDesignTokens.Color.coral
-        let label = recording ? "Закончить запись" : DAWIcon.record.accessibilityLabel
+        let label = recording ? "Закончить запись (R или ⌘R)" : "Запись (R или ⌘R)"
         recordButton.toolTip = label
         recordButton.setAccessibilityLabel(label)
     }
@@ -462,6 +481,26 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func durableTrackColor(_ hex:UInt64,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(UInt32(hex)) : trackAccent(index) }
     func durableTrackColor(_ hex:UInt32,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(hex) : trackAccent(index) }
     func setTimelineZoom(_ zoom:CGFloat){timelineZoom=min(8,max(1,zoom));timelineWidthConstraint?.constant=1400*timelineZoom;UserDefaults.standard.set(Double(timelineZoom),forKey:"timelineZoom");timelineDocument?.needsLayout=true;timelineRuler.needsDisplay=true}
+    /// Масштабирование от трекпада должно оставлять момент под пальцами на
+    /// месте — иначе при правке клипа он «уезжает» из-под курсора.
+    func magnifyTimeline(_ event: NSEvent) {
+        guard !isRecording, let timelineScroll, let timelineDocument else { return }
+        let multiplier = max(0.5, min(1.5, 1 + event.magnification))
+        guard multiplier != 1 else { return }
+        let oldZoom = timelineZoom
+        let newZoom = min(8, max(1, oldZoom * multiplier))
+        guard newZoom != oldZoom else { return }
+        let focusInDocument = timelineDocument.convert(event.locationInWindow, from: nil)
+        let focusInViewport = timelineScroll.contentView.convert(event.locationInWindow, from: nil)
+        let normalizedTime = min(1, max(0, focusInDocument.x / max(1, 1400 * oldZoom)))
+        setTimelineZoom(newZoom)
+        timelineDocument.layoutSubtreeIfNeeded()
+        let maxOrigin = max(0, timelineDocument.bounds.width - timelineScroll.contentView.bounds.width)
+        let originX = min(maxOrigin, max(0, normalizedTime * 1400 * newZoom - focusInViewport.x))
+        let clipView = timelineScroll.contentView
+        clipView.scroll(to: NSPoint(x: originX, y: clipView.bounds.origin.y))
+        timelineScroll.reflectScrolledClipView(clipView)
+    }
     @objc func zoomIn(){setTimelineZoom(timelineZoom*2)}
     @objc func zoomOut(){setTimelineZoom(timelineZoom/2)}
     @objc func resetZoom(){setTimelineZoom(1)}
@@ -538,6 +577,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.isReleasedWhenClosed = false
         window.backgroundColor = DAWDesignTokens.Color.canvas
         window.onPlayStop = { [weak self] in guard let self else{return};self.isPlaying ? self.stopAudio():self.playAudio() }
+        window.onRecordToggle = { [weak self] in self?.toggleRecording() }
         window.onRewind = { [weak self] in self?.rewindAudio() }
         window.onDeleteSelectedClip = { [weak self] in self?.deleteCurrentSelectedClip() }
         window.onDeleteSelectedTrack = { [weak self] in self?.deleteCurrentSelectedTrack() }
@@ -626,7 +666,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         resolveImportButton.target = self; resolveImportButton.action = #selector(resolveReadyImport); resolveImportButton.isEnabled = false; resolveImportButton.isHidden = true
         transportLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         transportLabel.textColor = DAWDesignTokens.Color.mint
-        let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
+        let scroll = TimelineScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
+        scroll.onMagnifyTimeline = { [weak self] event in self?.magnifyTimeline(event) }
+        timelineMagnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
+            guard let self, let eventWindow=event.window, let timelineWindow=self.timelineScroll?.window,
+                  eventWindow === timelineWindow else { return event }
+            let point=self.timelineScroll.convert(event.locationInWindow,from:nil)
+            guard self.timelineScroll.bounds.contains(point) else { return event }
+            self.magnifyTimeline(event)
+            return nil
+        }
         scroll.translatesAutoresizingMaskIntoConstraints = false
         rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 8
         rows.translatesAutoresizingMaskIntoConstraints = false
@@ -1250,6 +1299,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             trackNames[track.id] = name
             if track.audio_frames > 0 { hasAudio = true }
             var midiClipCount: UInt32 = 0; if track.audio_frames == 0 { _ = daw_get_midi_clip_count(session, track.id, &midiClipCount); if midiClipCount > 0 { hasMidiContent = true } }
+            let isLiveRecordingTarget = recordingPreview?.targetTrackID == track.id
+            let previewEnd = isLiveRecordingTarget ? (recordingPreview?.startFrame ?? 0) + (recordingPreview?.frames ?? 0) : 0
             let accent=durableTrackColor(track.color,Int(index));let number = label(String(format: "%02d", index + 1), size: 12, color: accent)
             number.widthAnchor.constraint(equalToConstant: 26).isActive = true
             let field = NSTextField(string: name); field.tag = Int(index); field.delegate = self
@@ -1275,15 +1326,28 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let selectedTake=min(selectedTakes[track.id] ?? 0,max(0,Int(track.take_count)-1));selectedTakes[track.id]=selectedTake;takePopup.selectItem(at:selectedTake);takePopups[Int(index)]=takePopup
             let applyComp=button("В comp",#selector(applyComp(_:)));applyComp.tag=Int(index);applyComp.isEnabled=track.take_count>1
             var clips: [ClipGeometry] = []
-            if track.audio_frames > 0 { for clipIndex in 0..<track.clip_count { var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size); guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return };var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var sourcePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform(session,track.id,clip.take_index,&sourcePeaks,512))else{return};clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db,muted:clip.muted != 0,looped:clip.looped != 0,pan:clip.pan)) } }
+            if track.audio_frames > 0 {
+                for clipIndex in 0..<track.clip_count {
+                    var clip=daw_clip(); clip.struct_size=UInt32(MemoryLayout<daw_clip>.size)
+                    guard check(daw_get_clip(session,track.id,clipIndex,&clip)) else { return }
+                    var fadeShapes=daw_clip_fade_shapes()
+                    fadeShapes.struct_size=UInt32(MemoryLayout<daw_clip_fade_shapes>.size)
+                    fadeShapes.version=1
+                    guard check(daw_get_clip_fade_shapes(session,track.id,clipIndex,&fadeShapes)) else { return }
+                    var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size)
+                    var sourcePeaks=[Float](repeating:0,count:Int(detailedWaveformPeakCount))
+                    guard check(daw_get_take(session,track.id,clip.take_index,&take)),check(daw_get_take_waveform_detail(session,track.id,clip.take_index,&sourcePeaks,detailedWaveformPeakCount))else{return}
+                    clips.append(ClipGeometry(start:clip.start,sourceOffset:clip.source_offset,length:clip.length,fadeIn:clip.fade_in,fadeOut:clip.fade_out,fadeInShape:fadeShapes.fade_in_shape,fadeOutShape:fadeShapes.fade_out_shape,takeIndex:clip.take_index,sourceFramesForTake:take.frames,sourcePeaks:sourcePeaks,color:clip.color,gainDb:clip.gain_db,muted:clip.muted != 0,looped:clip.looped != 0,pan:clip.pan))
+                }
+            }
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
-            let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
+            let duration = label(isLiveRecordingTarget ? String(format:"● REC · %.1f с",Double(recordingPreview?.frames ?? 0)/48000) : (track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио")), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
             let edit = button("Клип…", #selector(editClipPanel(_:))); edit.tag = Int(index); edit.isEnabled = track.audio_frames > 0
-            let arm=button("R",#selector(toggleArm(_:)));arm.tag=Int(index);arm.state=armedTrackID==track.id ? .on:.off;arm.contentTintColor=armedTrackID==track.id ? .systemRed:.secondaryLabelColor;arm.isEnabled=track.audio_frames>0;arm.setAccessibilityLabel("Записывать новые дубли в \(name)");arm.widthAnchor.constraint(equalToConstant:30).isActive=true
+            let arm=button("R",#selector(toggleArm(_:)));arm.tag=Int(index);arm.state=armedTrackID==track.id ? .on:.off;arm.contentTintColor=armedTrackID==track.id ? .systemRed:.secondaryLabelColor;arm.isEnabled=true;arm.setAccessibilityLabel("Вооружить \(name) для записи");arm.setAccessibilityHelp("Можно вооружить и пустую дорожку: первая запись появится именно здесь. R или ⌘R запускает и завершает запись, когда текст не редактируется.");arm.widthAnchor.constraint(equalToConstant:30).isActive=true
             let split = button("Split", #selector(splitClipAtCursor(_:))); split.tag=Int(index); split.isEnabled=track.audio_frames>0
             let copy = button("Копия", #selector(duplicateSelectedClip(_:))); copy.tag=Int(index); copy.isEnabled=track.audio_frames>0
-            let remove = button("Удалить", #selector(deleteSelectedClip(_:))); remove.tag=Int(index); remove.isEnabled=track.clip_count>1
+            let remove = button("Удалить", #selector(deleteSelectedClip(_:))); remove.tag=Int(index); remove.isEnabled=track.clip_count>0
             let crossfade = button("XFade", #selector(toggleSelectedCrossfade(_:))); crossfade.tag=Int(index); crossfade.isEnabled=track.clip_count>1
             var automationCount:UInt32=0;guard check(daw_get_track_volume_automation_count(session,track.id,&automationCount))else{return};var automationPoints:[(frame:UInt64,gain:Double)]=[];for pointIndex in 0..<automationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_volume_automation_point(session,track.id,pointIndex,&point))else{return};automationPoints.append((point.frame,point.gain_db))};let automation=button(automationCount==0 ? "V AUTO":"V \(automationCount)",#selector(editTrackAutomation(_:)));automation.tag=Int(index);automation.contentTintColor=automationCount==0 ? .secondaryLabelColor:.systemCyan
             var panAutomationCount:UInt32=0;guard check(daw_get_track_pan_automation_count(session,track.id,&panAutomationCount))else{return};var panAutomationPoints:[(frame:UInt64,value:Double)]=[];for pointIndex in 0..<panAutomationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_pan_automation_point(session,track.id,pointIndex,&point))else{return};panAutomationPoints.append((point.frame,point.gain_db))};let panAutomation=button(panAutomationCount==0 ? "P AUTO":"P \(panAutomationCount)",#selector(editTrackPanAutomation(_:)));panAutomation.tag=Int(index);panAutomation.contentTintColor=panAutomationCount==0 ? .secondaryLabelColor:.systemPurple
@@ -1311,23 +1375,28 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
             consoleRows.addArrangedSubview(detailGroup);detailGroup.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
             let timelineGroup=NSStackView();timelineGroup.orientation = .vertical;timelineGroup.alignment = .leading;timelineGroup.spacing=2
-            if track.audio_frames > 0 {
+            if track.audio_frames > 0 || isLiveRecordingTarget {
                 var peaks = [Float](repeating: 0, count: 512)
                 guard check(daw_get_waveform(session, track.id, &peaks, 512)) else { return }
                 let wave = WaveformView(frame: .zero)
                 wave.trackAccent=accent
-                wave.peaks = peaks; wave.clips = clips; wave.sourceFrames = track.audio_frames
+                wave.peaks = peaks; wave.clips = clips; wave.sourceFrames = max(track.audio_frames,recordingPreview?.frames ?? 0)
+                wave.isEditingEnabled = !isRecording
                 wave.automationPoints=automationPoints
                 wave.panAutomationPoints=panAutomationPoints
                 wave.snapFrames = gridFrames; wave.snapGrid = { [weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0) }; wave.rangeStart = rangeStart; wave.rangeEnd = rangeEnd;wave.loopEnabled=loopEnabled
                 wave.selectedIndex=min(selectedClips[track.id] ?? 0,max(0,clips.count-1)); selectedClips[track.id]=wave.selectedIndex
                 var group=(clipSelection[track.id] ?? []).filter{$0<clips.count}; if group.isEmpty{group=[wave.selectedIndex]}; group=Array(Set(group)).sorted(); clipSelection[track.id]=group; wave.selectedIndices=group
-                wave.projectFrames = min(48000 * 600, max(48000 * 12, transport.duration + 48000 * 2))
-                wave.playableFrames = transport.duration; wave.playhead = transport.frame
-                wave.onEditBegin = { [weak self] in self?.stopAudio() }
+                wave.projectFrames = min(48000 * 600, max(48000 * 12, max(transport.duration,previewEnd) + 48000 * 2))
+                wave.playableFrames = max(transport.duration,previewEnd); wave.playhead = transport.frame
+                if let preview=recordingPreview,isLiveRecordingTarget { wave.setRecordingPreview(start:preview.startFrame,frames:preview.frames,peaks:preview.peaks) }
+                wave.onEditBegin = { [weak self] in guard let self, !self.isRecording else { return }; self.stopAudio() }
                 let trackID = track.id
                 wave.onEdit = { [weak self] clipIndex,start,offset,length in self?.applyClipEdit(trackID,clipIndex,start,offset,length) }
                 wave.onFadeEdit = { [weak self] clipIndex,fadeIn,fadeOut in self?.applyClipFades(trackID,clipIndex,fadeIn,fadeOut) }
+                wave.onClipGainEdit = { [weak self] clipIndex,gainDb in self?.applyClipGain(trackID,clipIndex,gainDb) }
+                wave.onCrossfadeEdit = { [weak self] leftIndex,rightIndex,frames,shape in self?.applyCrossfade(trackID,leftIndex,rightIndex,frames,shape:shape) }
+                wave.onCrossfadeRemove = { [weak self] leftIndex,rightIndex in self?.applyCrossfade(trackID,leftIndex,rightIndex,0) }
                 wave.onSelect = { [weak self] clipIndex,additive in self?.clipTapped(trackID,clipIndex,additive:additive) }
                 wave.onNudge = { [weak self] direction in self?.nudgeClipGroup(trackID,direction) }
                 laneViews[trackID] = wave
@@ -1336,13 +1405,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onClipHotkey = { [weak self] key in self?.clipHotkey(trackID,key) }
                 wave.setAccessibilityLabel("Позиция на аудиоволне: \(name)")
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
-                wave.onToggle = { [weak self] in guard let self else { return }; if self.isPlaying { self.stopAudio() } else { self.playAudio() } }
+                wave.onToggle = { [weak self] in self?.togglePlayStop() }
                 timelineGroup.addArrangedSubview(wave)
                 wave.heightAnchor.constraint(equalToConstant: 92).isActive = true
                 wave.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true
                 waveforms.append(wave)
-            } else {let empty=EmptyTimelineLaneView(message:"Import WAV or start recording",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:92).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
-            if track.take_count>1 {for takeIndex in 0..<track.take_count{var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var takePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,takeIndex,&take)),check(daw_get_take_waveform(session,track.id,takeIndex,&takePeaks,512))else{return};let takeName=withUnsafeBytes(of:take.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let lane=TakeLaneView(frame:.zero);lane.title=takeIndex==0 ? "Основной":takeName;lane.peaks=takePeaks;lane.takeStart=take.start;lane.takeFrames=take.frames;lane.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));lane.selected=selectedTake==Int(takeIndex);lane.setAccessibilityLabel("Дубль \(lane.title)");let laneIndex=Int(takeIndex);lane.onSelect={[weak self]in self?.selectedTakes[track.id]=laneIndex;self?.refresh()};timelineGroup.addArrangedSubview(lane);lane.heightAnchor.constraint(equalToConstant:46).isActive=true;lane.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}}
+            } else {let empty=EmptyTimelineLaneView(message:midiClipCount > 0 ? "MIDI-дорожка" : "Пустая аудиодорожка · R или ⌘R для записи",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:92).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
+            if track.take_count>1 {for takeIndex in 0..<track.take_count{var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var takePeaks=[Float](repeating:0,count:Int(detailedWaveformPeakCount));guard check(daw_get_take(session,track.id,takeIndex,&take)),check(daw_get_take_waveform_detail(session,track.id,takeIndex,&takePeaks,detailedWaveformPeakCount))else{return};let takeName=withUnsafeBytes(of:take.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let lane=TakeLaneView(frame:.zero);lane.title=takeIndex==0 ? "Основной":takeName;lane.peaks=takePeaks;lane.takeStart=take.start;lane.takeFrames=take.frames;lane.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));lane.selected=selectedTake==Int(takeIndex);lane.setAccessibilityLabel("Дубль \(lane.title)");let laneIndex=Int(takeIndex);lane.onSelect={[weak self]in self?.selectedTakes[track.id]=laneIndex;self?.refresh()};timelineGroup.addArrangedSubview(lane);lane.heightAnchor.constraint(equalToConstant:46).isActive=true;lane.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}}
             let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(92+laneCount*48)
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
             let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
@@ -1351,7 +1420,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
         }
         let masterHeading=label("MASTER / PLUG-INS",size:10,color:.tertiaryLabelColor);masterHeading.font = .systemFont(ofSize:10,weight:.semibold)
-        let masterControls=NSStackView(views:[masterHeading,masterSlider,masterLabel,masterAutomationButton,automationModePopup,automationArmPopup,flexibleSpace()]);masterControls.spacing=7;masterControls.alignment = .centerY;consoleRows.addArrangedSubview(masterControls);masterControls.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
+        let masterSoloBtn=button("S",#selector(toggleMasterSolo(_:)));masterSoloBtn.setButtonType(.toggle);masterSoloBtn.state=snapshot.master_solo != 0 ? .on:.off;masterSoloBtn.contentTintColor=snapshot.master_solo != 0 ? .systemYellow:.secondaryLabelColor;masterSoloBtn.widthAnchor.constraint(equalToConstant:30).isActive=true
+        let masterControls=NSStackView(views:[masterHeading,masterSlider,masterLabel,masterAutomationButton,automationModePopup,automationArmPopup,masterSoloBtn,flexibleSpace()]);masterControls.spacing=7;masterControls.alignment = .centerY;consoleRows.addArrangedSubview(masterControls);masterControls.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         let pluginTools=NSStackView(views:[masterAUPopup,scanAUButton,masterVST3Popup,scanVST3Button,flexibleSpace()]);pluginTools.spacing=8;pluginTools.alignment = .centerY;consoleRows.addArrangedSubview(pluginTools);pluginTools.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         for pluginIndex in 0..<snapshot.master_insert_count{
             var plugin=daw_plugin();plugin.struct_size=UInt32(MemoryLayout<daw_plugin>.size);guard check(daw_get_master_insert(session,pluginIndex,&plugin))else{return};let name=withUnsafeBytes(of:plugin.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)}
@@ -1377,6 +1447,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)}
             let badge=label("BUS",size:10,color:.systemPurple);badge.font = .systemFont(ofSize:10,weight:.semibold);badge.widthAnchor.constraint(equalToConstant:34).isActive=true
             let mute=button("M",#selector(toggleBusMute(_:)));mute.setButtonType(.toggle);mute.state=bus.muted != 0 ? .on:.off;mute.contentTintColor=bus.muted != 0 ? .systemOrange:.secondaryLabelColor;mute.widthAnchor.constraint(equalToConstant:30).isActive=true
+            let solo=button("S",#selector(toggleBusSolo(_:)));solo.setButtonType(.toggle);solo.state=bus.solo != 0 ? .on:.off;solo.contentTintColor=bus.solo != 0 ? .systemYellow:.secondaryLabelColor;solo.widthAnchor.constraint(equalToConstant:30).isActive=true
+            busControlTargets[ObjectIdentifier(solo)]=bus.id
             let field=NSTextField(string:name);field.delegate=self;field.font = .systemFont(ofSize:14,weight:.medium);field.isBordered=false;field.drawsBackground=false;field.widthAnchor.constraint(greaterThanOrEqualToConstant:130).isActive=true;busNameTargets[ObjectIdentifier(field)]=bus.id
             let gainSlider=AutomationSlider(value:bus.gain_db,minValue:-120,maxValue:24,target:self,action:#selector(changeBusGain(_:)));gainSlider.isContinuous=true;gainSlider.widthAnchor.constraint(equalToConstant:120).isActive=true
             gainSlider.automationBegin = { [weak self] in self?.beginAutomation(target: automationBusGain, id: bus.id, value: gainSlider.doubleValue) }
@@ -1389,13 +1461,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             busControlTargets[ObjectIdentifier(mute)]=bus.id;busControlTargets[ObjectIdentifier(gainSlider)]=bus.id;busControlTargets[ObjectIdentifier(panSlider)]=bus.id
             automationTargets.append((automationBusGain,bus.id,"\(name) · Volume"))
             let busOutputName = orderedBuses.first(where: { $0.id == bus.output_bus_id })?.name ?? "Main"
-            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0))
-            let row=NSStackView(views:[badge,mute,field,flexibleSpace(),label("VOL",size:10,color:.tertiaryLabelColor),gainSlider,gainValue,busAutomation,label("PAN",size:10,color:.tertiaryLabelColor),panSlider,panValue,label("OUT",size:10,color:.tertiaryLabelColor),output]);row.spacing=7;row.edgeInsets=NSEdgeInsets(top:7,left:10,bottom:7,right:10);row.wantsLayer=true;row.layer?.backgroundColor=NSColor(calibratedRed:0.16,green:0.10,blue:0.22,alpha:0.18).cgColor;row.layer?.cornerRadius=2
+            mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,busSolo:bus.solo != 0,isAutomationRead:automationMode == 0))
+            let row=NSStackView(views:[badge,mute,solo,field,flexibleSpace(),label("VOL",size:10,color:.tertiaryLabelColor),gainSlider,gainValue,busAutomation,label("PAN",size:10,color:.tertiaryLabelColor),panSlider,panValue,label("OUT",size:10,color:.tertiaryLabelColor),output]);row.spacing=7;row.edgeInsets=NSEdgeInsets(top:7,left:10,bottom:7,right:10);row.wantsLayer=true;row.layer?.backgroundColor=NSColor(calibratedRed:0.16,green:0.10,blue:0.22,alpha:0.18).cgColor;row.layer?.cornerRadius=2
             let group=NSStackView();group.orientation = .vertical;group.alignment = .leading;group.spacing = 2;group.addArrangedSubview(row);row.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id,title:name);group.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             consoleRows.addArrangedSubview(group);group.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
-        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
+            mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,masterSolo:snapshot.master_solo != 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
         exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
         dawprojectButton.isEnabled = !exportBusy && !isRecording
@@ -1599,25 +1671,21 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerSetMute(_ id:UInt64,_ muted:Bool){guard let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
     func mixerSetSolo(_ id:UInt64,_ solo:Bool){
         guard let kind=mixerKinds[id] else { return }
-        if case .track = kind {
-            // Option+click solo: exclusive solo (only this track)
+        switch kind {
+        case .track:
             if NSEvent.modifierFlags.contains(.option) {
-                // Unsolo all tracks first
-                for (trackID, trackKind) in mixerKinds {
-                    if case .track = trackKind {
-                        _ = check(daw_set_solo(session, trackID, 0, revision))
-                    }
+                for (trackID, trackKind) in mixerKinds where trackKind == .track {
+                    _ = check(daw_set_solo(session, trackID, 0, revision))
                 }
-                // If we're turning solo ON, then solo this track
-                if solo {
-                    if check(daw_set_solo(session, id, 1, revision)) { refresh() }
-                } else {
-                    refresh()
-                }
+                if solo { _ = check(daw_set_solo(session, id, 1, revision)) }
+                refresh()
             } else {
-                // Normal solo toggle
                 if check(daw_set_solo(session, id, solo ? 1 : 0, revision)) { refresh() }
             }
+        case .bus:
+            if check(daw_set_bus_solo(session, id, solo ? 1 : 0, revision)) { refresh() }
+        case .master:
+            if check(daw_set_master_solo(session, solo ? 1 : 0, revision)) { refresh() }
         }
     }
     func setProjectControlsEnabled(_ enabled: Bool) {
@@ -1860,28 +1928,58 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let started=armedTrackID.map{daw_record_start_take(session,$0,start,recovery.path)} ?? daw_record_start(session,start,recovery.path)
         guard check(started) else { return }
         activeRecordingURL=recovery
-        isRecording=true; updateRecordButton(true); setProjectControlsEnabled(false); pollTransport()
+        isRecording=true
+        if let target=armedTrackID { recordingPreview=RecordingPreview(targetTrackID:target,startFrame:start,frames:0,peaks:[Float](repeating:0,count:Int(detailedWaveformPeakCount))) }
+        updateRecordButton(true)
+        // An empty armed track needs a canvas immediately; subsequent 10 Hz
+        // updates only redraw the temporary REC clip rather than rebuilding it.
+        refresh();setProjectControlsEnabled(false);pollTransport()
     }
     func finishRecording() {
         guard isRecording else { return }
         let name="Запись \(recordingNumber)"
-        let target=armedTrackID
+        // The UI arm selection is merely the launch choice.  Once recording is
+        // active, retain the target captured by the recorder preview so a
+        // future control path cannot redirect post-stop selection to another track.
+        let target=recordingPreview?.targetTrackID
         if check(daw_record_stop(session,name,revision)) {
             if let target { selectedTakes[target]=Int.max }
-            recordingNumber += 1; activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); refresh(); pollTransport()
+            recordingNumber += 1; activeRecordingURL=nil; isRecording=false; clearRecordingPreview(); updateRecordButton(false); setProjectControlsEnabled(true); refresh(); pollTransport()
         } else {
-            _=daw_record_cancel(session); activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); pollTransport()
+            _=daw_record_cancel(session); activeRecordingURL=nil; isRecording=false; clearRecordingPreview(); updateRecordButton(false); setProjectControlsEnabled(true); refresh(); pollTransport()
         }
+    }
+    func clearRecordingPreview() {
+        recordingPreview=nil
+        for wave in laneViews.values { wave.clearRecordingPreview() }
+    }
+    func updateRecordingPreview() {
+        var preview=daw_recording_preview()
+        preview.struct_size=UInt32(MemoryLayout<daw_recording_preview>.size)
+        preview.version=UInt32(DAW_RECORDING_PREVIEW_VERSION)
+        guard daw_get_recording_preview(session,&preview) == 0,preview.active != 0,preview.target_track_id != 0 else { clearRecordingPreview(); return }
+        var peaks=[Float](repeating:0,count:Int(detailedWaveformPeakCount))
+        // The v1 struct remains the metadata/compatibility surface. Fetch the
+        // dense envelope separately so a recording draws at the same detail as
+        // an imported clip without growing the stable ABI struct.
+        if daw_get_recording_preview_detail(session,&peaks,detailedWaveformPeakCount) != 0 {
+            peaks=withUnsafeBytes(of:preview.peaks){Array($0.bindMemory(to:Float.self).prefix(512))}
+        }
+        let snapshot=RecordingPreview(targetTrackID:preview.target_track_id,startFrame:preview.project_start_frame,frames:preview.captured_frames,peaks:peaks)
+        recordingPreview=snapshot
+        if let wave=laneViews[snapshot.targetTrackID] { wave.setRecordingPreview(start:snapshot.startFrame,frames:snapshot.frames,peaks:snapshot.peaks) }
+        else { refresh() }
     }
     func pollTransport() {
         guard session != nil else { return }
         updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard check(daw_get_recording(session,&recording)) else {
-            _=daw_record_cancel(session); isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); return
+            _=daw_record_cancel(session); isRecording=false; clearRecordingPreview(); updateRecordButton(false); setProjectControlsEnabled(true); return
         }
         if recording.recording != 0 {
             isRecording=true; updateRecordButton(true)
+            updateRecordingPreview()
             if recording.loop_recording != 0 {if let start=rangeStart,let end=rangeEnd,end>start{let frame=start+recording.frames%(end-start);for wave in waveforms{wave.playhead=frame}};transportLabel.stringValue=String(format:"● Loop recording  %.1f с · дублей %d · playback + mono input",Double(recording.frames)/48000,recording.pass_count)}
             else{transportLabel.stringValue=String(format:recording.target_track_id != 0 ? "● Новый дубль  %.1f с · mono / 48 кГц":"● Запись  %.1f с · mono / 48 кГц",Double(recording.frames)/48000)}
             if recording.overflowed != 0 { finishRecording() }
@@ -2122,7 +2220,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func splitClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(splitClipAtCursor(_:))) }
     @objc func duplicateClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(duplicateSelectedClip(_:))) }
     @objc func deleteClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
-    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{clipClipboard=(trackID,index,false);storageMessage("Клип в буфере обмена — V на дорожке или «Вставить клип».")}; case "v": pasteClipboardTo(trackID,playheadFrame); case "m": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:false)}; case "l": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:true)}; default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
+    func clipHotkey(_ trackID:UInt64,_ key:String){ guard !isRecording else{return};switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{clipClipboard=(trackID,index,false);storageMessage("Клип в буфере обмена — V на дорожке или «Вставить клип».")}; case "v": pasteClipboardTo(trackID,playheadFrame); case "m": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:false)}; case "l": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:true)}; default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
     func commitTrackColor(_ id:UInt64,_ color:UInt32){ guard !isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_track_color(session,id,color,revision)){refresh(); pollTransport()} }
     @objc func pickTrackColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; commitTrackColor(p.trackID,p.color) }
     func showTrackPalette(_ id:UInt64){
@@ -2403,6 +2501,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func applyClipFades(_ id: UInt64, _ clipIndex: Int, _ fadeIn: UInt64, _ fadeOut: UInt64) {
         guard !isRecording else{return};_ = daw_stop(session);if check(daw_set_clip_fades(session,id,UInt32(clipIndex),fadeIn,fadeOut,revision)){refresh();pollTransport()}
     }
+    func applyClipGain(_ id: UInt64, _ clipIndex: Int, _ gainDb: Double) {
+        guard !isRecording else { return }
+        let rounded=(min(12,max(-60,gainDb))*10).rounded()/10
+        _=daw_stop(session)
+        if check(daw_set_clip_gain(session,id,UInt32(clipIndex),rounded,revision)){refresh();pollTransport()}
+    }
+    func applyCrossfade(_ id: UInt64, _ leftIndex: Int, _ rightIndex: Int, _ frames: UInt64, shape: UInt32 = 0) {
+        guard !isRecording,leftIndex >= 0,rightIndex == leftIndex + 1,frames != 1 else { return }
+        _=daw_stop(session)
+        // Duration and curve share one domain snapshot, so a single drag has
+        // one undo step and cannot leave behind a linear XFade on interruption.
+        if check(daw_set_crossfade_shaped(session,id,UInt32(leftIndex),frames,shape,revision)){selectedClips[id]=leftIndex;refresh();pollTransport()}
+    }
     @objc func splitClipAtCursor(_ sender:NSButton) {
         guard !isRecording else { return }
         finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else { return }
@@ -2413,9 +2524,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func duplicateSelectedClip(_ sender:NSButton) { guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}; let index=selectedClips[id] ?? 0; var track=daw_track();track.struct_size=UInt32(MemoryLayout<daw_track>.size);guard check(daw_get_track(session,UInt32(sender.tag),&track)) else{return}; if check(daw_duplicate_clip(session,id,UInt32(index),revision)) { selectedClips[id]=Int(track.clip_count); refresh(); pollTransport() } }
     @objc func deleteSelectedClip(_ sender:NSButton) { guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}
+        var track=daw_track();track.struct_size=UInt32(MemoryLayout<daw_track>.size)
+        guard check(daw_get_track(session,UInt32(sender.tag),&track)),track.clip_count>0 else{return}
         var group=groupIndices(id)
-        if group.count>1 { if check(daw_delete_clips(session,id,&group,UInt32(group.count),revision)) { selectedClips[id]=0; clipSelection[id]=[0]; refresh(); pollTransport() } }
-        else { let index=selectedClips[id] ?? 0; if check(daw_delete_clip(session,id,UInt32(index),revision)) { selectedClips[id]=max(0,index-1); clipSelection.removeValue(forKey:id); refresh(); pollTransport() } } }
+        if group.isEmpty { group=[0] }
+        let removesAll=group.count==Int(track.clip_count)
+        let finishDelete:()->Void = { [weak self] in
+            guard let self else{return}
+            if removesAll { self.selectedClips.removeValue(forKey:id);self.clipSelection.removeValue(forKey:id);self.inspectorClipIndex=nil }
+            else { self.selectedClips[id]=max(0,(self.selectedClips[id] ?? 0)-1);self.clipSelection.removeValue(forKey:id) }
+            self.refresh();self.pollTransport()
+        }
+        if group.count>1 { if check(daw_delete_clips(session,id,&group,UInt32(group.count),revision)) { finishDelete() } }
+        else { let index=selectedClips[id] ?? Int(group[0]); if check(daw_delete_clip(session,id,UInt32(index),revision)) { finishDelete() } } }
     @objc func toggleSelectedCrossfade(_ sender:NSButton) {
         guard !isRecording else{return}; finishEditing(); stopAudio(); guard let id=trackIDs[sender.tag] else{return}
         let index=selectedClips[id] ?? 0
@@ -2501,7 +2622,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         refresh()
     }
     func finishEditing() { if window.firstResponder is NSTextView { window.makeFirstResponder(nil) } }
-    @objc func addTrack() { guard !isRecording else{return}; finishEditing(); if check(daw_add_track(session, "Дорожка \(trackIDs.count + 1)", revision)) { refresh() } }
+    @objc func addTrack() {
+        guard !isRecording else{return}
+        finishEditing()
+        let existingIDs=Set(trackIDs.values)
+        guard check(daw_add_track(session, "Дорожка \(trackIDs.count + 1)", revision)) else { return }
+        refresh()
+        guard let newID=trackIDs.values.first(where:{!existingIDs.contains($0)}) else { return }
+        // Новый audio-track становится явной целью записи: один клик «Запись»
+        // или R/⌘R начинает первый тейк в нём, а не создаёт соседнюю дорожку.
+        armedTrackID=newID;selectedMixerID=newID;inspectorTrackID=newID;inspectorClipIndex=nil
+        refresh();updateMixerInspector(newID)
+        status.stringValue="Дорожка вооружена · R или ⌘R начинает запись сюда"
+    }
     @objc func addMidiTrack() {
         guard !isRecording else{return}; finishEditing()
         guard check(daw_add_track(session, "MIDI \(trackIDs.count + 1)", revision)) else { return }
@@ -2523,6 +2656,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func scanInstalledVST3(){guard vst3ScanJob==nil else{return};let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_vst3_scan_helper").path;guard let job=daw_begin_installed_vst3_scan(helper,3000)else{storageMessage("Не удалось запустить изолированный VST3 scanner.");return};vst3ScanJob=job;scanVST3Button.isEnabled=false;scanVST3Button.title="Сканирование…";vst3ScanTimer=Timer.scheduledTimer(withTimeInterval:0.2,repeats:true){[weak self]_ in Task{@MainActor in self?.pollInstalledVST3()}}}
     func pollInstalledVST3(){guard let job=vst3ScanJob else{return};var scan=daw_vst3_scan_status();scan.struct_size=UInt32(MemoryLayout<daw_vst3_scan_status>.size);guard daw_poll_installed_vst3_scan(job,&scan)==0 else{return};guard scan.status != 0 else{return};vst3ScanTimer?.invalidate();vst3ScanTimer=nil;defer{daw_release_installed_vst3_scan(job);vst3ScanJob=nil;scanVST3Button.isEnabled=true};if scan.status==1{var available:UInt32=0;var quarantined:UInt32=0;if check(daw_apply_installed_vst3_scan(session,job,&available,&quarantined)){if let cache=vst3CacheURL{_ = daw_save_installed_vst3_scan_cache(job,cache.path)};reloadVST3Popup();scanVST3Button.title=quarantined==0 ? "VST3: \(available)":"VST3: \(available), карантин \(quarantined)"}}else{let message=withUnsafeBytes(of:scan.error){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};scanVST3Button.title="Сканировать VST3";storageMessage(message)}}
     @objc func toggleMasterInsert(_ sender:NSButton){guard !isRecording,let plugin=pluginControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_set_master_insert_bypass(session,plugin.id,plugin.bypassed ? 0:1,revision)){refresh();pollTransport()}}
+    @objc func toggleMasterSolo(_ sender:NSButton){guard !isRecording else{return};_=check(daw_set_master_solo(session,sender.state == .on ? 1:0,revision));refresh()}
     @objc func moveMasterInsertUp(_ sender:NSButton){guard let plugin=pluginControlTargets[ObjectIdentifier(sender)],plugin.index>0 else{return};_=daw_stop(session);if check(daw_move_master_insert(session,plugin.id,plugin.index-1,revision)){refresh();pollTransport()}}
     @objc func moveMasterInsertDown(_ sender:NSButton){guard let plugin=pluginControlTargets[ObjectIdentifier(sender)]else{return};_=daw_stop(session);if check(daw_move_master_insert(session,plugin.id,plugin.index+1,revision)){refresh();pollTransport()}}
     @objc func editMasterInsert(_ sender:NSButton){
@@ -2571,6 +2705,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func changeBusGain(_ sender:NSSlider){guard !isRecording,let id=busControlTargets[ObjectIdentifier(sender)]else{return};let value=(sender.doubleValue*10).rounded()/10;if automationWrites(target:automationBusGain,id:id){_ = writeAutomation(target:automationBusGain,id:id,value:value);return};_=check(daw_set_bus_gain(session,id,value,revision));refresh()}
     @objc func changeBusPan(_ sender:NSSlider){guard !isRecording,let id=busControlTargets[ObjectIdentifier(sender)]else{return};_=check(daw_set_bus_pan(session,id,(sender.doubleValue*100).rounded()/100,revision));refresh()}
     @objc func toggleBusMute(_ sender:NSButton){guard !isRecording,let id=busControlTargets[ObjectIdentifier(sender)]else{return};_=check(daw_set_bus_mute(session,id,sender.state == .on ? 1:0,revision));refresh()}
+    @objc func toggleBusSolo(_ sender:NSButton){guard !isRecording,let id=busControlTargets[ObjectIdentifier(sender)]else{return};_=check(daw_set_bus_solo(session,id,sender.state == .on ? 1:0,revision));refresh()}
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let sender = notification.object as? NSTextField else { return }
         if let id=busNameTargets[ObjectIdentifier(sender)]{_=check(daw_rename_bus(session,id,sender.stringValue,revision));refresh();return}

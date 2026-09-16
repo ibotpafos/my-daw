@@ -38,16 +38,16 @@ void writeFileBytes(const std::filesystem::path& path, const std::vector<unsigne
     CHECK(stream.good());
 }
 
-// Independent replica of the documented waveform cache ("exactly 512 cached,
-// linear, pre-gain stereo absolute peaks"): bin b covers
-// [b*frames/512, (b+1)*frames/512) and holds the loudest of both channels,
+// Independent replica of the documented waveform caches (compact 512-bin and
+// detailed 2048-bin, linear, pre-gain stereo absolute peaks): bin b covers
+// [b*frames/bins, (b+1)*frames/bins) and holds the loudest of both channels,
 // with a mono source duplicated to stereo by the decoder.
-std::vector<float> expectedPeaks(const e2e::Wav& wav) {
+std::vector<float> expectedPeaks(const e2e::Wav& wav, uint32_t bins = 512) {
     const uint64_t frames = wav.frames();
-    std::vector<float> peaks(512, 0.0f);
-    for (uint64_t bin = 0; bin < 512; ++bin) {
-        const uint64_t begin = bin * frames / 512;
-        const uint64_t end = (bin + 1) * frames / 512;
+    std::vector<float> peaks(bins, 0.0f);
+    for (uint64_t bin = 0; bin < bins; ++bin) {
+        const uint64_t begin = bin * frames / bins;
+        const uint64_t end = (bin + 1) * frames / bins;
         for (uint64_t frame = begin; frame < end; ++frame) {
             for (uint16_t channel = 0; channel < 2; ++channel) {
                 const uint16_t source = std::min(channel, static_cast<uint16_t>(wav.channels - 1));
@@ -179,9 +179,22 @@ int main() {
         std::vector<float> basePeaks(512, 0.0f);
         CHECK_OK(session, daw_get_take_waveform(session, 1, 0, basePeaks.data(), 512));
         for (size_t bin = 0; bin < 512; ++bin) CHECK(basePeaks[bin] == tonePeaks[bin]);
+        // The editor uses a separate cached high-resolution source envelope;
+        // requesting it does not rescan PCM and leaves legacy 512-bin reads
+        // untouched.
+        std::vector<float> detailedTakePeaks(DAW_TAKE_WAVEFORM_DETAIL_BINS, 0.0f);
+        CHECK_OK(session, daw_get_take_waveform_detail(session, 1, 1, detailedTakePeaks.data(), DAW_TAKE_WAVEFORM_DETAIL_BINS));
+        const auto detailedTakeExpected = expectedPeaks(takeFixture, DAW_TAKE_WAVEFORM_DETAIL_BINS);
+        for (size_t bin = 0; bin < detailedTakePeaks.size(); ++bin) CHECK(detailedTakePeaks[bin] == detailedTakeExpected[bin]);
+        std::vector<float> detailedBasePeaks(DAW_TAKE_WAVEFORM_DETAIL_BINS, 0.0f);
+        CHECK_OK(session, daw_get_take_waveform_detail(session, 1, 0, detailedBasePeaks.data(), DAW_TAKE_WAVEFORM_DETAIL_BINS));
+        const auto detailedBaseExpected = expectedPeaks(toneFixture, DAW_TAKE_WAVEFORM_DETAIL_BINS);
+        for (size_t bin = 0; bin < detailedBasePeaks.size(); ++bin) CHECK(detailedBasePeaks[bin] == detailedBaseExpected[bin]);
         CHECK_REJ(session, daw_get_take(session, 1, 2, &take));
         CHECK_REJ(session, daw_get_take_waveform(session, 1, 7, basePeaks.data(), 512));
         CHECK_REJ(session, daw_get_take_waveform(session, 1, 1, basePeaks.data(), 511));
+        CHECK_REJ(session, daw_get_take_waveform_detail(session, 1, 7, detailedBasePeaks.data(), DAW_TAKE_WAVEFORM_DETAIL_BINS));
+        CHECK_REJ(session, daw_get_take_waveform_detail(session, 1, 1, detailedBasePeaks.data(), DAW_TAKE_WAVEFORM_DETAIL_BINS - 1));
         // struct_size gates are pure ABI shape: rc 1, no semantic error text.
         auto wrongSized = abi<daw_clip>();
         wrongSized.struct_size = sizeof(daw_clip) + 8;

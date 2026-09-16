@@ -27,6 +27,18 @@ int main(){try{
     std::filesystem::create_directories(dir);
     struct Cleanup { std::filesystem::path p; ~Cleanup(){ std::error_code ig; std::filesystem::remove_all(p,ig);} } cleanup{dir};
 
+    // First recording into an empty ordinary track keeps the selected track,
+    // establishes a base clip and creates its initial region at the punch-in.
+    {   Session s;
+        s.add("Armed",0);
+        const auto recorded=std::make_shared<const Clip>(std::vector<float>(32,0.25f));
+        s.materializeRecordedTrack(1,"Take 1",recorded,9600,1);
+        const auto& track=s.state().tracks.front();
+        CHECK(track.id==1&&track.audio==recorded&&track.baseStart==9600&&track.takes.empty());
+        CHECK(track.regions.size()==1&&track.regions[0].start==9600&&track.regions[0].length==16&&track.regions[0].sourceOffset==0);
+        rejectsMessage("Target track already has audio",[&]{s.materializeRecordedTrack(1,"Take 2",recorded,0,2);});
+    }
+
     // ---- Track property commands: rev-checked, silent no-op, undo/redo ----
     {   Session s;
         const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.0f)); // 2s stereo
@@ -176,6 +188,73 @@ int main(){try{
         { const uint64_t now=s.state().revision; s.undo(now); }
     }
 
+    // ---- Overlap creation: edit, cross-track copy and same-track move ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));
+        s.importAt("Source",clip,0,0);                                      // [0,96000)
+        s.duplicateClip(1,0,s.state().revision);                             // [96000,192000)
+        const auto oneFrameRevision=s.state().revision;
+        rejectsMessage("Crossfade requires at least two frames",[&]{s.editClip(1,1,95999,0,96000,oneFrameRevision);});
+        CHECK(s.state().revision==oneFrameRevision&&s.state().tracks[0].regions[1].start==96000);
+        s.editClip(1,1,48000,0,96000,s.state().revision);                    // 48k overlap
+        { const auto& r=s.state().tracks[0].regions;
+          CHECK(r.size()==2&&r[0].start==0&&r[1].start==48000);
+          CHECK(r[0].fadeOut==48000&&r[1].fadeIn==48000);
+          CHECK(r[0].fadeOutShape==FadeShape::Linear&&r[1].fadeInShape==FadeShape::Linear); }
+        const auto editRevision=s.state().revision;
+        s.undo(editRevision);
+        CHECK(s.state().tracks[0].regions[1].start==96000&&s.state().tracks[0].regions[0].fadeOut==0);
+        s.redo(s.state().revision);
+        CHECK(s.state().tracks[0].regions[1].start==48000&&s.state().tracks[0].regions[1].fadeIn==48000);
+        // Auto-crossfades do not turn the lane into an ambiguous stack: three
+        // concurrent clips and a full cover still reject atomically.
+        s.duplicateClip(1,0,s.state().revision);
+        const auto invalidRevision=s.state().revision;
+        rejects([&]{s.editClip(1,2,72000,0,96000,invalidRevision);});
+        CHECK(s.state().revision==invalidRevision&&s.state().tracks[0].regions[2].start==144000);
+
+        s.importAt("Twin",clip,0,s.state().revision);                       // target shares the source
+        const auto target=s.state().tracks[1].id;
+        s.copyClipToTrack(1,0,target,48000,s.state().revision);
+        { const auto& r=s.state().tracks[1].regions;
+          CHECK(r.size()==2&&r[0].fadeOut==48000&&r[1].fadeIn==48000); }
+        // Moving the pasted clip closer re-computes rather than preserving a
+        // stale 48k fade; the overlap is now 72k.
+        s.moveClipToTrack(target,1,target,24000,s.state().revision);
+        { const auto& r=s.state().tracks[1].regions;
+          CHECK(r.size()==2&&r[0].start==0&&r[1].start==24000);
+          CHECK(r[0].fadeOut==72000&&r[1].fadeIn==72000); }
+    }
+
+    // ---- Auto-crossfade provenance: only auto sides are disposable ----
+    {   Session s;
+        const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));
+        s.importAt("Auto provenance",clip,0,0);s.splitClip(1,0,48000,1);
+        s.editClip(1,1,36000,48000,48000,2); // automatic 12k overlap
+        { const auto& r=s.state().tracks[0].regions;
+          CHECK(r[0].autoFadeOut&&r[1].autoFadeIn&&r[0].fadeOut==12000&&r[1].fadeIn==12000); }
+        const auto path=(dir/"auto-fade-v24.mydawdraft").string();writeDraft(s.state(),path);auto persisted=readDraft(path);
+        CHECK(persisted.tracks[0].regions[0].autoFadeOut&&persisted.tracks[0].regions[1].autoFadeIn);
+        Session reopened;reopened.replace(std::move(persisted));
+        // Moving an automatic pair apart through the keyboard/nudge path must
+        // clear both generated sides rather than leave a quiet orphan fade.
+        reopened.nudgeClips(1,{1u},12000,reopened.state().revision); // separate the auto pair
+        { const auto& r=reopened.state().tracks[0].regions;
+          CHECK(!r[0].autoFadeOut&&!r[1].autoFadeIn&&r[0].fadeOut==0&&r[1].fadeIn==0); }
+        reopened.editClip(1,1,36000,48000,48000,reopened.state().revision);
+        reopened.deleteClip(1,1,reopened.state().revision);
+        CHECK(reopened.state().tracks[0].regions.size()==1&&!reopened.state().tracks[0].regions[0].autoFadeOut&&reopened.state().tracks[0].regions[0].fadeOut==0);
+
+        Session manual;manual.importAt("Manual provenance",clip,0,0);manual.splitClip(1,0,48000,1);
+        manual.setCrossfadeShaped(1,0,12000,FadeShape::EqualPower,2);
+        manual.duplicateClip(1,0,3); // unrelated timeline geometry preserves the manual pair
+        { const auto& r=manual.state().tracks[0].regions;
+          CHECK(!r[0].autoFadeOut&&!r[1].autoFadeIn&&r[0].fadeOutShape==FadeShape::EqualPower&&r[1].fadeInShape==FadeShape::EqualPower); }
+        writeDraft(manual.state(),path);auto manualPersisted=readDraft(path);std::filesystem::remove(path);
+        { const auto& r=manualPersisted.tracks[0].regions;
+          CHECK(!r[0].autoFadeOut&&!r[1].autoFadeIn&&r[0].fadeOutShape==FadeShape::EqualPower&&r[1].fadeInShape==FadeShape::EqualPower); }
+    }
+
     // ---- Multi-selection group commands: deleteClips + nudgeClips, one revision ----
     {   Session s;
         const auto clip=std::make_shared<const Clip>(std::vector<float>(size_t(48000)*2*2,0.25f));  // 2s stereo
@@ -189,20 +268,31 @@ int main(){try{
         rejectsMessage("No timeline space for the clip",[&]{s.nudgeClips(1,{0u},-5000,s.state().revision);});
         s.nudgeClips(1,{0u},0,s.state().revision);                                          // zero delta: silent no-op
         CHECK(s.state().revision==3);
-        rejectsMessage("Clip overlap requires a matching crossfade",[&]{s.nudgeClips(1,{1u,2u},-48000,s.state().revision);});
-        CHECK(s.state().revision==3);                                                        // rejected batch spent nothing
-        s.nudgeClips(1,{2u},48000,s.state().revision);                                       // rev 4: [0,96000,240000)
-        CHECK(starts()==std::vector<uint64_t>({0,96000,240000}));
-        s.nudgeClips(1,{0u},400000,s.state().revision);                                      // rev 5: reorder through the group
-        CHECK(starts()==std::vector<uint64_t>({96000,240000,400000}));
+        // A move through a neighbour is legal. The exact 48k overlap becomes
+        // the pair's automatic linear crossfade in the same undo snapshot.
+        s.nudgeClips(1,{1u,2u},-48000,s.state().revision);
+        CHECK(starts()==std::vector<uint64_t>({0,48000,144000}));
+        CHECK(s.state().tracks[0].regions[0].fadeOut==48000&&s.state().tracks[0].regions[1].fadeIn==48000);
+        CHECK(s.state().tracks[0].regions[0].fadeOutShape==FadeShape::Linear&&s.state().tracks[0].regions[1].fadeInShape==FadeShape::Linear);
+        s.nudgeClips(1,{2u},48000,s.state().revision);
+        CHECK(starts()==std::vector<uint64_t>({0,48000,192000}));
+        s.nudgeClips(1,{0u},400000,s.state().revision);                                      // reorder through the group
+        CHECK(starts()==std::vector<uint64_t>({48000,192000,400000}));
         rejectsMessage("No timeline space for the clip",[&]{s.nudgeClips(1,{2u},int64_t(48000ull*600),s.state().revision);});
         s.deleteClips(1,{0u,0u,1u},s.state().revision);                                      // rev 6: unique-merge deletes two
         CHECK(s.state().tracks[0].regions.size()==1&&starts()==std::vector<uint64_t>({400000}));
-        rejectsMessage("Audio track must contain 1\u2013256 clips",[&]{s.deleteClips(1,{0u},s.state().revision);});  // validate keeps the track non-empty
-        { const uint64_t cur=s.state().revision; s.undo(cur);                                // rev 7 -> back to three clips
-          CHECK(s.state().tracks[0].regions.size()==3&&starts()==std::vector<uint64_t>({96000,240000,400000}));
-          s.redo(s.state().revision);                                                        // rev 8 -> group delete again
-          CHECK(s.state().tracks[0].regions.size()==1); }
+        // Deleting a selected final group leaves a genuinely empty reusable
+        // track, rather than a hidden media owner that cannot be recorded to.
+        const uint64_t clearRevision=s.state().revision;
+        s.deleteClips(1,{0u},clearRevision);
+        CHECK(!s.state().tracks[0].audio&&s.state().tracks[0].regions.empty()&&s.state().tracks[0].takes.empty());
+        CHECK(s.state().revision==clearRevision+1);
+        { const uint64_t cur=s.state().revision; s.undo(cur);
+          CHECK(s.state().tracks[0].audio&&s.state().tracks[0].regions.size()==1&&starts()==std::vector<uint64_t>({400000}));
+          s.redo(s.state().revision);
+          CHECK(!s.state().tracks[0].audio&&s.state().tracks[0].regions.empty());
+          s.materializeRecordedTrack(1,"Re-recorded",clip,24000,s.state().revision);
+          CHECK(s.state().tracks[0].audio&&s.state().tracks[0].regions.size()==1&&s.state().tracks[0].regions[0].start==24000); }
     }
 
     // ---- MIDI clip: color, transpose (clamped), quantize ----
@@ -285,7 +375,7 @@ int main(){try{
         auto db=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(db,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==21);
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==24);
         sqlite3_finalize(version);
         sqlite3_close(db);
     }

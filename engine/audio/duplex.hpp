@@ -16,6 +16,7 @@ public:
     virtual uint64_t frames() const noexcept = 0;
     virtual uint64_t callbacks() const noexcept = 0;
     virtual bool overflowed() const noexcept = 0;
+    virtual void previewPeaks(float* out,uint32_t count) const noexcept = 0;
     virtual void discardRecovery() noexcept = 0;
     virtual OutputTelemetry telemetry() const noexcept = 0;
 };

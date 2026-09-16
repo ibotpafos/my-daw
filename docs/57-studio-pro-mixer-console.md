@@ -16,7 +16,7 @@
 
 Пустые Inserts/Sends показывают явный слот `—`, чтобы геометрия соседних полос не прыгала. Между группами track, bus и master добавлен увеличенный отступ; bus получил верхний rail, master — усиленный боковой rail и маршрут `MAIN`.
 
-Track показывает R/M/S. Bus показывает M и pan; Solo пока скрыт, потому что domain/C ABI ещё не предоставляет bus-solo command. Master показывает output, inserts, meter, fader и automation; неработающие R/M/S и pan не рисуются.
+Track показывает R/M/S. Bus показывает M, pan и Solo. Master показывает output, inserts, meter, fader и automation; неработающие R/M/S и pan не рисуются.
 
 ## Размер и подробные операции
 

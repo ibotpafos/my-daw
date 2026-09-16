@@ -15,6 +15,7 @@
 
 namespace daw {
 namespace {
+static_assert(std::atomic<uint32_t>::is_always_lock_free);
 constexpr size_t headerSize=64;
 constexpr uint64_t confirmInterval=24000;
 constexpr std::array<unsigned char,8> magic{'M','Y','D','A','W','T','A','K'};
@@ -62,9 +63,36 @@ void RecordingWriter::writeMono(const float* input,uint32_t count) noexcept {
     auto remaining=capacityFrames_-std::min(accepted_.load(std::memory_order_relaxed),capacityFrames_);
     auto free=ring_.size()-std::min<uint64_t>(write-read,ring_.size());
     auto accepted=std::min<uint64_t>({count,remaining,free});
-    for(uint64_t i=0;i<accepted;++i){auto value=std::isfinite(input[i])?std::clamp(input[i],-16.0f,16.0f):0.0f;ring_[static_cast<size_t>((write+i)%ring_.size())]=value;}
+    const auto captured=accepted_.load(std::memory_order_relaxed);
+    for(uint64_t i=0;i<accepted;++i){auto value=std::isfinite(input[i])?std::clamp(input[i],-16.0f,16.0f):0.0f;ring_[static_cast<size_t>((write+i)%ring_.size())]=value;
+        const auto bucket=std::min<size_t>(previewPeaks_.size()-1,static_cast<size_t>((captured+i)*previewPeaks_.size()/capacityFrames_));
+        const auto peak=std::min(1.0f,std::abs(value)); auto next=std::bit_cast<uint32_t>(peak); auto old=previewPeaks_[bucket].load(std::memory_order_relaxed);
+        while(std::bit_cast<float>(old)<peak&&!previewPeaks_[bucket].compare_exchange_weak(old,next,std::memory_order_relaxed,std::memory_order_relaxed)){}
+    }
     accepted_.fetch_add(accepted,std::memory_order_relaxed);written_.store(write+accepted,std::memory_order_release);
     if(accepted<count)overflow_.store(true,std::memory_order_release);
+}
+
+void RecordingWriter::previewPeaks(float* out,uint32_t count) const noexcept {
+    if(!out||(count!=512&&count!=kRecordingPreviewDetailBins))return;
+    // The capture-side bins cover the allocation capacity (up to 60 seconds),
+    // while the UI draws the requested 512- or 2048-column view across the
+    // *current* take.
+    // Resample here, on the UI/control thread: otherwise a short new take
+    // would occupy only the leftmost fraction of its visible recording clip.
+    const auto captured=accepted_.load(std::memory_order_acquire);
+    if(!captured){std::fill_n(out,count,0.0f);return;}
+    // Include through the last bucket that could contain a captured sample.
+    // Rounding the duration up would include untouched buckets after it and
+    // leave the right edge of a short live waveform blank.
+    const auto sourceBins=std::min<size_t>(previewPeaks_.size(),static_cast<size_t>(((captured-1)*previewPeaks_.size())/capacityFrames_+1));
+    for(size_t index=0;index<count;++index){
+        const auto begin=index*sourceBins/count;
+        const auto end=std::min(sourceBins,std::max(begin+1,((index+1)*sourceBins+count-1)/count));
+        float peak=0;
+        for(size_t source=begin;source<end;++source)peak=std::max(peak,std::bit_cast<float>(previewPeaks_[source].load(std::memory_order_acquire)));
+        out[index]=peak;
+    }
 }
 
 void RecordingWriter::run() noexcept {

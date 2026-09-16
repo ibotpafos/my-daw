@@ -27,7 +27,7 @@ int main(){try{
         std::vector<uint8_t> manifest;
         CHECK(readZipEntry(zip.string(),"manifest.json",manifest,error));
         const std::string text(reinterpret_cast<const char*>(manifest.data()),manifest.size());
-        CHECK(text.find("mydaw-package")!=std::string::npos&&text.find("\"draftVersion\":21")!=std::string::npos&&text.find("\"draftBytes\"")!=(std::string::npos-1));
+        CHECK(text.find("mydaw-package")!=std::string::npos&&text.find("\"draftVersion\":22")!=std::string::npos&&text.find("\"draftBytes\"")!=(std::string::npos-1));
         std::vector<uint8_t> readme;
         CHECK(readZipEntry(zip.string(),"README.txt",readme,error));
         // A foreign archive carries a manifest without our format tag.

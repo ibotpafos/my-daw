@@ -123,8 +123,33 @@ inline const uint8_t *controlResponsePayload(const ControlMapping *mapping) { re
 } // namespace daw::vst3runtime
 
 namespace daw {
-// Test-only control hook. Production code never calls this; keeping the override
-// out of the process environment prevents an injected helper path at launch.
+
+struct Vst3EditorView {
+    std::string viewType;
+    int32_t width = 0;
+    int32_t height = 0;
+    bool attached = false;
+};
+
+class Vst3EditorProxy {
+public:
+    virtual ~Vst3EditorProxy() = default;
+    virtual bool open(const PluginInsert&, const std::string& viewType = "editor") = 0;
+    virtual void close() = 0;
+    virtual bool resize(int32_t width, int32_t height) = 0;
+    virtual bool getParameter(uint32_t id, float& outValue) = 0;
+    virtual bool setParameter(uint32_t id, float normalizedValue) = 0;
+    virtual void idle() = 0;
+    virtual Vst3EditorView view() const = 0;
+};
+
+std::unique_ptr<Vst3EditorProxy> createVst3EditorProxy(
+    const PluginInsert& plugin,
+    uint32_t sampleRate = 48000,
+    uint32_t maxFrames = 4096);
+
+void setVst3EditorHelperPathForTesting(std::string path);
+
 void setVst3RuntimeHelperPathForTesting(std::string path);
 std::unique_ptr<PreparedEffect> prepareVst3OutOfProcessEffect(
     const PluginInsert &plugin, uint32_t sampleRate = 48000,
@@ -133,10 +158,10 @@ std::vector<Vst3Parameter> remoteVst3Parameters(const PluginInsert &,
                                                  uint32_t sampleRate = 48000,
                                                  uint32_t maxFrames = 4096);
 Vst3EffectSnapshot remoteSnapshotVst3Effect(const PluginInsert &,
-                                             uint32_t sampleRate = 48000,
-                                             uint32_t maxFrames = 4096);
-Vst3EffectSnapshot remoteSetVst3Parameter(const PluginInsert &, uint32_t parameterID,
-                                           float normalizedValue,
                                            uint32_t sampleRate = 48000,
                                            uint32_t maxFrames = 4096);
+Vst3EffectSnapshot remoteSetVst3Parameter(const PluginInsert &, uint32_t parameterID,
+                                         float normalizedValue,
+                                         uint32_t sampleRate = 48000,
+                                         uint32_t maxFrames = 4096);
 } // namespace daw

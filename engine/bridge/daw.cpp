@@ -279,10 +279,10 @@ VocalPlan vocalPlan(daw_session* s,const uint64_t* selected,uint32_t count,const
 void startRecording(daw_session* s,uint64_t startFrame,const char* recoveryPath,uint64_t target){
     if(recordingActive(s))throw daw::Error("Recording is already active");if(startFrame>=48000*600)throw daw::Error("Recording position must be before the 10 minute timeline limit");
     invalidatePlaybackPreparation(s);
-    size_t audioTracks=0,audioAssets=0,audioBytes=0;const daw::Track* targetTrack=nullptr;for(const auto& track:s->model.state().tracks)if(track.audio){++audioTracks;++audioAssets;audioBytes+=track.audio->samples().size()*sizeof(float);for(const auto& take:track.takes){++audioAssets;audioBytes+=take.audio->samples().size()*sizeof(float);}if(track.id==target)targetTrack=&track;}
-    if(target){if(!targetTrack)throw daw::Error("Take target track not found");if(targetTrack->takes.size()>=15)throw daw::Error("Track supports at most 16 takes");}else{if(s->model.state().tracks.size()>=256)throw daw::Error("Draft supports at most 256 tracks");if(audioTracks>=8)throw daw::Error("Prototype supports at most 8 audio tracks");}
+    size_t audioTracks=0,audioAssets=0,audioBytes=0;const daw::Track* targetTrack=nullptr;for(const auto& track:s->model.state().tracks){if(track.id==target)targetTrack=&track;if(track.audio){++audioTracks;++audioAssets;audioBytes+=track.audio->samples().size()*sizeof(float);for(const auto& take:track.takes){++audioAssets;audioBytes+=take.audio->samples().size()*sizeof(float);}}}
+    if(target){if(!targetTrack)throw daw::Error("Target track not found");if(!targetTrack->audio&&!targetTrack->midiClips.empty())throw daw::Error("Cannot record audio into a MIDI track");if(!targetTrack->audio&&audioTracks>=8)throw daw::Error("Prototype supports at most 8 audio tracks");if(targetTrack->audio&&targetTrack->takes.size()>=15)throw daw::Error("Track supports at most 16 takes");}else{if(s->model.state().tracks.size()>=256)throw daw::Error("Draft supports at most 256 tracks");if(audioTracks>=8)throw daw::Error("Prototype supports at most 8 audio tracks");}
     if(audioAssets>=32)throw daw::Error("Prototype supports at most 32 takes");constexpr size_t byteLimit=64*1024*1024;if(audioBytes>=byteLimit)throw daw::Error("No project capacity remains for recording");auto memoryFrames=(byteLimit-audioBytes)/(2*sizeof(float));auto timelineFrames=48000*600-startFrame;auto capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),timelineFrames});
-    const bool loopRecording=target&&s->loopEnabled;if(loopRecording){if(startFrame!=s->loopStart)throw daw::Error("Loop recording must start at the loop boundary");const auto loopFrames=s->loopEnd-s->loopStart;const auto takeSlots=std::min<size_t>(15-targetTrack->takes.size(),32-audioAssets);capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),loopFrames*takeSlots});}
+    const bool loopRecording=target&&s->loopEnabled;if(loopRecording){if(!targetTrack->audio)throw daw::Error("Loop recording requires an audio-bearing target track");if(startFrame!=s->loopStart)throw daw::Error("Loop recording must start at the loop boundary");const auto loopFrames=s->loopEnd-s->loopStart;const auto takeSlots=std::min<size_t>(15-targetTrack->takes.size(),32-audioAssets);capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),loopFrames*takeSlots});}
     if(!capacity)throw daw::Error("No project capacity remains for recording");if(s->output){s->output->stop();s->output.reset();}auto path=std::string(required(recoveryPath));if(path.empty())throw daw::Error("Missing recording recovery path");
     if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd,s->recordPrerollFrames,s->recordMonitor);duplex->renderer.setMetronome(s->metronomeEnabled);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
     s->recordStart=startFrame;s->recordTarget=target;s->selectedFrame=startFrame;s->recordLastCallbacks=0;s->lastCallbacks=0;s->recordProgress=std::chrono::steady_clock::now();s->lastProgress=s->recordProgress;
@@ -448,7 +448,7 @@ void daw_destroy(daw_session* s) { if(s){s->lifetime.reset();cancelPlaybackPrepa
 int daw_get_snapshot(daw_session* s, daw_snapshot* out) { return guard(s, [&]{
     if (!out || out->struct_size != sizeof(daw_snapshot)) throw daw::Error("Snapshot ABI mismatch");
     out->revision=s->model.state().revision; out->track_count=static_cast<uint32_t>(s->model.state().tracks.size());
-    out->can_undo=s->model.canUndo(); out->can_redo=s->model.canRedo();out->master_gain_db=s->model.state().masterGain;out->bus_count=static_cast<uint32_t>(s->model.state().buses.size());out->master_insert_count=static_cast<uint32_t>(s->model.state().masterInserts.size());
+    out->can_undo=s->model.canUndo(); out->can_redo=s->model.canRedo();out->master_gain_db=s->model.state().masterGain;out->bus_count=static_cast<uint32_t>(s->model.state().buses.size());out->master_insert_count=static_cast<uint32_t>(s->model.state().masterInserts.size());out->master_solo=s->model.state().masterSolo?1:0;
 }); }
 int daw_get_track(daw_session* s, uint32_t index, daw_track* out) { return guard(s, [&]{
     if (!out || out->struct_size != sizeof(daw_track)) throw daw::Error("Track ABI mismatch");
@@ -465,12 +465,14 @@ int daw_set_pan(daw_session* s,uint64_t id,double pan,uint64_t rev){return guard
 int daw_set_mute(daw_session* s,uint64_t id,int32_t muted,uint64_t rev){return guard(s,[&]{if(muted!=0&&muted!=1)throw daw::Error("Mute must be 0 or 1");s->model.mute(id,muted,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_solo(daw_session* s,uint64_t id,int32_t solo,uint64_t rev){return guard(s,[&]{if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");s->model.solo(id,solo,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_master_gain(daw_session* s,double gain,uint64_t rev){return guard(s,[&]{s->model.masterGain(gain,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
+int daw_set_master_solo(daw_session* s,int32_t solo,uint64_t rev){return guard(s,[&]{if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");s->model.setMasterSolo(solo!=0,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_add_bus(daw_session* s,const char* name,uint64_t rev){return guard(s,[&]{s->model.addBus(required(name),rev);resetTransport(s);});}
-int daw_get_bus(daw_session* s,uint32_t index,daw_bus* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_bus))throw daw::Error("Bus ABI mismatch");if(index>=s->model.state().buses.size())throw daw::Error("Bus index out of range");const auto& bus=s->model.state().buses[index];*out={};out->struct_size=sizeof(daw_bus);out->id=bus.id;out->gain_db=bus.gain;out->pan=bus.pan;out->muted=bus.muted;out->output_bus_id=bus.outputBus;std::memcpy(out->name,bus.name.data(),bus.name.size());});}
+int daw_get_bus(daw_session* s,uint32_t index,daw_bus* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_bus))throw daw::Error("Bus ABI mismatch");if(index>=s->model.state().buses.size())throw daw::Error("Bus index out of range");const auto& bus=s->model.state().buses[index];*out={};out->struct_size=sizeof(daw_bus);out->id=bus.id;out->gain_db=bus.gain;out->pan=bus.pan;out->muted=bus.muted;out->solo=bus.solo;out->output_bus_id=bus.outputBus;std::memcpy(out->name,bus.name.data(),bus.name.size());});}
 int daw_rename_bus(daw_session* s,uint64_t id,const char* name,uint64_t rev){return guard(s,[&]{s->model.renameBus(id,required(name),rev);cancelStalePlaybackPreparation(s);});}
 int daw_set_bus_gain(daw_session* s,uint64_t id,double gain,uint64_t rev){return guard(s,[&]{s->model.busGain(id,gain,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_bus_pan(daw_session* s,uint64_t id,double pan,uint64_t rev){return guard(s,[&]{s->model.busPan(id,pan,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_bus_mute(daw_session* s,uint64_t id,int32_t muted,uint64_t rev){return guard(s,[&]{if(muted!=0&&muted!=1)throw daw::Error("Mute must be 0 or 1");s->model.busMute(id,muted,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
+int daw_set_bus_solo(daw_session* s,uint64_t id,int32_t solo,uint64_t rev){return guard(s,[&]{if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");s->model.busSolo(id,solo,rev);cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());});}
 int daw_set_track_output(daw_session* s,uint64_t track,uint64_t bus,uint64_t rev){return guard(s,[&]{s->model.routeTrack(track,bus,rev);resetTransport(s);});}
 int daw_set_bus_output(daw_session* s,uint64_t id,uint64_t output,uint64_t rev){return guard(s,[&]{s->model.routeBus(id,output,rev);resetTransport(s);});}
 int daw_create_bus(daw_session* s,const char* name,uint64_t* out_bus_id,uint64_t rev){return guard(s,[&]{
@@ -596,6 +598,109 @@ int daw_load_installed_vst3_scan_cache(daw_session* s,const char* helperPath,con
 #endif
 });}
 void daw_release_installed_vst3_scan(daw_vst3_scan_job* job){delete job;}
+/* VST3 editor proxy for isolated plugins. One-shot helper opens the plugin's
+ * IPlugView in a disposable process; the host proxies UI events through a
+ * shared-memory control channel. The editor view is managed by the helper,
+ * and the host calls resize/getParameter/setParameter/idle/close to drive it.
+ * Requires DAW_BUILD_VST3_EDITOR_HELPER and the pinned SDK. */
+int daw_vst3_editor_open(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,const char* view_type,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    s->model.openVst3Editor(insert,view_type?std::string(view_type):std::string{},rev);
+});
+}
+int daw_vst3_editor_close(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    s->model.closeVst3Editor(insert,rev);
+});
+}
+int daw_vst3_editor_resize(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,int32_t width,int32_t height,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    return s->model.resizeVst3Editor(insert,width,height,rev)?0:1;
+});
+}
+int daw_vst3_editor_get_parameter(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,uint32_t parameter_id,float* out_value,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    if(!out_value)throw daw::Error("Missing output value");
+    *out_value=s->model.getVst3EditorParameter(insert,parameter_id,rev);
+    return 0;
+});
+}
+int daw_vst3_editor_set_parameter(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,uint32_t parameter_id,float normalized_value,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    if(!std::isfinite(normalized_value)||normalized_value<0||normalized_value>1)throw daw::Error("Parameter value must be normalized 0…1");
+    s->model.setVst3EditorParameter(insert,parameter_id,normalized_value,rev);
+    return 0;
+});
+}
+int daw_vst3_editor_idle(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,uint64_t rev){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(s->model.state().revision!=rev)throw daw::Error("Revision conflict: refresh the project");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    s->model.idleVst3Editor(insert,rev);
+    return 0;
+});
+}
+int daw_get_vst3_editor_status(daw_session* s,int32_t owner,uint64_t owner_id,uint64_t plugin_id,daw_vst3_editor_status* out){return guard(s,[&]{
+    validateInsertOwner(owner,owner_id);
+    if(!out||out->struct_size!=sizeof(daw_vst3_editor_status))throw daw::Error("VST3 editor status ABI mismatch");
+    const auto& insert=insertFor(s->model.state(),owner,owner_id,plugin_id);
+    if(!daw::isVst3PluginInsert(insert))throw daw::Error("VST3 editor proxy requires a VST3 insert");
+    if(insert.hostingMode!=daw::PluginHostingMode::OutOfProcess)throw daw::Error("VST3 editor proxy requires Out-of-Process hosting mode");
+# if !DAW_VST3_EDITOR_AVAILABLE
+    throw daw::Error("VST3 editor proxy requires the VST3 editor helper in this build");
+# endif
+    auto view=s->model.vst3EditorView(insert);
+    *out={};
+    out->struct_size=sizeof(daw_vst3_editor_status);
+    out->open=view.viewType.empty()?0:1;
+    out->width=view.width;
+    out->height=view.height;
+    out->attached=view.attached?1:0;
+    std::memset(out->error,0,sizeof(out->error));
+    std::memcpy(out->view_type,view.viewType.data(),std::min(view.viewType.size(),sizeof(out->view_type)-1));
+    return 0;
+});
+}
 int daw_get_installed_vst3_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing VST3 catalog count");*count=static_cast<uint32_t>(s->vst3Catalog.size());});}
 int daw_get_installed_vst3(daw_session* s,uint32_t index,daw_vst3_component* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_vst3_component))throw daw::Error("VST3 catalog ABI mismatch");if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& entry=s->vst3Catalog[index];*out={};out->struct_size=sizeof(daw_vst3_component);out->available=entry.available?1:0;out->flags=entry.plugin.instrument?DAW_VST3_FLAG_INSTRUMENT:0u;copyText(out->class_id,entry.plugin.classId);copyText(out->module_fingerprint,entry.plugin.moduleFingerprint);copyText(out->module_path,entry.plugin.modulePath);copyText(out->name,entry.plugin.name);copyText(out->vendor,entry.plugin.vendor);copyText(out->version,entry.plugin.version);copyText(out->quarantine_reason,entry.quarantineReason);});}
 int daw_add_master_vst3(daw_session* s,uint32_t index,uint64_t rev){return guard(s,[&]{if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& item=s->vst3Catalog[index];if(!item.available)throw daw::Error("Selected VST3 is quarantined or unavailable");const auto classID=daw::parseTextualVst3Fuid(item.plugin.classId);if(!classID)throw daw::Error("VST3 catalog FUID is invalid");daw::Vst3StateEnvelope envelope;envelope.descriptor.format=daw::PluginFormat::VST3;envelope.descriptor.vst3ClassFuid=*classID;envelope.descriptor.modulePath=item.plugin.modulePath;envelope.descriptor.vendor=item.plugin.vendor;envelope.descriptor.version=item.plugin.version;envelope.descriptor.fingerprint=item.plugin.moduleFingerprint;daw::PluginInsert insert{0,0,0,0,item.plugin.name,false,0,daw::encodeVst3StateEnvelope(envelope),{}};const auto snapshot=daw::snapshotVst3Effect(insert);insert.latencyFrames=snapshot.latencyFrames;insert.state=snapshot.state;s->model.addMasterInsert(std::move(insert),rev);resetTransport(s);});}
@@ -1165,6 +1270,7 @@ int daw_import_aiff(daw_session* s,const char* path,const char* name,uint64_t re
 int daw_import_take_aiff(daw_session* s,uint64_t id,const char* path,const char* name,uint64_t start,uint64_t rev){return guard(s,[&]{auto clip=daw::readAiff(required(path));s->model.addTake(id,required(name),std::move(clip),start,rev);resetTransport(s);});}
 int daw_get_take(daw_session* s,uint64_t id,uint32_t index,daw_take* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_take))throw daw::Error("Take ABI mismatch");for(const auto& t:s->model.state().tracks)if(t.id==id){if(!t.audio||index>t.takes.size())throw daw::Error("Take index out of range");const auto name=index==0?t.name:t.takes[index-1].name;const auto start=index==0?t.baseStart:t.takes[index-1].start;const auto clip=index==0?t.audio:t.takes[index-1].audio;*out={};out->struct_size=sizeof(daw_take);out->index=index;out->start=start;out->frames=clip->frames();std::memcpy(out->name,name.data(),name.size());return;}throw daw::Error("Track not found");});}
 int daw_get_take_waveform(daw_session* s,uint64_t id,uint32_t index,float* peaks,uint32_t count){return guard(s,[&]{if(!peaks||count!=512)throw daw::Error("Take waveform requires a 512-float buffer");for(const auto& t:s->model.state().tracks)if(t.id==id){if(!t.audio||index>t.takes.size())throw daw::Error("Take index out of range");const auto clip=index==0?t.audio:t.takes[index-1].audio;std::copy(clip->peaks().begin(),clip->peaks().end(),peaks);return;}throw daw::Error("Track not found");});}
+int daw_get_take_waveform_detail(daw_session* s,uint64_t id,uint32_t index,float* peaks,uint32_t count){return guard(s,[&]{if(!peaks||count!=DAW_TAKE_WAVEFORM_DETAIL_BINS)throw daw::Error("Detailed take waveform requires a 2048-float buffer");for(const auto& t:s->model.state().tracks)if(t.id==id){if(!t.audio||index>t.takes.size())throw daw::Error("Take index out of range");const auto clip=index==0?t.audio:t.takes[index-1].audio;std::copy(clip->detailPeaks().begin(),clip->detailPeaks().end(),peaks);return;}throw daw::Error("Track not found");});}
 int daw_comp_range(daw_session* s,uint64_t id,uint32_t take,uint64_t start,uint64_t end,uint64_t rev){return guard(s,[&]{if(end<=start)throw daw::Error("Comp end must follow start");s->model.compRange(id,take,start,end-start,rev);resetTransport(s);});}
 int daw_get_clip(daw_session* s,uint64_t id,uint32_t index,daw_clip* out) { return guard(s,[&]{
     if(!out || out->struct_size!=sizeof(daw_clip)) throw daw::Error("Clip ABI mismatch");
@@ -1184,6 +1290,10 @@ int daw_duplicate_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t rev) {
 int daw_delete_clip(daw_session* s,uint64_t id,uint32_t index,uint64_t rev) { return guard(s,[&]{s->model.deleteClip(id,index,rev); resetTransport(s);}); }
 int daw_set_clip_fades(daw_session* s,uint64_t id,uint32_t index,uint64_t fadeIn,uint64_t fadeOut,uint64_t rev) { return guard(s,[&]{s->model.setClipFades(id,index,fadeIn,fadeOut,rev); resetTransport(s);}); }
 int daw_set_crossfade(daw_session* s,uint64_t id,uint32_t index,uint64_t duration,uint64_t rev){return guard(s,[&]{s->model.setCrossfade(id,index,duration,rev);resetTransport(s);});}
+int daw_set_crossfade_shaped(daw_session* s,uint64_t id,uint32_t index,uint64_t duration,uint32_t shape,uint64_t rev){return guard(s,[&]{const auto value=static_cast<daw::FadeShape>(shape);if(!daw::isFadeShape(value))throw daw::Error("Invalid clip fade shape");s->model.setCrossfadeShaped(id,index,duration,value,rev);resetTransport(s);});}
+int daw_get_clip_fade_shapes(daw_session* s,uint64_t id,uint32_t index,daw_clip_fade_shapes* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_clip_fade_shapes)||out->version!=1)throw daw::Error("Clip fade-shapes ABI mismatch");for(const auto& track:s->model.state().tracks)if(track.id==id){if(index>=track.regions.size())throw daw::Error("Clip index out of range");const auto& region=track.regions[index];out->fade_in_shape=static_cast<uint32_t>(region.fadeInShape);out->fade_out_shape=static_cast<uint32_t>(region.fadeOutShape);return;}throw daw::Error("Track not found");});}
+int daw_set_clip_fade_shapes(daw_session* s,uint64_t id,uint32_t index,const daw_clip_fade_shapes* shapes,uint64_t rev){return guard(s,[&]{if(!shapes||shapes->struct_size!=sizeof(daw_clip_fade_shapes)||shapes->version!=1)throw daw::Error("Clip fade-shapes ABI mismatch");const auto fadeIn=static_cast<daw::FadeShape>(shapes->fade_in_shape),fadeOut=static_cast<daw::FadeShape>(shapes->fade_out_shape);if(!daw::isFadeShape(fadeIn)||!daw::isFadeShape(fadeOut))throw daw::Error("Invalid clip fade shape");s->model.setClipFadeShapes(id,index,fadeIn,fadeOut,rev);resetTransport(s);});}
+int daw_set_crossfade_shape(daw_session* s,uint64_t id,uint32_t index,uint32_t shape,uint64_t rev){return guard(s,[&]{const auto value=static_cast<daw::FadeShape>(shape);if(!daw::isFadeShape(value))throw daw::Error("Invalid clip fade shape");s->model.setCrossfadeShape(id,index,value,rev);resetTransport(s);});}
 int daw_set_track_color(daw_session* s,uint64_t id,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setTrackColor(id,color,rev);cancelStalePlaybackPreparation(s);});}
 int daw_duplicate_track(daw_session* s,uint64_t id,uint64_t* out_new_id,uint64_t rev){return guard(s,[&]{if(!out_new_id)throw daw::Error("Missing duplicate track id output");*out_new_id=s->model.duplicateTrack(id,rev);cancelStalePlaybackPreparation(s);});}
 int daw_set_clip_color(daw_session* s,uint64_t id,uint32_t index,uint32_t color,uint64_t rev){return guard(s,[&]{s->model.setClipColor(id,index,color,rev);cancelStalePlaybackPreparation(s);});}
@@ -1231,7 +1341,7 @@ int daw_record_stop(daw_session* s,const char* name,uint64_t rev) { return guard
     if(rev!=s->model.state().revision) throw daw::Error("Revision conflict: refresh the project");
     auto input=std::move(s->input);auto duplex=std::move(s->duplex);auto clip=duplex?duplex->stop():input->stop();
     if(duplex){auto passes=daw::splitLoopPasses(*clip,s->loopEnd-s->loopStart);std::vector<daw::Take> additions;additions.reserve(passes.size());for(size_t i=0;i<passes.size();++i){auto nameForPass=takeName+" · "+std::to_string(i+1);try{daw::validateName(nameForPass);}catch(...){nameForPass="Loop take "+std::to_string(i+1);}additions.push_back({std::move(nameForPass),s->loopStart,std::move(passes[i])});}s->model.addTakes(s->recordTarget,std::move(additions),rev);duplex->discardRecovery();}
-    else{if(s->recordTarget)s->model.addTake(s->recordTarget,takeName,std::move(clip),s->recordStart,rev);else s->model.importAt(takeName,std::move(clip),s->recordStart,rev);input->discardRecovery();}
+    else{if(s->recordTarget){const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==s->recordTarget;});if(track==s->model.state().tracks.end())throw daw::Error("Target track not found");if(track->audio)s->model.addTake(s->recordTarget,takeName,std::move(clip),s->recordStart,rev);else s->model.materializeRecordedTrack(s->recordTarget,takeName,std::move(clip),s->recordStart,rev);}else s->model.importAt(takeName,std::move(clip),s->recordStart,rev);input->discardRecovery();}
     s->selectedFrame=s->recordStart;s->recordTarget=0;resetTransport(s);
 }); }
 int daw_record_cancel(daw_session* s) { return guard(s,[&]{if(s->input){s->input->cancel();s->input.reset();}if(s->duplex){s->duplex->cancel();s->duplex.reset();}s->recordTarget=0;}); }
@@ -1243,6 +1353,19 @@ int daw_get_recording(daw_session* s,daw_recording* out) { return guard(s,[&]{
     auto now=std::chrono::steady_clock::now();
     if(out->callbacks!=s->recordLastCallbacks){s->recordLastCallbacks=out->callbacks;s->recordProgress=now;}
     if(now-s->recordProgress>std::chrono::seconds(2)){if(s->duplex)s->duplex->markStalled();else s->input->cancel();throw daw::Error("Input stalled: no audio callbacks for 2 seconds");}
+}); }
+int daw_get_recording_preview(daw_session* s,daw_recording_preview* out) { return guard(s,[&]{
+    if(!out||out->struct_size!=sizeof(daw_recording_preview)||out->version!=DAW_RECORDING_PREVIEW_VERSION)throw daw::Error("Recording preview ABI mismatch");
+    *out={};out->struct_size=sizeof(daw_recording_preview);out->version=DAW_RECORDING_PREVIEW_VERSION;
+    if(!recordingActive(s))return;
+    out->active=1;out->target_track_id=s->recordTarget;out->project_start_frame=s->recordStart;
+    if(s->duplex){out->captured_frames=s->duplex->frames();s->duplex->previewPeaks(out->peaks,512);}else{out->captured_frames=s->input->frames();s->input->previewPeaks(out->peaks,512);}
+}); }
+int daw_get_recording_preview_detail(daw_session* s,float* peaks,uint32_t count) { return guard(s,[&]{
+    if(!peaks||count!=DAW_RECORDING_PREVIEW_DETAIL_BINS)throw daw::Error("Detailed recording preview requires a 2048-float buffer");
+    std::fill_n(peaks,count,0.0f);
+    if(!recordingActive(s))return;
+    if(s->duplex)s->duplex->previewPeaks(peaks,count);else s->input->previewPeaks(peaks,count);
 }); }
 int daw_recover_take(daw_session* s,const char* path,const char* name,uint64_t rev) { return guard(s,[&]{
     auto recoveryPath=std::string(required(path)),takeName=std::string(required(name));

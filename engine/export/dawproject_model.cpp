@@ -61,6 +61,10 @@ ExportModel makeExportModel(const State& state, const ExportOptions& options) {
             item.regions.push_back({static_cast<uint32_t>(index), region.take, region.start,
                                     region.sourceOffset, region.length, region.fadeIn,
                                     region.fadeOut, mediaID(track.id, region.take)});
+            if (region.fadeInShape != FadeShape::Linear || region.fadeOutShape != FadeShape::Linear)
+                losses.items.push_back({LossSeverity::Warning, "fade-shape-flattened",
+                    item.id + "-clip-" + std::to_string(index),
+                    "DAWproject stores fade durations but not this project's non-linear fade shape; exported fades use the receiving DAW's default curve."});
         }
         for (const auto& send : track.sends)
             item.sends.push_back({decimalID(send.bus), send.gain, send.preFader});

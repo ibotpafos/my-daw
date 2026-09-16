@@ -93,11 +93,14 @@ daw_dawproject_job* daw_begin_dawproject_export(daw_session*,const char* path,do
 int daw_poll_dawproject_export(daw_dawproject_job*,daw_dawproject_status*);
 void daw_cancel_dawproject_export(daw_dawproject_job*);
 void daw_release_dawproject_export(daw_dawproject_job*);
-typedef struct { uint32_t struct_size; uint64_t revision; uint32_t track_count; int32_t can_undo; int32_t can_redo; double master_gain_db; uint32_t bus_count; uint32_t master_insert_count; } daw_snapshot;
+typedef struct { uint32_t struct_size; uint64_t revision; uint32_t track_count; int32_t can_undo; int32_t can_redo; double master_gain_db; uint32_t bus_count; uint32_t master_insert_count; int32_t master_solo; } daw_snapshot;
 typedef struct { uint32_t struct_size; uint64_t id; double gain_db; char name[481]; uint64_t audio_frames; uint32_t clip_count; double pan; int32_t muted; int32_t solo; uint32_t take_count; uint64_t output_bus_id; uint32_t send_count; uint32_t color; } daw_track;
 typedef struct { uint32_t struct_size; uint64_t start; uint64_t source_offset; uint64_t length; uint64_t fade_in; uint64_t fade_out; uint32_t take_index; uint32_t color; double gain_db; uint32_t muted; uint32_t looped; double pan; } daw_clip;
+/* Additive clip-fade ABI. daw_clip remains frozen; version is currently 1 and
+ * shape values are 0 Linear, 1 Smooth, 2 EqualPower. */
+typedef struct { uint32_t struct_size; uint32_t version; uint32_t fade_in_shape; uint32_t fade_out_shape; } daw_clip_fade_shapes;
 typedef struct { uint32_t struct_size; uint32_t index; uint64_t start; uint64_t frames; char name[481]; } daw_take;
-typedef struct { uint32_t struct_size; uint64_t id; double gain_db; double pan; int32_t muted; uint64_t output_bus_id; char name[481]; } daw_bus;
+typedef struct { uint32_t struct_size; uint64_t id; double gain_db; double pan; int32_t muted; int32_t solo; uint64_t output_bus_id; char name[481]; } daw_bus;
 typedef struct { uint32_t struct_size; uint64_t bus_id; double gain_db; int32_t pre_fader; } daw_send;
 typedef struct { uint32_t struct_size; uint64_t frame; double gain_db; } daw_automation_point;
 /* Gesture target: 1=track volume, 2=track pan, 3=bus gain, 4=master gain.
@@ -188,6 +191,14 @@ typedef struct { uint32_t struct_size; uint32_t version; float momentary_lufs; f
 enum { DAW_OUTPUT_IDLE=0, DAW_OUTPUT_RUNNING=1, DAW_OUTPUT_STOPPED=2, DAW_OUTPUT_DEVICE_LOST=3, DAW_OUTPUT_STALLED=4, DAW_OUTPUT_CALLBACK_ERROR=5, DAW_OUTPUT_PREPARING=6, DAW_OUTPUT_PREPARATION_FAILED=7 };
 typedef struct { uint32_t struct_size; int32_t state; uint32_t device_id; uint64_t generation; uint64_t callbacks; uint64_t callback_errors; } daw_output_status;
 typedef struct { uint32_t struct_size; int32_t recording; int32_t overflowed; uint64_t frames; uint64_t callbacks; uint64_t target_track_id; int32_t loop_recording; uint32_t pass_count; } daw_recording;
+/* A read-only live waveform. Peaks are normalized absolute values [0,1],
+ * resampled across the recording captured so far. It is inactive
+ * with all-zero fields/peaks once recording stops or is cancelled. */
+enum { DAW_RECORDING_PREVIEW_VERSION = 1 };
+typedef struct { uint32_t struct_size; uint32_t version; int32_t active; uint32_t reserved; uint64_t target_track_id; uint64_t project_start_frame; uint64_t captured_frames; float peaks[512]; } daw_recording_preview;
+/* Additive dense envelope for the same active recording.  Read its metadata
+ * from daw_get_recording_preview first; this call writes zeroes while idle. */
+enum { DAW_RECORDING_PREVIEW_DETAIL_BINS = 2048 };
 /* Background PCM-WAV import. A job owns only a source path plus immutable
  * intent; it never retains a session. Poll and cancel are thread-safe while
  * the caller retains the handle; release must be serialized with all handle
@@ -232,7 +243,12 @@ int daw_import_take_wav(daw_session*,uint64_t track_id,const char* path,const ch
 int daw_import_aiff(daw_session*, const char* path, const char* name, uint64_t expected_revision);
 int daw_import_take_aiff(daw_session*,uint64_t track_id,const char* path,const char* name,uint64_t start_frame,uint64_t expected_revision);
 int daw_get_take(daw_session*,uint64_t track_id,uint32_t take_index,daw_take*);
+/* The legacy waveform call remains a compact 512-bin overview.  This
+ * additive editor-preview call returns the immutable 2048-bin source cache,
+ * constructed at import/record commit time rather than on the UI thread. */
+enum { DAW_TAKE_WAVEFORM_DETAIL_BINS = 2048 };
 int daw_get_take_waveform(daw_session*,uint64_t track_id,uint32_t take_index,float* peaks,uint32_t count);
+int daw_get_take_waveform_detail(daw_session*,uint64_t track_id,uint32_t take_index,float* peaks,uint32_t count);
 int daw_comp_range(daw_session*,uint64_t track_id,uint32_t take_index,uint64_t start_frame,uint64_t end_frame,uint64_t expected_revision);
 /* Seek stops playback; position is ephemeral and does not create a revision.
  * Play starts from current position (at EOF restarts from zero). Stop retains position. */
@@ -244,6 +260,12 @@ int daw_duplicate_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uin
 int daw_delete_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t expected_revision);
 int daw_set_clip_fades(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t fade_in, uint64_t fade_out, uint64_t expected_revision);
 int daw_set_crossfade(daw_session*,uint64_t track_id,uint32_t left_clip_index,uint64_t duration,uint64_t expected_revision);
+/* Atomically changes both crossfade duration and its shared curve (0 Linear,
+ * 1 Smooth, 2 EqualPower), consuming at most one project revision. */
+int daw_set_crossfade_shaped(daw_session*,uint64_t track_id,uint32_t left_clip_index,uint64_t duration,uint32_t shape,uint64_t expected_revision);
+int daw_get_clip_fade_shapes(daw_session*,uint64_t track_id,uint32_t clip_index,daw_clip_fade_shapes*);
+int daw_set_clip_fade_shapes(daw_session*,uint64_t track_id,uint32_t clip_index,const daw_clip_fade_shapes*,uint64_t expected_revision);
+int daw_set_crossfade_shape(daw_session*,uint64_t track_id,uint32_t left_clip_index,uint32_t shape,uint64_t expected_revision);
 /* Clip/track editing surface (project schema v19). Colors are 24-bit RGB
  * packed as 0xRRGGBB; 0 means "no user color". Clip gain is dB at the mix-in
  * with the same -60..12 dB clamp the domain applies to track gain. All of
@@ -296,6 +318,8 @@ int daw_record_start_take(daw_session*,uint64_t track_id,uint64_t start_frame,co
 int daw_record_stop(daw_session*, const char* name, uint64_t expected_revision);
 int daw_record_cancel(daw_session*);
 int daw_get_recording(daw_session*, daw_recording*);
+int daw_get_recording_preview(daw_session*, daw_recording_preview*);
+int daw_get_recording_preview_detail(daw_session*,float* peaks,uint32_t count);
 /* Imports the confirmed part of a stale .mydawtake. File removal is attempted
  * only after the model commit succeeds. */
 int daw_recover_take(daw_session*, const char* path, const char* name, uint64_t expected_revision);
@@ -317,12 +341,14 @@ int daw_set_pan(daw_session*,uint64_t id,double pan,uint64_t expected_revision);
 int daw_set_mute(daw_session*,uint64_t id,int32_t muted,uint64_t expected_revision);
 int daw_set_solo(daw_session*,uint64_t id,int32_t solo,uint64_t expected_revision);
 int daw_set_master_gain(daw_session*,double gain_db,uint64_t expected_revision);
+int daw_set_master_solo(daw_session*,int32_t solo,uint64_t expected_revision);
 int daw_add_bus(daw_session*,const char* name,uint64_t expected_revision);
 int daw_get_bus(daw_session*,uint32_t index,daw_bus*);
 int daw_rename_bus(daw_session*,uint64_t bus_id,const char* name,uint64_t expected_revision);
 int daw_set_bus_gain(daw_session*,uint64_t bus_id,double gain_db,uint64_t expected_revision);
 int daw_set_bus_pan(daw_session*,uint64_t bus_id,double pan,uint64_t expected_revision);
 int daw_set_bus_mute(daw_session*,uint64_t bus_id,int32_t muted,uint64_t expected_revision);
+int daw_set_bus_solo(daw_session*,uint64_t bus_id,int32_t solo,uint64_t expected_revision);
 /* output_bus_id=0 means Master. Cycles and missing destinations are rejected atomically. */
 int daw_set_track_output(daw_session*,uint64_t track_id,uint64_t output_bus_id,uint64_t expected_revision);
 /* Track grouping: buses are the folders. Creates a fresh bus (name gates
@@ -380,6 +406,20 @@ int daw_apply_installed_au_scan(daw_session*,daw_au_scan_job*,uint32_t* availabl
 int daw_save_installed_au_scan_cache(daw_session*,daw_au_scan_job*,const char* cache_path);
 int daw_load_installed_au_scan_cache(daw_session*,const char* helper_path,const char* cache_path,uint32_t* available_count,uint32_t* quarantined_count,uint32_t* invalidated_count);
 void daw_release_installed_au_scan(daw_au_scan_job*);
+/* VST3 editor proxy for isolated plugins. One-shot helper opens the plugin's
+ * IPlugView in a disposable process; the host proxies UI events through a
+ * shared-memory control channel. The editor view is managed by the helper,
+ * and the host calls resize/getParameter/setParameter/idle/close to drive it.
+ * Requires DAW_BUILD_VST3_EDITOR_HELPER and the pinned SDK. */
+typedef struct { uint32_t struct_size; int32_t open; int32_t width; int32_t height; int32_t attached; char view_type[129]; char error[512]; } daw_vst3_editor_status;
+int daw_vst3_editor_open(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, const char* view_type, uint64_t expected_revision);
+int daw_vst3_editor_close(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, uint64_t expected_revision);
+int daw_vst3_editor_resize(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, int32_t width, int32_t height, uint64_t expected_revision);
+int daw_vst3_editor_get_parameter(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, uint32_t parameter_id, float* out_value, uint64_t expected_revision);
+int daw_vst3_editor_set_parameter(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, uint32_t parameter_id, float normalized_value, uint64_t expected_revision);
+int daw_vst3_editor_idle(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, uint64_t expected_revision);
+int daw_get_vst3_editor_status(daw_session*, int32_t owner, uint64_t owner_id, uint64_t plugin_id, daw_vst3_editor_status* out);
+
 /* Each VST3 module and probe runs in its own disposable helper process.
  * Poll status: 0 running, 1 complete, 2 helper failure. The cache loader
  * re-enumerates metadata before accepting an old verdict. */

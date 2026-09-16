@@ -5,6 +5,7 @@ import AppKit
 /// treat as a global DAW command.
 final class DAWWindow: NSWindow {
     var onPlayStop: (() -> Void)?
+    var onRecordToggle: (() -> Void)?
     var onRewind: (() -> Void)?
     var onDeleteSelectedClip: (() -> Void)?
     var onDeleteSelectedTrack: (() -> Void)?
@@ -61,6 +62,8 @@ final class DAWWindow: NSWindow {
         switch event.keyCode {
         case 49: // Space
             return invoke(onPlayStop)
+        case 15: // R — the focused text editor is filtered by defersToTextInput.
+            return invoke(onRecordToggle)
         case 115: // Home
             return invoke(onRewind)
         case 51, 117: // Backspace/Delete and forward Delete
@@ -105,5 +108,20 @@ final class DAWWindow: NSWindow {
         guard let command else { return false }
         command()
         return true
+    }
+}
+
+/// `NSScrollView` does not zoom its custom document view automatically.  This
+/// narrow boundary lets the arrangement controller keep the time underneath a
+/// trackpad pinch fixed while it changes the document scale.
+final class TimelineScrollView: NSScrollView {
+    var onMagnifyTimeline: ((NSEvent) -> Void)?
+
+    override func magnify(with event: NSEvent) {
+        if let onMagnifyTimeline {
+            onMagnifyTimeline(event)
+        } else {
+            super.magnify(with: event)
+        }
     }
 }

@@ -52,6 +52,44 @@ bool removeAutomation(std::vector<AutomationPoint>& points,uint64_t frame){
     auto point=std::lower_bound(points.begin(),points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
     if(point==points.end()||point->frame!=frame)return false;points.erase(point);return true;
 }
+// A clip is the only owner-visible representation of imported audio.  Once
+// the final region is deleted, retaining the hidden base take would make the
+// strip neither reusable for recording nor honestly empty.  Clear all media
+// in the same undoable snapshot while preserving the track's identity, mixer
+// state, routing, plug-ins and automation.
+void clearTrackAudio(Track& track) noexcept {
+    track.audio.reset();
+    track.regions.clear();
+    track.takes.clear();
+    track.baseStart=0;
+}
+void clearAutoFades(Track& track) noexcept {
+    for(auto& region:track.regions) {
+        if(region.autoFadeIn) { region.fadeIn=0; region.fadeInShape=FadeShape::Linear; region.autoFadeIn=false; }
+        if(region.autoFadeOut) { region.fadeOut=0; region.fadeOutShape=FadeShape::Linear; region.autoFadeOut=false; }
+    }
+}
+// Timeline edits are allowed to put adjacent audio regions on top of each
+// other. A matching manual pair is retained; otherwise a pair with no manual
+// endpoints becomes a linear automatic crossfade. validate() retains the
+// no-three-voices rule, so a track never has an ambiguous stack of regions.
+void normalizeAutoCrossfades(Track& track) {
+    std::stable_sort(track.regions.begin(),track.regions.end(),[](const Region& a,const Region& b){return a.start<b.start;});
+    for(size_t index=1;index<track.regions.size();++index) {
+        auto& left=track.regions[index-1]; auto& right=track.regions[index];
+        if(left.start>48000ull*600-left.length) throw Error("Invalid clip bounds (timeline limit: 10 minutes)");
+        const auto leftEnd=left.start+left.length;
+        if(leftEnd<=right.start) continue;
+        const auto overlap=leftEnd-right.start;
+        if(overlap==1) throw Error("Crossfade requires at least two frames");
+        // validate() owns full-cover and third-concurrent-region rejection.
+        if(left.fadeOut==overlap&&right.fadeIn==overlap&&left.fadeOutShape==right.fadeInShape) continue;
+        if(left.fadeOut||right.fadeIn) throw Error("Clip overlap conflicts with a manual fade");
+        left.fadeOut=overlap; right.fadeIn=overlap;
+        left.fadeOutShape=FadeShape::Linear; right.fadeInShape=FadeShape::Linear;
+        left.autoFadeOut=true; right.autoFadeIn=true;
+    }
+}
 std::vector<AutomationPoint>& automationLane(State& state,AutomationTarget target,uint64_t targetID){
     switch(target){
     case AutomationTarget::TrackVolume:{auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==targetID;});if(track==state.tracks.end())throw Error("Track not found");return track->volumeAutomation;}
@@ -103,16 +141,25 @@ void validate(const State& state) {
                 // [sourceOffset, frames); an unlooped one stays strictly inside.
                 if(!source||region.sourceOffset>=source->frames() || !region.length || (!region.looped&&region.length>source->frames()-region.sourceOffset)
                     || region.start>48000*600 || region.length>48000*600-region.start) throw Error("Invalid clip bounds (timeline limit: 10 minutes)");
+                if(!isFadeShape(region.fadeInShape)||!isFadeShape(region.fadeOutShape)) throw Error("Invalid clip fade shape");
                 if(region.fadeIn>region.length || region.fadeOut>region.length || region.fadeIn>region.length-region.fadeOut) throw Error("Clip fades exceed its duration");
                 if(!first && region.start<previousEnd) {
                     const auto overlap=previousEnd-region.start;const auto& previous=t.regions[regionIndex-1];
+                    if(overlap==1)throw Error("Crossfade requires at least two frames");
                     if(overlap>=previous.length||overlap>=region.length)throw Error("Crossfade must leave audible material in both clips");
-                    if(previous.fadeOut!=overlap||region.fadeIn!=overlap)throw Error("Clip overlap requires a matching crossfade");
+                    if(previous.fadeOut!=overlap||region.fadeIn!=overlap||previous.fadeOutShape!=region.fadeInShape)throw Error("Clip overlap requires a matching crossfade");
+                    if(previous.autoFadeOut!=region.autoFadeIn)throw Error("Crossfade auto-fade provenance mismatch");
+                    if(previous.autoFadeOut&&(previous.fadeOutShape!=FadeShape::Linear||region.fadeInShape!=FadeShape::Linear))throw Error("Automatic crossfade must be linear");
                     if(regionIndex>1&&region.start<t.regions[regionIndex-2].start+t.regions[regionIndex-2].length)throw Error("Three clips cannot overlap");
+                } else {
+                    if(region.autoFadeIn) throw Error("Orphan automatic fade-in");
+                    if(!first&&t.regions[regionIndex-1].autoFadeOut) throw Error("Orphan automatic fade-out");
                 }
+                if(first&&region.autoFadeIn) throw Error("Orphan automatic fade-in");
                 previousEnd=region.start+region.length; first=false;
                 ++regionIndex;
             }
+            if(!t.regions.empty()&&t.regions.back().autoFadeOut)throw Error("Orphan automatic fade-out");
         } else if(!t.regions.empty()||!t.takes.empty()) throw Error("Empty track cannot contain clips or takes");
         if (t.id == 0 || t.id >= state.nextID || !ids.insert(t.id).second) throw Error("Invalid track ID");
         if (!std::isfinite(t.gain) || t.gain < -120 || t.gain > 24) throw Error("Gain outside -120…24 dB");
@@ -337,7 +384,8 @@ void Session::setTrackColor(uint64_t id,uint32_t color,uint64_t expected){check(
 void Session::setTrackGain(uint64_t id,double gainDb,uint64_t expected){check(expected);if(!std::isfinite(gainDb)||gainDb<-60.0||gainDb>12.0)throw Error("Track gain outside -60..12 dB");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(it->gain==gainDb)return;it->gain=gainDb;commit(std::move(next));}
 uint64_t Session::duplicateTrack(uint64_t id,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(next.tracks.size()>=256)throw Error("Project supports at most 256 tracks");Track copy=*it;copy.id=next.nextID++;copy.name=it->name+" copy";const uint64_t newId=copy.id;next.tracks.push_back(std::move(copy));commit(std::move(next));return newId;}
 void Session::masterGain(double value,uint64_t expected){check(expected);if(current.masterGain==value)return;State next=current;next.masterGain=value;commit(std::move(next));}
-void Session::addBus(const std::string& name,uint64_t expected){check(expected);State next=current;next.buses.push_back({next.nextID++,name,0,0,false,0,{},{}});commit(std::move(next));}
+void Session::setMasterSolo(bool solo,uint64_t expected){check(expected);State next=current;if(next.masterSolo==solo)return;next.masterSolo=solo;commit(std::move(next));}
+void Session::addBus(const std::string& name,uint64_t expected){check(expected);State next=current;next.buses.push_back({next.nextID++,name,0,0,false,false,0,{},{}});commit(std::move(next));}
 void Session::deleteBus(uint64_t id,uint64_t expected){
     check(expected);
     State next=current;
@@ -361,6 +409,7 @@ void Session::renameBus(uint64_t id,const std::string& name,uint64_t expected){c
 void Session::busGain(uint64_t id,double value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->gain==value)return;it->gain=value;commit(std::move(next));}
 void Session::busPan(uint64_t id,double value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->pan==value)return;it->pan=value;commit(std::move(next));}
 void Session::busMute(uint64_t id,bool value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->muted==value)return;it->muted=value;commit(std::move(next));}
+void Session::busSolo(uint64_t id,bool value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->solo==value)return;it->solo=value;commit(std::move(next));}
 void Session::routeTrack(uint64_t trackID,uint64_t busID,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& track){return track.id==trackID;});if(it==next.tracks.end())throw Error("Track not found");if(it->outputBus==busID)return;it->outputBus=busID;commit(std::move(next));}
 void Session::routeBus(uint64_t busID,uint64_t outputBusID,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==busID;});if(it==next.buses.end())throw Error("Bus not found");if(it->outputBus==outputBusID)return;it->outputBus=outputBusID;commit(std::move(next));}
 void Session::upsertSend(uint64_t trackID,uint64_t busID,double value,bool preFader,uint64_t expected){check(expected);State next=current;auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==next.tracks.end())throw Error("Track not found");auto send=std::find_if(track->sends.begin(),track->sends.end(),[&](const auto& item){return item.bus==busID;});if(send==track->sends.end())track->sends.push_back({busID,value,preFader});else{if(send->gain==value&&send->preFader==preFader)return;send->gain=value;send->preFader=preFader;}commit(std::move(next));}
@@ -520,41 +569,44 @@ bool Session::pluginParameterAutomationGestureActive() const noexcept{return plu
 void Session::editClip(uint64_t id,uint32_t index,uint64_t start,uint64_t offset,uint64_t length,uint64_t expected) {
     const auto track=std::find_if(current.tracks.begin(),current.tracks.end(),[id](const auto& t){return t.id==id;});
     if(track==current.tracks.end() || index>=track->regions.size()) throw Error("Audio clip not found");
-    const auto fadeIn=std::min(track->regions[index].fadeIn,length);
-    const auto fadeOut=std::min(track->regions[index].fadeOut,length-fadeIn);
+    const auto fadeIn=track->regions[index].autoFadeIn?0:std::min(track->regions[index].fadeIn,length);
+    const auto fadeOut=track->regions[index].autoFadeOut?0:std::min(track->regions[index].fadeOut,length-fadeIn);
     editClipFull(id,index,start,offset,length,fadeIn,fadeOut,expected);
 }
 void Session::editClipFull(uint64_t id,uint32_t index,uint64_t start,uint64_t offset,uint64_t length,uint64_t fadeIn,uint64_t fadeOut,uint64_t expected) {
     check(expected); State next=current;
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
+    clearAutoFades(*it);
     auto& region=it->regions[index];
-    const auto carried=Region{start,offset,length,fadeIn,fadeOut,region.take,region.gain,region.color,region.muted,region.looped,region.pan};
+    const auto carried=Region{start,offset,length,fadeIn,fadeOut,region.take,region.gain,region.color,region.muted,region.looped,region.pan,region.fadeInShape,region.fadeOutShape};
     if(region==carried) return;
     region=carried;
-    std::stable_sort(it->regions.begin(),it->regions.end(),[](const auto& a,const auto& b){return a.start<b.start;});
+    normalizeAutoCrossfades(*it);
     commit(std::move(next));
 }
 void Session::splitClip(uint64_t id,uint32_t index,uint64_t frame,uint64_t expected) {
     check(expected); State next=current;
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
+    clearAutoFades(*it);
     const auto original=it->regions[index];
     if(frame<=original.start || frame>=original.start+original.length) throw Error("Split position must be inside the clip");
     if(original.looped) throw Error("Unloop the clip before splitting");
     const auto left=frame-original.start;
-    it->regions[index]={original.start,original.sourceOffset,left,std::min(original.fadeIn,left),0,original.take,original.gain,original.color,original.muted,original.looped,original.pan};
-    it->regions.insert(it->regions.begin()+index+1,{frame,original.sourceOffset+left,original.length-left,0,std::min(original.fadeOut,original.length-left),original.take,original.gain,original.color,original.muted,original.looped,original.pan});
-    commit(std::move(next));
+    it->regions[index]={original.start,original.sourceOffset,left,std::min(original.fadeIn,left),0,original.take,original.gain,original.color,original.muted,original.looped,original.pan,original.fadeInShape,FadeShape::Linear};
+    it->regions.insert(it->regions.begin()+index+1,{frame,original.sourceOffset+left,original.length-left,0,std::min(original.fadeOut,original.length-left),original.take,original.gain,original.color,original.muted,original.looped,original.pan,FadeShape::Linear,original.fadeOutShape});
+    normalizeAutoCrossfades(*it); commit(std::move(next));
 }
 void Session::duplicateClip(uint64_t id,uint32_t index,uint64_t expected) {
     check(expected); State next=current;
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
+    clearAutoFades(*it);
     if(it->regions.size()>=256) throw Error("Track supports at most 256 clips");
     auto copy=it->regions[index]; uint64_t end=0; for(const auto& region:it->regions) end=std::max(end,region.start+region.length);
     copy.start=end; if(copy.length>48000*600-copy.start) throw Error("No timeline space for duplicate");
-    it->regions.push_back(copy); commit(std::move(next));
+    it->regions.push_back(copy); normalizeAutoCrossfades(*it); commit(std::move(next));
 }
 // Renderer semantics of Region::take: 0 is the track's base audio, n>0 is takes[n-1].
 namespace { std::shared_ptr<const Clip> takeAudio(const Track& t,uint32_t take){return take==0?t.audio:(take-1<t.takes.size()?t.takes[take-1].audio:nullptr);}
@@ -566,6 +618,8 @@ void Session::copyClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targe
     auto dst=std::find_if(next.tracks.begin(),next.tracks.end(),[targetTrack](const auto& t){return t.id==targetTrack;});
     if(dst==next.tracks.end()) throw Error("Track not found");
     if(!dst->audio) throw Error("Target track has no audio");
+    clearAutoFades(*src);
+    if(src!=dst) clearAutoFades(*dst);
     const Region source=src->regions[index];
     // The take index points into the target's own take list; only an identical
     // shared source at the same position makes the pasted region meaningful.
@@ -574,7 +628,7 @@ void Session::copyClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targe
     if(start>48000*600||source.length>48000*600-start) throw Error("No timeline space for the clip");
     if(dst->regions.size()>=256) throw Error("Track supports at most 256 clips");
     auto copy=source; copy.start=start;
-    dst->regions.push_back(std::move(copy)); commit(std::move(next));
+    dst->regions.push_back(std::move(copy)); normalizeAutoCrossfades(*src); if(src!=dst) normalizeAutoCrossfades(*dst); commit(std::move(next));
 }
 void Session::moveClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targetTrack,uint64_t start,uint64_t expected) {
     check(expected); State next=current;
@@ -583,6 +637,8 @@ void Session::moveClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targe
     auto dst=std::find_if(next.tracks.begin(),next.tracks.end(),[targetTrack](const auto& t){return t.id==targetTrack;});
     if(dst==next.tracks.end()) throw Error("Track not found");
     if(!dst->audio) throw Error("Target track has no audio");
+    clearAutoFades(*src);
+    if(src!=dst) clearAutoFades(*dst);
     const Region source=src->regions[index];
     const auto pasted=takeAudio(*dst,source.take);
     if(!pasted||pasted!=takeAudio(*src,source.take)||takeStart(*dst,source.take)!=takeStart(*src,source.take)) throw Error("The target track does not share the clip's audio source");
@@ -591,7 +647,10 @@ void Session::moveClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targe
     if(src!=dst&&dst->regions.size()>=256) throw Error("Track supports at most 256 clips");
     auto copy=source; copy.start=start;
     src->regions.erase(src->regions.begin()+index);
-    dst->regions.push_back(std::move(copy)); commit(std::move(next));
+    dst->regions.push_back(std::move(copy));
+    normalizeAutoCrossfades(*src);
+    if(src!=dst) normalizeAutoCrossfades(*dst);
+    commit(std::move(next));
 }
 void Session::copyMidiClipToTrack(uint64_t sourceTrack,uint32_t index,uint64_t targetTrack,uint64_t start,uint64_t expected) {
     check(expected); State next=current;
@@ -616,30 +675,56 @@ void Session::deleteClip(uint64_t id,uint32_t index,uint64_t expected) {
     check(expected); State next=current;
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
-    if(it->regions.size()==1) throw Error("The last clip keeps the imported audio attached to its track");
-    it->regions.erase(it->regions.begin()+index); commit(std::move(next));
+    clearAutoFades(*it);
+    if(it->regions.size()==1) clearTrackAudio(*it);
+    else it->regions.erase(it->regions.begin()+index);
+    if(it->audio) normalizeAutoCrossfades(*it);
+    commit(std::move(next));
 }
 void Session::setClipFades(uint64_t id,uint32_t index,uint64_t fadeIn,uint64_t fadeOut,uint64_t expected) {
     check(expected); State next=current;
     auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end() || !it->audio || index>=it->regions.size()) throw Error("Audio clip not found");
-    auto& region=it->regions[index]; if(region.fadeIn==fadeIn && region.fadeOut==fadeOut) return;
-    region.fadeIn=fadeIn; region.fadeOut=fadeOut; commit(std::move(next));
+    auto& region=it->regions[index]; if(region.fadeIn==fadeIn && region.fadeOut==fadeOut&&!region.autoFadeIn&&!region.autoFadeOut) return;
+    region.fadeIn=fadeIn; region.fadeOut=fadeOut;region.autoFadeIn=false;region.autoFadeOut=false; commit(std::move(next));
+}
+void Session::setClipFadeShapes(uint64_t id,uint32_t index,FadeShape fadeIn,FadeShape fadeOut,uint64_t expected){
+    check(expected);if(!isFadeShape(fadeIn)||!isFadeShape(fadeOut))throw Error("Invalid clip fade shape");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& track){return track.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(index>=it->regions.size())throw Error("Clip index out of range");auto& region=it->regions[index];if(region.fadeInShape==fadeIn&&region.fadeOutShape==fadeOut&&!region.autoFadeIn&&!region.autoFadeOut)return;region.fadeInShape=fadeIn;region.fadeOutShape=fadeOut;region.autoFadeIn=false;region.autoFadeOut=false;commit(std::move(next));
+}
+void Session::setCrossfadeShape(uint64_t id,uint32_t leftIndex,FadeShape shape,uint64_t expected){
+    check(expected);if(!isFadeShape(shape))throw Error("Invalid clip fade shape");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& track){return track.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(leftIndex+1>=it->regions.size())throw Error("Crossfade clips not found");auto& left=it->regions[leftIndex];auto& right=it->regions[leftIndex+1];const auto overlap=left.start+left.length>right.start?left.start+left.length-right.start:0;if(!overlap||left.fadeOut!=overlap||right.fadeIn!=overlap||left.fadeOutShape!=right.fadeInShape)throw Error("No active crossfade");if(left.fadeOutShape==shape&&!left.autoFadeOut&&!right.autoFadeIn)return;left.fadeOutShape=shape;right.fadeInShape=shape;left.autoFadeOut=false;right.autoFadeIn=false;commit(std::move(next));
 }
 void Session::setCrossfade(uint64_t id,uint32_t leftIndex,uint64_t duration,uint64_t expected) {
     check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
     if(it==next.tracks.end()||!it->audio||leftIndex+1>=it->regions.size())throw Error("Crossfade requires two adjacent clips");
     auto& left=it->regions[leftIndex];auto& right=it->regions[leftIndex+1];const auto leftEnd=left.start+left.length;
     const auto oldOverlap=leftEnd>right.start?leftEnd-right.start:0;
-    if(oldOverlap&&(left.fadeOut!=oldOverlap||right.fadeIn!=oldOverlap))throw Error("Existing overlap is not a crossfade");
-    if(oldOverlap==duration)return;
+    if(oldOverlap&&(left.fadeOut!=oldOverlap||right.fadeIn!=oldOverlap||left.fadeOutShape!=right.fadeInShape))throw Error("Existing overlap is not a crossfade");
+    if(oldOverlap==duration&&!left.autoFadeOut&&!right.autoFadeIn)return;
     if(duration==1)throw Error("Crossfade requires at least two frames");
-    if(oldOverlap){right.start+=oldOverlap;right.sourceOffset+=oldOverlap;right.length-=oldOverlap;left.fadeOut=0;right.fadeIn=0;}
+    if(oldOverlap){right.start+=oldOverlap;right.sourceOffset+=oldOverlap;right.length-=oldOverlap;left.fadeOut=0;right.fadeIn=0;left.fadeOutShape=FadeShape::Linear;right.fadeInShape=FadeShape::Linear;left.autoFadeOut=false;right.autoFadeIn=false;}
     if(left.start+left.length!=right.start)throw Error("Crossfade clips must touch");
     if(duration){
         if(duration>=left.length||duration>=right.length||right.sourceOffset<duration)throw Error("Not enough audio handle for crossfade");
         if(left.fadeIn+duration>left.length||right.fadeOut+duration>right.length+duration)throw Error("Crossfade exceeds existing fades");
-        right.start-=duration;right.sourceOffset-=duration;right.length+=duration;left.fadeOut=duration;right.fadeIn=duration;
+        right.start-=duration;right.sourceOffset-=duration;right.length+=duration;left.fadeOut=duration;right.fadeIn=duration;left.fadeOutShape=FadeShape::Linear;right.fadeInShape=FadeShape::Linear;left.autoFadeOut=false;right.autoFadeIn=false;
+    }
+    commit(std::move(next));
+}
+void Session::setCrossfadeShaped(uint64_t id,uint32_t leftIndex,uint64_t duration,FadeShape shape,uint64_t expected) {
+    check(expected);if(!isFadeShape(shape))throw Error("Invalid clip fade shape");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});
+    if(it==next.tracks.end()||!it->audio||leftIndex+1>=it->regions.size())throw Error("Crossfade requires two adjacent clips");
+    auto& left=it->regions[leftIndex];auto& right=it->regions[leftIndex+1];const auto leftEnd=left.start+left.length;
+    const auto oldOverlap=leftEnd>right.start?leftEnd-right.start:0;
+    if(oldOverlap&&(left.fadeOut!=oldOverlap||right.fadeIn!=oldOverlap||left.fadeOutShape!=right.fadeInShape))throw Error("Existing overlap is not a crossfade");
+    if(oldOverlap==duration&&(!duration||left.fadeOutShape==shape)&&!left.autoFadeOut&&!right.autoFadeIn)return;
+    if(duration==1)throw Error("Crossfade requires at least two frames");
+    if(oldOverlap){right.start+=oldOverlap;right.sourceOffset+=oldOverlap;right.length-=oldOverlap;left.fadeOut=0;right.fadeIn=0;left.fadeOutShape=FadeShape::Linear;right.fadeInShape=FadeShape::Linear;left.autoFadeOut=false;right.autoFadeIn=false;}
+    if(left.start+left.length!=right.start)throw Error("Crossfade clips must touch");
+    if(duration){
+        if(duration>=left.length||duration>=right.length||right.sourceOffset<duration)throw Error("Not enough audio handle for crossfade");
+        if(left.fadeIn+duration>left.length||right.fadeOut+duration>right.length+duration)throw Error("Crossfade exceeds existing fades");
+        right.start-=duration;right.sourceOffset-=duration;right.length+=duration;left.fadeOut=duration;right.fadeIn=duration;left.fadeOutShape=shape;right.fadeInShape=shape;left.autoFadeOut=false;right.autoFadeIn=false;
     }
     commit(std::move(next));
 }
@@ -719,8 +804,8 @@ void Session::setClipGain(uint64_t id,uint32_t clipIndex,double gainDb,uint64_t 
 void Session::setClipMuted(uint64_t id,uint32_t clipIndex,bool muted,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.muted==muted)return;region.muted=muted;commit(std::move(next));}
 void Session::setClipLooped(uint64_t id,uint32_t clipIndex,bool looped,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");auto& region=it->regions[clipIndex];if(region.looped==looped)return;region.looped=looped;commit(std::move(next));}
 void Session::setClipPan(uint64_t id,uint32_t clipIndex,double pan,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio||clipIndex>=it->regions.size())throw Error("Audio clip not found");if(!std::isfinite(pan)||pan<-1.0||pan>1.0)throw Error("Clip pan outside -1..1");auto& region=it->regions[clipIndex];if(region.pan==pan)return;region.pan=pan;commit(std::move(next));}
-void Session::deleteClips(uint64_t id,std::vector<uint32_t> indices,uint64_t expected){check(expected);std::sort(indices.begin(),indices.end());indices.erase(std::unique(indices.begin(),indices.end()),indices.end());if(indices.empty())return;State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio clip not found");for(const auto index:indices)if(index>=it->regions.size())throw Error("Audio clip not found");auto regions=std::move(it->regions);std::vector<Region> kept;for(size_t position=0;position<regions.size();++position)if(!std::binary_search(indices.begin(),indices.end(),static_cast<uint32_t>(position)))kept.push_back(std::move(regions[position]));it->regions=std::move(kept);commit(std::move(next));}
-void Session::nudgeClips(uint64_t id,std::vector<uint32_t> indices,int64_t deltaFrames,uint64_t expected){check(expected);if(indices.empty()||deltaFrames==0)return;std::sort(indices.begin(),indices.end());indices.erase(std::unique(indices.begin(),indices.end()),indices.end());State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio clip not found");for(const auto index:indices)if(index>=it->regions.size())throw Error("Audio clip not found");for(const auto index:indices){const auto& region=it->regions[index];const auto target=static_cast<int64_t>(region.start)+deltaFrames;if(target<0||target>static_cast<int64_t>(48000ull*600)-static_cast<int64_t>(region.length))throw Error("No timeline space for the clip");}for(const auto index:indices)it->regions[index].start=static_cast<uint64_t>(static_cast<int64_t>(it->regions[index].start)+deltaFrames);std::stable_sort(it->regions.begin(),it->regions.end(),[](const auto& a,const auto& b){return a.start<b.start;});commit(std::move(next));}
+void Session::deleteClips(uint64_t id,std::vector<uint32_t> indices,uint64_t expected){check(expected);std::sort(indices.begin(),indices.end());indices.erase(std::unique(indices.begin(),indices.end()),indices.end());if(indices.empty())return;State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio clip not found");for(const auto index:indices)if(index>=it->regions.size())throw Error("Audio clip not found");clearAutoFades(*it);auto regions=std::move(it->regions);std::vector<Region> kept;for(size_t position=0;position<regions.size();++position)if(!std::binary_search(indices.begin(),indices.end(),static_cast<uint32_t>(position)))kept.push_back(std::move(regions[position]));if(kept.empty())clearTrackAudio(*it);else {it->regions=std::move(kept);normalizeAutoCrossfades(*it);}commit(std::move(next));}
+void Session::nudgeClips(uint64_t id,std::vector<uint32_t> indices,int64_t deltaFrames,uint64_t expected){check(expected);if(indices.empty()||deltaFrames==0)return;std::sort(indices.begin(),indices.end());indices.erase(std::unique(indices.begin(),indices.end()),indices.end());State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio clip not found");for(const auto index:indices)if(index>=it->regions.size())throw Error("Audio clip not found");for(const auto index:indices){const auto& region=it->regions[index];const auto target=static_cast<int64_t>(region.start)+deltaFrames;if(target<0||target>static_cast<int64_t>(48000ull*600)-static_cast<int64_t>(region.length))throw Error("No timeline space for the clip");}clearAutoFades(*it);for(const auto index:indices)it->regions[index].start=static_cast<uint64_t>(static_cast<int64_t>(it->regions[index].start)+deltaFrames);normalizeAutoCrossfades(*it);commit(std::move(next));}
 void Session::setMidiClipColor(uint64_t trackID,uint32_t index,uint32_t color,uint64_t expected){check(expected);State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];if(clip.color==color)return;clip.color=color;commit(std::move(next));}
 void Session::transposeMidiClip(uint64_t trackID,uint32_t index,int8_t semitones,uint64_t expected){check(expected);if(semitones==0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const int v=static_cast<int>(note.pitch)+semitones;const uint8_t p=v<0?0:(v>127?127:static_cast<uint8_t>(v));if(p!=note.pitch)changed=true;note.pitch=p;}if(!changed)return;commit(std::move(next));}
 void Session::quantizeMidiClip(uint64_t trackID,uint32_t index,double gridBeats,uint64_t expected){check(expected);if(gridBeats<=0)return;State next=current;auto scope=findMidiTrack(next,trackID,index);auto& clip=scope.track->midiClips[index];bool changed=false;for(auto& note:clip.notes){const double beats=next.beatsAtFrame(note.start);const double snapped=std::round(beats/gridBeats)*gridBeats;const uint64_t frame=next.frameAtBeats(snapped);if(frame!=note.start)changed=true;note.start=frame;}if(!changed)return;commit(std::move(next));}
@@ -834,14 +919,23 @@ void Session::renameMarker(uint64_t frame,const std::string& name,uint64_t expec
 }
 void Session::addTake(uint64_t id,const std::string& name,std::shared_ptr<const Clip> clip,uint64_t start,uint64_t expected){std::vector<Take> additions;additions.push_back({name,start,std::move(clip)});addTakes(id,std::move(additions),expected);}
 void Session::addTakes(uint64_t id,std::vector<Take> additions,uint64_t expected){check(expected);if(additions.empty())throw Error("No takes to add");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");if(additions.size()>15-it->takes.size())throw Error("Track supports at most 16 takes");for(auto& take:additions){validateName(take.name);if(!take.audio)throw Error("Missing take audio");it->takes.push_back(std::move(take));}commit(std::move(next));}
+void Session::materializeRecordedTrack(uint64_t id,const std::string& name,std::shared_ptr<const Clip> clip,uint64_t start,uint64_t expected){
+    check(expected);validateName(name);if(!clip)throw Error("Missing recorded audio");
+    State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& track){return track.id==id;});
+    if(it==next.tracks.end())throw Error("Target track not found");
+    if(it->audio)throw Error("Target track already has audio");
+    if(!it->midiClips.empty())throw Error("Cannot record audio into a MIDI track");
+    it->audio=std::move(clip);it->baseStart=start;it->regions={{start,0,it->audio->frames(),0,0}};commit(std::move(next));
+}
 void Session::compRange(uint64_t id,uint32_t takeIndex,uint64_t start,uint64_t length,uint64_t expected){
     check(expected);if(!length||start>48000*600||length>48000*600-start)throw Error("Invalid comp range");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");
     if(takeIndex>it->takes.size())throw Error("Take index out of range");const auto source=takeIndex==0?it->audio:it->takes[takeIndex-1].audio;const auto takeStart=takeIndex==0?it->baseStart:it->takes[takeIndex-1].start;
     if(!source||start<takeStart||start-takeStart>=source->frames()||length>source->frames()-(start-takeStart))throw Error("Comp range is outside the selected take");
+    clearAutoFades(*it);
     for(size_t i=1;i<it->regions.size();++i)if(it->regions[i].start<it->regions[i-1].start+it->regions[i-1].length)throw Error("Remove active crossfades before changing the comp");
     const auto end=start+length;std::vector<Region> regions;regions.reserve(it->regions.size()+2);
     for(const auto& region:it->regions){const auto regionEnd=region.start+region.length;if(regionEnd<=start||region.start>=end){regions.push_back(region);continue;}if(region.start<start){auto left=region;left.length=start-region.start;left.fadeOut=0;left.fadeIn=std::min(left.fadeIn,left.length);regions.push_back(left);}if(regionEnd>end){auto right=region;const auto removed=end-region.start;right.start=end;right.sourceOffset+=removed;right.length=regionEnd-end;right.fadeIn=0;right.fadeOut=std::min(right.fadeOut,right.length);regions.push_back(right);}}
-    regions.push_back({start,start-takeStart,length,0,0,takeIndex});std::stable_sort(regions.begin(),regions.end(),[](const auto& a,const auto& b){return a.start<b.start;});if(regions==it->regions)return;it->regions=std::move(regions);commit(std::move(next));
+    regions.push_back({start,start-takeStart,length,0,0,takeIndex});std::stable_sort(regions.begin(),regions.end(),[](const auto& a,const auto& b){return a.start<b.start;});if(regions==it->regions)return;it->regions=std::move(regions);normalizeAutoCrossfades(*it);commit(std::move(next));
 }
 void Session::undo(uint64_t expected) {
     check(expected); if (past.empty()) throw Error("Nothing to undo");
@@ -854,6 +948,87 @@ void Session::redo(uint64_t expected) {
     State next = future.back(); next.revision = current.revision + 1;
     next.nextID = current.nextID; validate(next);
     past.push_back(current); future.pop_back(); current = std::move(next);
+}
+
+// VST3 editor proxy for isolated inserts. Requires OutOfProcess hosting mode
+// and the VST3 editor helper (DAW_BUILD_VST3_EDITOR_HELPER).
+void Session::openVst3Editor(const PluginInsert& insert, const std::string& viewType, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    State next = current;
+    const auto& inserts = next.masterInserts;
+    auto it = std::find_if(inserts.begin(), inserts.end(), [&](const auto& p) { return p.id == insert.id; });
+    if (it == inserts.end()) throw Error("Insert not found");
+    const auto idx = static_cast<size_t>(std::distance(inserts.begin(), it));
+    if (next.vst3Editors.size() <= idx) next.vst3Editors.resize(idx + 1);
+    next.vst3Editors[idx] = {viewType, 0, 0, false};
+    commit(std::move(next));
+}
+void Session::closeVst3Editor(const PluginInsert& insert, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    State next = current;
+    const auto& inserts = next.masterInserts;
+    auto it = std::find_if(inserts.begin(), inserts.end(), [&](const auto& p) { return p.id == insert.id; });
+    if (it == inserts.end()) throw Error("Insert not found");
+    const auto idx = static_cast<size_t>(std::distance(inserts.begin(), it));
+    if (idx < next.vst3Editors.size()) next.vst3Editors[idx] = {};
+    commit(std::move(next));
+}
+bool Session::resizeVst3Editor(const PluginInsert& insert, int32_t width, int32_t height, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    if (width < 0 || height < 0) return false;
+    State next = current;
+    const auto& inserts = next.masterInserts;
+    auto it = std::find_if(inserts.begin(), inserts.end(), [&](const auto& p) { return p.id == insert.id; });
+    if (it == inserts.end()) throw Error("Insert not found");
+    const auto idx = static_cast<size_t>(std::distance(inserts.begin(), it));
+    if (idx >= next.vst3Editors.size()) return false;
+    next.vst3Editors[idx].width = width;
+    next.vst3Editors[idx].height = height;
+    commit(std::move(next));
+    return true;
+}
+float Session::getVst3EditorParameter(const PluginInsert& insert, uint32_t parameterID, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    (void)parameterID; // The disposable helper owns the live controller for now.
+    return 0.0f;
+}
+void Session::setVst3EditorParameter(const PluginInsert& insert, uint32_t parameterID, float normalizedValue, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    if (!std::isfinite(normalizedValue) || normalizedValue < 0 || normalizedValue > 1)
+        throw Error("Parameter value must be normalized 0…1");
+    (void)parameterID; // Parameter forwarding is implemented in the helper boundary.
+}
+void Session::idleVst3Editor(const PluginInsert& insert, uint64_t expected) {
+    check(expected);
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+}
+State::Vst3EditorState Session::vst3EditorView(const PluginInsert& insert) const {
+    if (!isVst3PluginInsert(insert)) throw Error("VST3 editor proxy requires a VST3 insert");
+    if (insert.hostingMode != PluginHostingMode::OutOfProcess)
+        throw Error("VST3 editor proxy requires Out-of-Process hosting mode");
+    const auto& inserts = current.masterInserts;
+    auto it = std::find_if(inserts.begin(), inserts.end(), [&](const auto& p) { return p.id == insert.id; });
+    if (it == inserts.end()) throw Error("Insert not found");
+    const auto idx = static_cast<size_t>(std::distance(inserts.begin(), it));
+    if (idx >= current.vst3Editors.size()) return {};
+    return current.vst3Editors[idx];
 }
 void Session::replace(State state) { if(gesture||pluginParameterGesture)throw Error("Automation gesture is active");validate(state); current = std::move(state); past.clear(); future.clear(); }
 }

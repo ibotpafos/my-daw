@@ -30,10 +30,15 @@ void updateImportPhase(const ImportControl& control, uint8_t phase);
 class Clip {
     std::vector<float> samples_;
     std::array<float,512> peaks_{};
+    // The compact cache remains the stable API for overview meters.  The
+    // denser cache is built alongside it exactly once at import time so the
+    // editor never has to walk PCM samples on its UI thread.
+    std::array<float,2048> detailPeaks_{};
 public:
     explicit Clip(std::vector<float> samples, const ImportControl& control = {});
     const std::vector<float>& samples() const { return samples_; }
     const std::array<float,512>& peaks() const { return peaks_; }
+    const std::array<float,2048>& detailPeaks() const { return detailPeaks_; }
     size_t frames() const { return samples_.size()/2; }
 };
 std::shared_ptr<const Clip> decodeWav(std::span<const unsigned char> bytes);
