@@ -69,10 +69,12 @@ preset/sample content или не поддерживают такой headless/o
 Для живого MIDI gate сохранить вывод одного прогона с реальным контроллером,
 где `packets > 0` и `note_on > 0`.
 
-Для AU MusicDevice gate сохранить вывод хотя бы одного системного или vendor
-instrument, где probe завершился `ok` и `peak > 0`.
+Для standalone AU MusicDevice gate сохранить вывод хотя бы одного системного или
+vendor instrument, где probe завершился `ok` и `peak > 0`.
 
-После этого отдельно остаётся интеграционный шаг внутри My DAW: MusicDevice
-должен стать instrument-source в renderer graph, получать frame-aware MIDI lane,
-участвовать в PDC/state lifecycle и переживать save/open. Standalone probe не
-выдаёт этот шаг за готовую поддержку AU instruments.
+Интеграционный code path внутри My DAW реализован следующим срезом и описан в
+[80 AU MusicDevice instrument source](80-au-music-device.md): scanner catalog
+принимает `aumu`, renderer уже передаёт frame-aware MIDI lane, а AU host вызывает
+`MusicDeviceMIDIEvent` и `AudioUnitRender`. Открытым остаётся физический
+пользовательский acceptance: выбрать AU instrument в My DAW, услышать playback
+через реальное output device, сохранить/открыть проект и повторить playback.
