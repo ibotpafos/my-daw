@@ -91,6 +91,8 @@ std::vector<uint8_t> streamBytes(MemoryStream &stream) {
   const auto size = stream.getSize();
   if (size < 0 || static_cast<uint64_t>(size) > kMaximumStateBytes)
     throw Error("VST3 state exceeds 8 MiB");
+  if (size == 0)
+    return {};
   const auto *data = stream.getData();
   if (size != 0 && data == nullptr)
     throw Error("VST3 state capture failed");
@@ -146,103 +148,17 @@ public:
   Vst3Effect(const PluginInsert &plugin, uint32_t sampleRate,
              uint32_t maxFrames)
       : changes(static_cast<int32>(plugin.parameterAutomation.size())) {
-    if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames)
-      throw Error(
-          "VST3 master effects require 48 kHz and 1..4096 frame blocks");
-    std::string error;
-    const auto decoded = decodeVst3StateEnvelope(plugin.state, &error);
-    if (!decoded)
-      throw Error("VST3 insert state: " + error);
-    envelope = *decoded;
-    module =
-        VST3::Hosting::Module::create(envelope.descriptor.modulePath, error);
-    if (!module)
-      throw Error("Load VST3 module failed: " + error);
-    module->getFactory().setHostContext(&host);
-    const auto classId = stateClassId(envelope);
-    component = module->getFactory().createInstance<IComponent>(classId);
-    if (!component)
-      throw Error("Create VST3 component failed");
-    require(component->initialize(&host), "initialize component");
-    initializedComponent = true;
-    processorInterface = FUnknownPtr<IAudioProcessor>(component);
-    if (!processorInterface)
-      throw Error("VST3 component has no audio processor interface");
-    if (!supportedMainStereo(*component))
-      throw Error("VST3 effect does not expose an active stereo main bus");
-    TUID controllerId{};
-    require(component->getControllerClassId(controllerId),
-            "read controller class");
-    controller = module->getFactory().createInstance<IEditController>(
-        VST3::UID(controllerId));
-    if (!controller)
-      throw Error("Create VST3 controller failed");
-    require(controller->initialize(&host), "initialize controller");
-    initializedController = true;
-    connect();
-    restore(envelope);
-    SpeakerArrangement stereo = SpeakerArr::kStereo;
-    require(processor()->setBusArrangements(&stereo, 1, &stereo, 1),
-            "negotiate stereo buses");
-    ProcessSetup setup{};
-    setup.processMode = kRealtime;
-    setup.symbolicSampleSize = kSample32;
-    setup.maxSamplesPerBlock = static_cast<int32>(maxFrames);
-    setup.sampleRate = static_cast<SampleRate>(sampleRate);
-    require(processor()->setupProcessing(setup), "setup processing");
-    require(component->activateBus(kAudio, kInput, 0, true),
-            "activate input bus");
-    inputActive = true;
-    require(component->activateBus(kAudio, kOutput, 0, true),
-            "activate output bus");
-    outputActive = true;
-    require(component->setActive(true), "activate component");
-    active = true;
-    require(processor()->setProcessing(true), "start processing");
-    processing = true;
-    latency = processor()->getLatencySamples();
-    tail = processor()->getTailSamples();
-    maximum = maxFrames;
-    inputLeft.resize(maxFrames);
-    inputRight.resize(maxFrames);
-    // ParameterChanges uses vectors internally. Grow every queue while
-    // this effect is prepared, then clear it; process() only reuses that
-    // capacity on the audio thread.
-    for (const auto &lane : plugin.parameterAutomation) {
-      if (lane.points.empty())
-        continue;
-      int32 queueIndex = -1;
-      auto *queue = changes.addParameterData(
-          static_cast<ParamID>(lane.parameterID), queueIndex);
-      if (!queue || queueIndex < 0)
-        throw Error("VST3 prepare parameter queue failed");
-      for (size_t point = 0; point < lane.points.size() + 2; ++point) {
-        int32 pointIndex = -1;
-        require(queue->addPoint(static_cast<int32>(point), 0.0, pointIndex),
-                "reserve parameter point");
-      }
+    try {
+      initialize(plugin, sampleRate, maxFrames);
+    } catch (...) {
+      // A throwing constructor does not run this class's destructor. Unwind
+      // initialized SDK objects while their module and host are still alive.
+      shutdown();
+      throw;
     }
-    changes.clearQueue();
   }
 
-  ~Vst3Effect() override {
-    try {
-      if (processing)
-        (void)processor()->setProcessing(false);
-      if (active)
-        (void)component->setActive(false);
-      if (outputActive)
-        (void)component->activateBus(kAudio, kOutput, 0, false);
-      if (inputActive)
-        (void)component->activateBus(kAudio, kInput, 0, false);
-      disconnect();
-      if (initializedController)
-        (void)controller->terminate();
-      if (initializedComponent)
-        (void)component->terminate();
-    } catch (...) {
-    }
-  }
+  ~Vst3Effect() override { shutdown(); }
 
   bool process(float *left, float *right, uint32_t frames, uint64_t sampleTime,
                std::span<const PreparedParameterEvent> parameterEvents,
@@ -265,8 +181,10 @@ public:
     outputs.channelBuffers32 = outputChannels;
     ProcessContext context{};
     context.state = ProcessContext::kContTimeValid;
+    context.sampleRate = 48000;
     context.continousTimeSamples = static_cast<int64>(std::min<uint64_t>(
         sampleTime, static_cast<uint64_t>(std::numeric_limits<int64>::max())));
+    context.projectTimeSamples = context.continousTimeSamples;
     ProcessData data{};
     data.processMode = kRealtime;
     data.symbolicSampleSize = kSample32;
@@ -412,8 +330,17 @@ public:
     require(component->getState(&componentState), "capture component state");
     state.componentState = streamBytes(componentState);
     MemoryStream controllerState;
-    require(controller->getState(&controllerState), "capture controller state");
-    state.controllerState = streamBytes(controllerState);
+    const auto controllerResult = controller->getState(&controllerState);
+    // SDK EditController defaults to kNotImplemented when there is no extra
+    // UI state (e.g. ADelay). DSP state remains mandatory. Do not swallow
+    // actual errors or silently discard previously persisted controller data.
+    if (controllerResult == kNotImplemented && controllerState.getSize() == 0 &&
+        envelope.controllerState.empty()) {
+      state.controllerState.clear();
+    } else {
+      require(controllerResult, "capture controller state");
+      state.controllerState = streamBytes(controllerState);
+    }
     Vst3EffectSnapshot result;
     result.latencyFrames = processor()->getLatencySamples();
     result.tailFrames = processor()->getTailSamples();
@@ -423,6 +350,105 @@ public:
   }
 
 private:
+  void initialize(const PluginInsert &plugin, uint32_t sampleRate, uint32_t maxFrames) {
+    if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames)
+      throw Error(
+          "VST3 master effects require 48 kHz and 1..4096 frame blocks");
+    std::string error;
+    const auto decoded = decodeVst3StateEnvelope(plugin.state, &error);
+    if (!decoded)
+      throw Error("VST3 insert state: " + error);
+    envelope = *decoded;
+    module =
+        VST3::Hosting::Module::create(envelope.descriptor.modulePath, error);
+    if (!module)
+      throw Error("Load VST3 module failed: " + error);
+    module->getFactory().setHostContext(&host);
+    const auto classId = stateClassId(envelope);
+    component = module->getFactory().createInstance<IComponent>(classId);
+    if (!component)
+      throw Error("Create VST3 component failed");
+    require(component->initialize(&host), "initialize component");
+    initializedComponent = true;
+    processorInterface = FUnknownPtr<IAudioProcessor>(component);
+    if (!processorInterface)
+      throw Error("VST3 component has no audio processor interface");
+    if (!supportedMainStereo(*component))
+      throw Error("VST3 effect does not expose an active stereo main bus");
+    TUID controllerId{};
+    require(component->getControllerClassId(controllerId),
+            "read controller class");
+    controller = module->getFactory().createInstance<IEditController>(
+        VST3::UID(controllerId));
+    if (!controller)
+      throw Error("Create VST3 controller failed");
+    require(controller->initialize(&host), "initialize controller");
+    initializedController = true;
+    connect();
+    restore(envelope);
+    SpeakerArrangement stereo = SpeakerArr::kStereo;
+    require(processor()->setBusArrangements(&stereo, 1, &stereo, 1),
+            "negotiate stereo buses");
+    ProcessSetup setup{};
+    setup.processMode = kRealtime;
+    setup.symbolicSampleSize = kSample32;
+    setup.maxSamplesPerBlock = static_cast<int32>(maxFrames);
+    setup.sampleRate = static_cast<SampleRate>(sampleRate);
+    require(processor()->setupProcessing(setup), "setup processing");
+    require(component->activateBus(kAudio, kInput, 0, true),
+            "activate input bus");
+    inputActive = true;
+    require(component->activateBus(kAudio, kOutput, 0, true),
+            "activate output bus");
+    outputActive = true;
+    require(component->setActive(true), "activate component");
+    active = true;
+    require(processor()->setProcessing(true), "start processing");
+    processing = true;
+    latency = processor()->getLatencySamples();
+    tail = processor()->getTailSamples();
+    maximum = maxFrames;
+    inputLeft.resize(maxFrames);
+    inputRight.resize(maxFrames);
+    // ParameterChanges uses vectors internally. Grow every queue while
+    // this effect is prepared, then clear it; process() only reuses that
+    // capacity on the audio thread.
+    for (const auto &lane : plugin.parameterAutomation) {
+      if (lane.points.empty())
+        continue;
+      int32 queueIndex = -1;
+      auto *queue = changes.addParameterData(
+          static_cast<ParamID>(lane.parameterID), queueIndex);
+      if (!queue || queueIndex < 0)
+        throw Error("VST3 prepare parameter queue failed");
+      for (size_t point = 0; point < lane.points.size() + 2; ++point) {
+        int32 pointIndex = -1;
+        require(queue->addPoint(static_cast<int32>(point), 0.0, pointIndex),
+                "reserve parameter point");
+      }
+    }
+    changes.clearQueue();
+  }
+
+  void shutdown() noexcept {
+    try {
+      if (processing)
+        (void)processor()->setProcessing(false);
+      if (active)
+        (void)component->setActive(false);
+      if (outputActive)
+        (void)component->activateBus(kAudio, kOutput, 0, false);
+      if (inputActive)
+        (void)component->activateBus(kAudio, kInput, 0, false);
+      disconnect();
+      if (initializedController)
+        (void)controller->terminate();
+      if (initializedComponent)
+        (void)component->terminate();
+    } catch (...) {
+    }
+  }
+
   IAudioProcessor *processor() const { return processorInterface.get(); }
   void connect() {
     componentConnection = FUnknownPtr<IConnectionPoint>(component);

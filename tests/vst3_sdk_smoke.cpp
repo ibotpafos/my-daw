@@ -1,6 +1,7 @@
 // Integration with the unmodified Steinberg ADelay example, not a mock plugin.
 #include "audio/effect.hpp"
 #include "domain/session.hpp"
+#include "platform/macos/vst3_runtime.hpp"
 #include "plugins/plugin_descriptor.hpp"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 void check(bool ok, const char *message) {
@@ -76,6 +78,18 @@ int main(int argc, char **argv) {
         check(captured && !captured->componentState.empty() && captured->controllerState.empty(),
               "Component state missing or optional controller state mishandled");
         plugin.state = changed.state;
+        // A truncated component preset fails after initialize/connect. The
+        // constructor must terminate already initialized objects before unwind.
+        auto brokenState = *captured;
+        brokenState.componentState = {1};
+        auto broken = plugin;
+        broken.state = daw::encodeVst3StateEnvelope(brokenState);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            bool rejected = false;
+            try { (void)daw::prepareVst3Effect(broken); }
+            catch (const daw::Error &) { rejected = true; }
+            check(rejected, "Truncated DSP state was accepted");
+        }
         verifyImpulse(plugin);
         // Persist the real plugin state through the same SQLite storage used by
         // projects, then instantiate a fresh processor and prove the audio again.
@@ -97,7 +111,7 @@ int main(int argc, char **argv) {
         verifyImpulse(restored.masterInserts[0]);
         // The real helper, unlike the existing protocol fake, loads ADelay and
         // exercises its optional controller state via remote control operations.
-        check(setenv("MY_DAW_VST3_RUNTIME_HELPER", argv[3], 1) == 0, "Cannot set helper path");
+        daw::setVst3RuntimeHelperPathForTesting(argv[3]);
         plugin.hostingMode = daw::PluginHostingMode::OutOfProcess;
         const auto remote = daw::setVst3Parameter(plugin, id, 0.5f);
         check(std::abs(delayParameter(remote.parameters).normalizedValue - 0.5f) < 1e-6f,
