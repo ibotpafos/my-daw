@@ -120,12 +120,27 @@ func runWorkspaceIntegrationTests() {
             for clipIndex in 0..<3 {
                 var clip = daw_midi_clip(); clip.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size); clip.version = UInt32(DAW_MIDI_CLIP_VERSION)
                 clip.start = UInt64(clipIndex * 192000); clip.length = 192000; clip.note_count = 24
-                var notes = (0..<24).map { number -> daw_midi_note in
-                    var note = daw_midi_note(); note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); note.version = UInt32(DAW_MIDI_NOTE_VERSION)
-                    note.start = UInt64(number / 3 * 24000); note.length = 18000
-                    note.pitch = UInt8(40 + index * 9 + [0, 4, 7][number % 3] + (number / 6 % 2) * 2); note.velocity = 90; return note
+                let intervals = [0, 4, 7]
+                var notes: [daw_midi_note] = []
+                notes.reserveCapacity(24)
+                for number in 0..<24 {
+                    var note = daw_midi_note()
+                    note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size)
+                    note.version = UInt32(DAW_MIDI_NOTE_VERSION)
+                    let group = number / 3
+                    note.start = UInt64(group * 24000)
+                    note.length = 18000
+                    let interval = intervals[number % intervals.count]
+                    let octaveOffset = (number / 6 % 2) * 2
+                    let pitch = 40 + index * 9 + interval + octaveOffset
+                    note.pitch = UInt8(pitch)
+                    note.velocity = 90
+                    notes.append(note)
                 }
-                expect(daw_add_midi_clip(session, track.id, &clip, &notes, UInt32(notes.count), revision()) == 0, "Create MIDI clip")
+                let addMidiResult = notes.withUnsafeBufferPointer { buffer in
+                    daw_add_midi_clip(session, track.id, &clip, buffer.baseAddress, UInt32(buffer.count), revision())
+                }
+                expect(addMidiResult == 0, "Create MIDI clip")
             }
         } else {
             expect(daw_split_clip(session, track.id, 0, 192000, revision()) == 0, "Split first audio section")
