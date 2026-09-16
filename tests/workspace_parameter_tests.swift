@@ -95,6 +95,7 @@ func runRackParameterTests(_ controller: DraftApp) -> Int {
     expect(reads == requestsBeforePolling, "Transport polling never enumerates plug-in parameters")
     controller.window.contentView?.layoutSubtreeIfNeeded()
     expect(panel.controls.allSatisfy { $0.frame.width > 60 && $0.frame.maxX <= panel.bounds.width + 1 }, "Native knobs fit within the embedded card")
+    expect(rack.parameterButtons.filter { $0.isDescendant(of: rack) }.allSatisfy { $0.frame.width >= 120 }, "Inline button captions retain readable width")
     rack.onReadParameters = read
     print("PASS: \(count) native inline parameter, Undo, pagination, capture guard and save/open assertions")
     return count

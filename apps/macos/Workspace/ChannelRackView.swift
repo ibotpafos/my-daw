@@ -168,12 +168,14 @@ final class ChannelRackView: NSView {
             else {
                 let summary = NSStackView(views: [state, latency, inline, edit])
                 summary.orientation = .vertical; summary.alignment = .leading; summary.spacing = 9
+                inline.widthAnchor.constraint(equalTo: summary.widthAnchor).isActive = true
+                edit.widthAnchor.constraint(equalTo: summary.widthAnchor).isActive = true
                 body = summary
             }
             let stack = NSStackView(views: [heading, badge, body, controls])
             stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 5
+            body.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             if expanded {
-                body.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 let all = WorkspaceActionButton("Все…") { [weak self] in self?.perform(.edit(device.id), generation: captured) }
                 all.toolTip = "Полный редактор параметров и автоматизации"; all.isEnabled = edit.isEnabled
                 all.controlSize = .small; controls.addArrangedSubview(all)

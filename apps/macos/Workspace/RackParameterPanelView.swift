@@ -122,9 +122,9 @@ final class RackParameterControl: NSView {
         super.init(frame: .zero)
         name.stringValue = parameter.name; name.font = .systemFont(ofSize: 10, weight: .medium)
         name.textColor = DAWDesignTokens.Color.text; name.alignment = .center
-        name.maximumNumberOfLines = 2; name.lineBreakMode = .byTruncatingTail
+        name.maximumNumberOfLines = 2; name.lineBreakMode = .byWordWrapping
         name.toolTip = parameter.name
-        slider.sliderType = .circular; slider.controlSize = .small; slider.doubleValue = parameter.position
+        slider.sliderType = .circular; slider.controlSize = .regular; slider.doubleValue = parameter.position
         slider.isContinuous = false; slider.target = self; slider.action = #selector(changeKnob)
         slider.setAccessibilityLabel(parameter.name)
         slider.setAccessibilityHelp("Сохранённый параметр. Применяется после отпускания; останавливает воспроизведение. Не запись автоматизации.")
