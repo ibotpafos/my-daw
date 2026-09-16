@@ -1572,7 +1572,7 @@ int daw_get_installed_vst3(daw_session *s, uint32_t index, daw_vst3_component *o
         *out = {};
         out->struct_size = sizeof(daw_vst3_component);
         out->available = entry.available ? 1 : 0;
-        out->flags = entry.plugin.instrument ? DAW_VST3_FLAG_INSTRUMENT : 0u;
+        out->flags = entry.plugin.instrument ? static_cast<uint32_t>(DAW_VST3_FLAG_INSTRUMENT) : 0u;
         copyText(out->class_id, entry.plugin.classId);
         copyText(out->module_fingerprint, entry.plugin.moduleFingerprint);
         copyText(out->module_path, entry.plugin.modulePath);
@@ -2411,7 +2411,8 @@ int daw_get_midi_input_device_count(daw_session *s, uint32_t *count) {
 #endif
     });
 }
-int daw_get_midi_input_device(daw_session *s, uint32_t index, daw_midi_device *out) {
+int daw_get_midi_input_device(daw_session *s, [[maybe_unused]] uint32_t index,
+                              daw_midi_device *out) {
     return guard(s, [&] {
         if (!out || out->struct_size != sizeof(daw_midi_device) ||
             out->version != DAW_MIDI_DEVICE_VERSION)
