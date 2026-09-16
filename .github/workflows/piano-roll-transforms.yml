@@ -7,6 +7,9 @@ on:
       - 'scripts/test-piano-roll-transforms.sh'
       - '.github/workflows/piano-roll-transforms.yml'
   workflow_dispatch:
+concurrency:
+  group: piano-roll-transforms-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
