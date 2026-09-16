@@ -105,7 +105,8 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate {
             DAWDesignTokens.Color.canvas.setFill();bounds.fill()
             DAWDesignTokens.Color.surface.setFill();NSRect(x:0,y:0,width:bounds.width,height:headerHeight).fill()
             let headerAttrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:9,weight:.semibold),.foregroundColor:DAWDesignTokens.Color.secondaryText]
-            (owner.activeMode == .main ? "CHANNEL → OUTPUT" : "CHANNEL → SEND" as NSString).draw(at:NSPoint(x:8,y:9),withAttributes:headerAttrs)
+            let header=(owner.activeMode == .main ? "CHANNEL → OUTPUT" : "CHANNEL → SEND") as NSString
+            header.draw(at:NSPoint(x:8,y:9),withAttributes:headerAttrs)
             for (column,destination) in owner.destinations.enumerated(){
                 let x=rowLabelWidth+CGFloat(column)*columnWidth
                 let title=destination.title as NSString
