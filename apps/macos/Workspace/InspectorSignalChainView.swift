@@ -93,8 +93,17 @@ final class InspectorSignalChainView: NSStackView {
     private func actionButton(_ title: String, symbol: String? = nil, enabled: Bool,
                               action: @escaping () -> Void) -> NSButton {
         let button = WorkspaceActionButton(title, symbol: symbol, action: action)
-        button.bezelStyle = .inline; button.controlSize = .small
+        // Avoid inline bezels that visually dim the entire row in an inactive
+        // window. Keep native target/action and real disabled state intact.
+        button.bezelStyle = .regularSquare; button.isBordered = false; button.controlSize = .small
         button.isEnabled = enabled; button.toolTip = title
+        let ink = enabled ? DAWDesignTokens.Color.text : DAWDesignTokens.Color.secondaryText.withAlphaComponent(0.5)
+        button.contentTintColor = ink
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: ink, .paragraphStyle: paragraph
+        ])
         if symbol != nil {
             button.imagePosition = .imageOnly
             button.image = button.image?.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
