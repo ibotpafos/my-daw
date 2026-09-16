@@ -491,6 +491,14 @@ public:
     if (AudioUnitRender(unit.value, &flags, &time, 0, frames,
                         reinterpret_cast<AudioBufferList *>(&output)) != noErr)
       return failDry(left, right, frames);
+    // MusicDevice is a generator, not an effect. Keep any signal that reached
+    // this insert and add the synth output on top. MIDI-only instrument tracks
+    // enter with zero-filled dry buffers, while accidental placement on a bus
+    // or master can no longer erase the existing mix.
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+      left[frame] += dryLeft[frame];
+      right[frame] += dryRight[frame];
+    }
     return true;
   }
 
