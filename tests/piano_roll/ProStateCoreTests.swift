@@ -70,8 +70,18 @@ import Foundation
         state.selectAll()
         state.ratchet(count: 2, gate: 1)
         check(commits == 4 && state.entities.count == 6 && state.selection.count == 6, "ratchet updates selection and commits once")
+
+        // Strum only changes simultaneous voices. Use a real chord fixture so
+        // this assertion does not mistake a correct no-op for a missing commit.
+        let simultaneous = [
+            PianoRollNote(startFrames: 120_000, lengthFrames: 24_000, pitch: 60, channel: 0, velocity: 70),
+            PianoRollNote(startFrames: 120_000, lengthFrames: 24_000, pitch: 64, channel: 0, velocity: 90),
+            PianoRollNote(startFrames: 120_000, lengthFrames: 24_000, pitch: 67, channel: 0, velocity: 110)]
+        state.receive(notes: simultaneous, map: map, editable: true)
+        state.selectAll()
         state.strum(spreadBeats: 0.25, descending: false)
-        check(commits == 5, "strum commits once")
+        check(commits == 5, "strum commits once on simultaneous voices")
+        check(Set(state.entities.map(\.note.startFrames)).count > 1, "strum visibly spreads chord onsets")
         state.velocityRamp(from: 20, to: 110)
         check(commits == 6, "velocity ramp commits once")
 
