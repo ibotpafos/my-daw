@@ -298,6 +298,8 @@ int main(void) {
     if (daw_get_auto_monitor_on_arm(session, &autoMon) != 0 || autoMon != 0) result |= 1;
     if (daw_get_auto_monitor_on_arm(session, NULL) == 0) result |= 1;
     if (daw_set_auto_monitor_on_arm(session, 1) != 0) result |= 1;
+    /* Bus delete rejects NULL session. */
+    if (daw_delete_bus(NULL, 0, r + 3) == 0) result |= 1;
     /* Bus grouping rejects NULL arguments and an empty name. */
     uint64_t group_bus = 0;
     if (daw_create_bus(session, NULL, &group_bus, r + 3) == 0) result |= 1;

@@ -325,6 +325,7 @@ int daw_set_track_output(daw_session*,uint64_t track_id,uint64_t output_bus_id,u
  * like track names), reports its id, and enumerates buses for the UI. */
 int daw_create_bus(daw_session*,const char* name,uint64_t* out_bus_id,uint64_t expected_revision);
 int daw_get_bus_count(daw_session*,uint32_t* count);
+int daw_delete_bus(daw_session*,uint64_t bus_id,uint64_t expected_revision);
 int daw_set_bus_output(daw_session*,uint64_t bus_id,uint64_t output_bus_id,uint64_t expected_revision);
 int daw_get_send(daw_session*,uint64_t track_id,uint32_t index,daw_send*);
 int daw_upsert_send(daw_session*,uint64_t track_id,uint64_t bus_id,double gain_db,int32_t pre_fader,uint64_t expected_revision);

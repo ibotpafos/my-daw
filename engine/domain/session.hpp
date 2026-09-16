@@ -146,6 +146,7 @@ public:
     uint64_t duplicateTrack(uint64_t id, uint64_t expected);
     void masterGain(double value, uint64_t expected);
     void addBus(const std::string& name,uint64_t expected);
+    void deleteBus(uint64_t id,uint64_t expected);
     void renameBus(uint64_t id,const std::string& name,uint64_t expected);
     void busGain(uint64_t id,double value,uint64_t expected);
     void busPan(uint64_t id,double value,uint64_t expected);

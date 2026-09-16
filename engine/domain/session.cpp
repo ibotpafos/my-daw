@@ -338,6 +338,25 @@ void Session::setTrackGain(uint64_t id,double gainDb,uint64_t expected){check(ex
 uint64_t Session::duplicateTrack(uint64_t id,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end())throw Error("Track not found");if(next.tracks.size()>=256)throw Error("Project supports at most 256 tracks");Track copy=*it;copy.id=next.nextID++;copy.name=it->name+" copy";const uint64_t newId=copy.id;next.tracks.push_back(std::move(copy));commit(std::move(next));return newId;}
 void Session::masterGain(double value,uint64_t expected){check(expected);if(current.masterGain==value)return;State next=current;next.masterGain=value;commit(std::move(next));}
 void Session::addBus(const std::string& name,uint64_t expected){check(expected);State next=current;next.buses.push_back({next.nextID++,name,0,0,false,0,{},{}});commit(std::move(next));}
+void Session::deleteBus(uint64_t id,uint64_t expected){
+    check(expected);
+    State next=current;
+    auto it=std::find_if(next.buses.begin(),next.buses.end(),[id](const auto& bus){return bus.id==id;});
+    if(it==next.buses.end())throw Error("Bus not found");
+    // Reroute tracks outputting to this bus to master.
+    for(auto& track:next.tracks){
+        if(track.outputBus==id)track.outputBus=0;
+        // Remove sends targeting this bus.
+        auto newEnd=std::remove_if(track.sends.begin(),track.sends.end(),[id](const auto& send){return send.bus==id;});
+        track.sends.erase(newEnd,track.sends.end());
+    }
+    // Reroute buses outputting to this bus to master.
+    for(auto& bus:next.buses){
+        if(bus.outputBus==id)bus.outputBus=0;
+    }
+    next.buses.erase(it);
+    commit(std::move(next));
+}
 void Session::renameBus(uint64_t id,const std::string& name,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->name==name)return;it->name=name;commit(std::move(next));}
 void Session::busGain(uint64_t id,double value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->gain==value)return;it->gain=value;commit(std::move(next));}
 void Session::busPan(uint64_t id,double value,uint64_t expected){check(expected);State next=current;auto it=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& bus){return bus.id==id;});if(it==next.buses.end())throw Error("Bus not found");if(it->pan==value)return;it->pan=value;commit(std::move(next));}

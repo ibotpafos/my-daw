@@ -137,6 +137,7 @@ private final class MixerStripView: NSView {
     var onVolume: ((UInt64, Double) -> Void)?
     var onVolumeEnd: ((UInt64, Double) -> Void)?
     var onPan: ((UInt64, Double) -> Void)?
+    var onDeleteBus: ((UInt64) -> Void)?
     private let title = NSTextField(labelWithString: "")
     private let insertHeading = NSTextField(labelWithString: "INSERTS")
     private let sendHeading = NSTextField(labelWithString: "SENDS")
@@ -149,6 +150,7 @@ private final class MixerStripView: NSView {
     private let fader=MixerFaderView()
     private let pan=NSSlider(value:0,minValue:-1,maxValue:1,target:nil,action:nil)
     private let arm=NSButton(title:"R",target:nil,action:nil), mute=NSButton(title:"M",target:nil,action:nil), solo=NSButton(title:"S",target:nil,action:nil)
+    private let deleteBusButton=NSButton(title:"✕",target:nil,action:nil)
     private let inserts=NSTextField(wrappingLabelWithString:""), sends=NSTextField(wrappingLabelWithString:"")
     init(model: MixerStripModel) { self.model=model; super.init(frame:.zero); setup(); refresh() }
     required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -164,6 +166,10 @@ private final class MixerStripView: NSView {
         mute.target = self; mute.action = #selector(toggleMute)
         solo.target = self; solo.action = #selector(toggleSolo)
         pan.target = self; pan.action = #selector(changePan)
+        deleteBusButton.bezelStyle = .texturedRounded
+        deleteBusButton.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
+        deleteBusButton.target = self; deleteBusButton.action = #selector(deleteBus)
+        deleteBusButton.isHidden = true  // shown only for bus kind
 
         title.alignment = .center
         title.font = .systemFont(ofSize: 10, weight: .semibold)
@@ -193,7 +199,7 @@ private final class MixerStripView: NSView {
             detail.textColor = .secondaryLabelColor
             detail.lineBreakMode = .byTruncatingTail
         }
-        [title, insertHeading, inserts, sendHeading, sends, routing, loudness, automation, value, meter, fader, pan, footer].forEach(addSubview)
+        [title, insertHeading, inserts, sendHeading, sends, routing, loudness, automation, value, meter, fader, pan, footer, deleteBusButton].forEach(addSubview)
         fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
     }
     private func refresh() {
