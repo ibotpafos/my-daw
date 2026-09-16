@@ -1,0 +1,57 @@
+name: Native workspace UI
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: workspace-ui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  workspace:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Source and toolchain evidence
+        run: |
+          mkdir -p build/workspace-ui
+          git archive --format=zip HEAD -o build/workspace-ui/source.zip
+          { git rev-parse HEAD; sw_vers; xcrun swiftc --version; } > build/workspace-ui/toolchain.txt
+      - name: Build actual native application
+        run: |
+          set -o pipefail
+          ./scripts/build-macos.sh 2>&1 | tee build/workspace-ui/build.log
+      - name: Exercise native controls and capture real views
+        run: |
+          set -o pipefail
+          bash scripts/test-workspace-ui.sh 2>&1 | tee build/workspace-ui/tests.log
+      - name: Verify and package application
+        run: |
+          APP_PATH="$(sed -n 's/^Built //p' build/workspace-ui/build.log | tail -1)"
+          test -n "$APP_PATH"
+          test -d "$APP_PATH"
+          codesign --verify --strict "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" build/workspace-ui/My-DAW-reference-workspace-arm64.zip
+          shasum -a 256 build/workspace-ui/My-DAW-reference-workspace-arm64.zip > build/workspace-ui/My-DAW-reference-workspace-arm64.sha256
+      - name: Workspace application, diagnostics and screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-workspace-${{ github.sha }}
+          path: |
+            build/workspace-ui/My-DAW-reference-workspace-arm64.zip
+            build/workspace-ui/My-DAW-reference-workspace-arm64.sha256
+            build/workspace-ui/*.log
+            build/workspace-ui/*.png
+            build/workspace-ui/*.txt
+            build/workspace-ui/source.zip
+          if-no-files-found: error
+          retention-days: 14
