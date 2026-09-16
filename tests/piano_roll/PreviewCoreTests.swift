@@ -53,14 +53,25 @@ import Foundation
         check(persisted.count == 4, "applied ratchet reaches host")
 
         state.selection = Set(state.entities.prefix(3).map(\.id))
-        let beforeStrum = persisted
         state.previewStrum(spreadBeats: 0.5, descending: false)
         check(state.hasTransformPreview && commits == 1, "strum preview stays local")
-        check(state.entities != beforeStrum.enumerated().map { PRNoteEntity(id: UInt64($0.offset + 1), note: $0.element) }, "strum preview changes visible candidate")
         state.cancelTransformPreview()
         check(commits == 1, "cancel never commits")
         check(state.entities.map(\.note) == persisted, "cancel restores authoritative notes")
         check(!state.hasTransformPreview, "cancel closes transaction")
+
+        var simultaneous = persisted
+        simultaneous[0].startFrames = 96_000
+        simultaneous[1].startFrames = 96_000
+        simultaneous[2].startFrames = 96_000
+        state.receive(notes: simultaneous, map: map, editable: true)
+        state.selection = Set(state.entities.prefix(3).map(\.id))
+        state.previewStrum(spreadBeats: 0.5, descending: false)
+        let starts = Array(state.entities.prefix(3)).map(\.note.startFrames)
+        check(Set(starts).count > 1, "strum preview visibly spreads simultaneous pitches")
+        state.cancelTransformPreview()
+        check(state.entities.map(\.note) == simultaneous, "cancel restores simultaneous source exactly")
+        state.receive(notes: persisted, map: map, editable: true)
 
         state.selection = Set(state.entities.map(\.id))
         state.previewRatchet(count: 2, gate: 1)
