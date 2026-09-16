@@ -43,6 +43,32 @@ struct MixerUITests {
         tracks.append(MixerStripModel(id:100,kind:.bus,title:"Vocal Reverb",color:.systemPurple,volumeDb:-3))
         tracks.append(MixerStripModel(id:101,kind:.bus,title:"Vocal Bus",color:.systemOrange))
         tracks.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemMint,volumeDb:0,outputName:"Output 1–2"))
+
+        // The matrix is a second presentation of the same stable routing/send IDs.
+        let matrix=MixerRoutingMatrixView(frame:NSRect(x:0,y:0,width:900,height:520))
+        matrix.strips=tracks
+        precondition(matrix.rows.count == 14 && matrix.destinations.map(\.id) == [0,100,101])
+        var matrixOutput:(UInt64,UInt64)?
+        var matrixSends:[String]=[]
+        matrix.onOutput={matrixOutput=($0,$1)}
+        matrix.onSend={ id,action in
+            switch action {
+            case .add(let bus): matrixSends.append("add:\(id):\(bus)")
+            case .remove(let bus): matrixSends.append("remove:\(id):\(bus)")
+            case .edit(let bus): matrixSends.append("edit:\(id):\(bus)")
+            case .tap(let bus,let pre): matrixSends.append("tap:\(id):\(bus):\(pre)")
+            }
+        }
+        matrix.activate(rowID:1,destinationID:101)
+        precondition(matrixOutput?.0 == 1 && matrixOutput?.1 == 101)
+        matrixOutput=nil;matrix.activate(rowID:100,destinationID:100)
+        precondition(matrixOutput == nil,"Self-route must never be emitted by the matrix")
+        matrix.setMode(.sends)
+        precondition(matrix.rows.count == 12 && matrix.destinations.map(\.id) == [100,101])
+        matrix.activate(rowID:8,destinationID:100)
+        matrix.activate(rowID:1,destinationID:100)
+        precondition(matrixSends == ["remove:8:100","add:1:100"])
+
         mixer.strips = tracks
         mixer.layoutSubtreeIfNeeded()
         precondition(mixer.stripViews.count == 15 && mixer.visibleIDs.count == 14)
@@ -63,7 +89,6 @@ struct MixerUITests {
         mixer.search.stringValue = ""
         mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
 
-        // Modern zones stay fixed outside horizontal scrolling and intentionally ignore search/filter.
         mixer.consoleState.pin(8,to:.left)
         mixer.consoleState.pin(100,to:.right)
         mixer.search.stringValue = "nothing matches"
@@ -98,7 +123,6 @@ struct MixerUITests {
         let eqButton = buttons.first { $0.title.contains("AUParametricEQ") }!
         let sendButton = buttons.first { $0.title.contains("Vocal Reverb") }!
 
-        // Section focus is explicit presentation state; it never changes inserts/sends themselves.
         mixer.setRackMode(.faders)
         mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
         precondition(eqButton.isHidden && sendButton.isHidden)
@@ -117,7 +141,7 @@ struct MixerUITests {
         mixer.setSendTarget(100)
         precondition(!mixer.stripViews[1]!.fader.isEnabled)
         precondition(track.fader.isEnabled && abs(track.fader.valueDb+18)<0.00001)
-        precondition(master.fader.isEnabled) // Return + master keep main controls.
+        precondition(master.fader.isEnabled)
         track.fader.commit(-6)
         precondition(sendChanges == 1 && mainChanges == 0)
         mixer.setSendTarget(nil)
@@ -135,7 +159,6 @@ struct MixerUITests {
         mixer.resetPeaks(); precondition(!track.meter.clipped)
         mixer.strips = tracks
         precondition(mixer.stripViews[8] === track)
-        // No phantom sends after a destination disappears.
         mixer.setSendTarget(100)
         mixer.strips = tracks.filter { $0.id != 100 }
         precondition(mixer.sendTargetID == nil)
@@ -150,7 +173,6 @@ struct MixerUITests {
             }
             precondition(master.frame.maxY <= mixer.bounds.height)
         }
-        // Offscreen rendering is evidence of actual AppKit layout, not a mockup.
         mixer.setFrameSize(NSSize(width:1450,height:900)); mixer.needsLayout=true; mixer.layoutSubtreeIfNeeded()
         var meters:[UInt64:MixerMeterSnapshot]=[:]
         for id in 1...12 { meters[UInt64(id)] = MixerMeterSnapshot(leftPeak:Float(id)/24,rightPeak:Float(id)/29,leftHold:Float(id)/22,rightHold:Float(id)/25) }
@@ -158,17 +180,12 @@ struct MixerUITests {
         mixer.updateMeters(meters)
         mixer.contentView.scroll(to:.zero)
         let url=URL(fileURLWithPath:"build/mixer-ui.png")
-        guard let rep = mixer.bitmapImageRepForCachingDisplay(in: mixer.bounds) else {
-            fatalError("Could not allocate real AppKit screenshot")
-        }
+        guard let rep = mixer.bitmapImageRepForCachingDisplay(in: mixer.bounds) else { fatalError("Could not allocate real AppKit screenshot") }
         mixer.cacheDisplay(in: mixer.bounds, to: rep)
-        guard let data = rep.representation(using: .png, properties: [:]) else {
-            fatalError("AppKit PNG encoding failed")
-        }
+        guard let data = rep.representation(using: .png, properties: [:]) else { fatalError("AppKit PNG encoding failed") }
         try data.write(to: url)
         precondition(data.count > 10000, "Screenshot must contain actual rendered content")
 
-        // Large-session presentation: keep stable controls but composite only the visible bank + overscan.
         mixer.consoleState.showAll();mixer.consoleState.clearPins();mixer.search.stringValue="";mixer.filter.selectedSegment=0
         mixer.strips=(1...256).map { MixerStripModel(id:UInt64($0),kind:.track,title:"Track \($0)") } + [tracks.last!]
         mixer.setFrameSize(NSSize(width:1024,height:700));mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
@@ -178,6 +195,6 @@ struct MixerUITests {
         mixer.contentView.scroll(to:NSPoint(x:12000,y:0));mixer.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.post(name:NSView.boundsDidChangeNotification,object:mixer.contentView)
         precondition(mixer.stripViews[1]!.isHidden)
-        print("Mixer AppKit tests PASS: scales, search, visibility, fixed zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
+        print("Mixer AppKit tests PASS: scale, routing matrix, search, visibility, zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }
