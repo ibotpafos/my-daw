@@ -10,6 +10,12 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 
+NL = chr(10)
+
+def skip_path(path):
+    """True for generated or hand-designed assets that are not scanned."""
+    return path.name == "index.html" or "docs/assets" in str(path).replace(chr(92), "/")
+
 
 def read_json(path):
     def reject_constant(value):
@@ -85,6 +91,50 @@ def check_schemas(required):
     print("PASS: 3 JSON Schemas, 3 examples, 10 negative schema cases")
 
 
+def check_script_hygiene():
+    """Reject leaked foreign scripts in readable text and sources.
+
+    Two defect classes this repository has actually shipped: Cyrillic glued
+    to Latin inside one word (invisible in review, unreadable on screen) and
+    Han/kana/Hangul characters left by an IME mis-toggle. Fullwidth plus and
+    the decorative wave dash are intentional UI glyphs, so only scripts with
+    no business here are flagged. Generated output (docs/index.html,
+    docs/assets) is skipped: it is rendered from checked Markdown or is
+    hand-made design material.
+    """
+    cyrillic_latin = re.compile(r"[\u0400-\u04ff][A-Za-z]|[A-Za-z][\u0400-\u04ff]")
+    ideographs = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+    roots = [("README.md", (".md",)), ("docs", (".md",)), ("specs", (".md",)),
+             ("apps", (".swift", ".md")), ("engine", (".hpp", ".cpp", ".h", ".c")),
+             ("tests", (".hpp", ".cpp", ".h", ".c")), ("scripts", (".py", ".sh")),
+             (".github", (".yml", ".yaml"))]
+    offenders = []
+    scanned = 0
+    for root, suffixes in roots:
+        base = ROOT / root
+        candidates = [base] if base.is_file() else sorted(p for p in base.rglob("*") if p.is_file())
+        for path in candidates:
+            if path.suffix not in suffixes or skip_path(path):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            scanned += 1
+            for number, line in enumerate(text.splitlines(), 1):
+                # A backslash escape (Swift/C/Python `\n`, `\t`, `\uXXXX`) puts a
+                # Latin letter right against the following text; that is source
+                # syntax, not a mixed-script word.
+                probe = re.sub(r"\\[0Abfnrtuvx]", " ", line)
+                rule = "cjk-ideograph" if ideographs.search(probe) else (
+                    "cyrillic-latin-glue" if cyrillic_latin.search(probe) else None)
+                if rule:
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{number}: [{rule}] {line.strip()[:90]}")
+    assert not offenders, "Leaked script in text:" + NL + NL.join(offenders[:20])
+    print(f"PASS: script hygiene ({scanned} files, no cyrillic/latin glue, no cjk)")
+
+
 def check_sql():
     db = sqlite3.connect(":memory:")
     db.executescript((ROOT / "specs/project-v0.sql").read_text())
@@ -133,5 +183,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     check_links()
     check_schemas(args.require_schemas)
+    check_script_hygiene()
     check_sql()
     print("Documentation/contracts checked. This checker does not execute app, audio or recovery tests.")

@@ -16,7 +16,7 @@ struct ClipGeometry {
     var pan: Double = 0
 }
 
-/// Дurable 24-bit RGB из домена (0xRRGGBB); 0 означает «цвета нет» и
+/// Durable 24-bit RGB из домена (0xRRGGBB); 0 означает «цвета нет» и
 /// оставляет акцент дорожки.
 func dawColorFromHex(_ hex: UInt32) -> NSColor {
     NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255.0, green: CGFloat((hex >> 8) & 0xFF) / 255.0, blue: CGFloat(hex & 0xFF) / 255.0, alpha: 1)
