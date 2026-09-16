@@ -74,21 +74,45 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     private func commitPreference() {
         preference.save(to: defaults); applyGeometry(); onChange?(preference)
     }
+    private func layoutColumns(_ geometry: WorkspaceLayout.Geometry) {
+        let height = columns.bounds.height
+        libraryPane.frame = NSRect(x: 0, y: 0, width: geometry.library, height: height)
+        let centerX = geometry.library + (geometry.library > 0 ? geometry.gap : 0)
+        center.frame = NSRect(x: centerX, y: 0, width: geometry.center, height: height)
+        inspectorPane.frame = NSRect(
+            x: centerX + geometry.center + (geometry.inspector > 0 ? geometry.gap : 0),
+            y: 0,
+            width: geometry.inspector,
+            height: height)
+    }
+    private func layoutCenter(_ geometry: WorkspaceLayout.Geometry) {
+        arrangementPane.frame = NSRect(x: 0, y: 0, width: center.bounds.width, height: geometry.arrangement)
+        dockPane.frame = NSRect(
+            x: 0,
+            y: geometry.arrangement + (geometry.dock > 0 ? geometry.gap : 0),
+            width: center.bounds.width,
+            height: geometry.dock)
+    }
     func applyGeometry() {
         guard !applying, bounds.width > 0, bounds.height > 0 else { return }
         applying = true; defer { applying = false }
-        columns.frame = bounds
         let g = geometry
-        libraryPane.isHidden = g.library == 0; inspectorPane.isHidden = g.inspector == 0; dockPane.isHidden = g.dock == 0
-        libraryPane.frame = NSRect(x: 0, y: 0, width: g.library, height: bounds.height)
-        let centerX = g.library + (g.library > 0 ? g.gap : 0)
-        center.frame = NSRect(x: centerX, y: 0, width: g.center, height: bounds.height)
-        inspectorPane.frame = NSRect(x: centerX + g.center + (g.inspector > 0 ? g.gap : 0), y: 0,
-                                     width: g.inspector, height: bounds.height)
-        arrangementPane.frame = NSRect(x: 0, y: 0, width: g.center, height: g.arrangement)
-        dockPane.frame = NSRect(x: 0, y: g.arrangement + (g.dock > 0 ? g.gap : 0), width: g.center, height: g.dock)
+        libraryPane.isHidden = g.library == 0
+        inspectorPane.isHidden = g.inspector == 0
+        dockPane.isHidden = g.dock == 0
+        columns.frame = bounds
+        layoutColumns(g)
+        layoutCenter(g)
     }
-    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) { applyGeometry() }
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let g = geometry
+        if splitView === columns {
+            layoutColumns(g)
+        } else if splitView === center {
+            layoutCenter(g)
+        }
+    }
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
     func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
         if splitView === center { return dockPane.isHidden }
