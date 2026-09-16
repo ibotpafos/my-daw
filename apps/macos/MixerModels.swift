@@ -35,6 +35,16 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
     var outputID: UInt64 = 0
     var hasMidi = false
     var automationLabel = "Read"
+
+    var totalInsertLatencyFrames: UInt32 {
+        inserts.reduce(UInt32(0)) { partial, insert in
+            let (value, overflow) = partial.addingReportingOverflow(insert.latencyFrames)
+            return overflow ? UInt32.max : value
+        }
+    }
+    /// Project and renderer timing are fixed at 48 kHz in the current engine contract.
+    var totalInsertLatencyMilliseconds: Double { Double(totalInsertLatencyFrames) / 48.0 }
+    var hasUnavailableInsert: Bool { inserts.contains { !$0.available } }
 }
 enum MixerInsertAction { case add, edit(UInt64), bypass(UInt64, Bool), move(UInt64, Int), remove(UInt64) }
 enum MixerSendAction { case add(UInt64), edit(UInt64), tap(UInt64, Bool), remove(UInt64) }
