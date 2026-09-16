@@ -373,7 +373,9 @@ final class PRProWorkspaceView: NSView {
         let width = max(100, scrollView.contentSize.width)
         state.pixelsPerBeat = min(320, max(4, Double(width - 50) / max(0.25, right - left)))
         if let low = source.map(\.note.pitch).min(), let high = source.map(\.note.pitch).max() {
-            let span = max(1, rows.row(for: low) ?? 0 - (rows.row(for: high) ?? 0))
+            let lowRow = rows.row(for: low) ?? 0
+            let highRow = rows.row(for: high) ?? 0
+            let span = max(1, lowRow - highRow)
             state.rowHeight = min(30, max(10, Double(scrollView.contentSize.height - 30) / Double(span + 2)))
         }
         refreshGeometry()
@@ -449,7 +451,7 @@ final class PRProWorkspaceView: NSView {
     }
 
     @objc private func editTiming() {
-        guard state.selectedEntities.count == 1, let map = state.timeMap,
+        guard state.selectedEntities.count == 1, state.timeMap != nil,
               let start = Double(startField.stringValue.replacingOccurrences(of: ",", with: ".")),
               let length = Double(lengthField.stringValue.replacingOccurrences(of: ",", with: ".")),
               length > 0 else { updateInspector(); return }
