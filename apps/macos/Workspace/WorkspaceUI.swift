@@ -5,8 +5,11 @@ import AppKit
 extension DraftApp {
     func makeWorkspaceHeader() -> NSView {
         let surface = WorkspaceSurface()
-        workspaceMode.font = .systemFont(ofSize: 10, weight: .semibold)
-        workspaceMode.widthAnchor.constraint(equalToConstant: 222).isActive = true
+        workspaceMode.font = .systemFont(ofSize: 11, weight: .semibold)
+        workspaceMode.controlSize = .regular
+        workspaceMode.segmentStyle = .rounded
+        workspaceMode.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        workspaceMode.widthAnchor.constraint(equalToConstant: 208).isActive = true
         projectTitleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         projectTitleLabel.textColor = DAWDesignTokens.Color.text
         projectStateLabel.font = .systemFont(ofSize: 10)
@@ -18,10 +21,14 @@ extension DraftApp {
         let project = NSStackView(views: [projectTitleLabel, projectStateLabel])
         project.orientation = .vertical; project.alignment = .leading; project.spacing = 4
         project.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-        project.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        project.widthAnchor.constraint(lessThanOrEqualToConstant: 180).isActive = true
         let transport = NSStackView(views: [iconButton(.rewind, #selector(rewindAudio)), stopButton, playButton, recordButton, loopButton])
-        transport.spacing = 4
+        transport.spacing = 5
+        for case let control as NSButton in transport.arrangedSubviews {
+            WorkspaceControlStyle.icon(control, height: 34)
+        }
         playButton.contentTintColor = DAWDesignTokens.Color.mint
+        recordButton.contentTintColor = DAWDesignTokens.Color.coral
         clockLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .regular)
         clockLabel.textColor = DAWDesignTokens.Color.text
         clockLabel.alignment = .center
@@ -31,7 +38,13 @@ extension DraftApp {
         let tempoRow = NSStackView(views: [tempoField, tempoStepper, signatureLabel, positionLabel]); tempoRow.spacing = 6
         tempoStepper.controlSize = .mini
         let display = NSStackView(views: [clockLabel, tempoRow]); display.orientation = .vertical; display.spacing = 3
-        display.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        display.widthAnchor.constraint(equalToConstant: 206).isActive = true
+        display.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
+        display.wantsLayer = true
+        display.layer?.backgroundColor = DAWDesignTokens.Color.canvas.cgColor
+        display.layer?.cornerRadius = 6
+        display.layer?.borderWidth = 1
+        display.layer?.borderColor = DAWDesignTokens.Color.border.cgColor
         let paneSpecs: [(WorkspaceLayout.Pane, String, String, Selector)] = [
             (.library, "sidebar.left", "Библиотека · ⇧⌘1", #selector(toggleWorkspaceLibrary)),
             (.inspector, "sidebar.right", "Инспектор · ⇧⌘2", #selector(toggleWorkspaceInspector)),
@@ -44,27 +57,33 @@ extension DraftApp {
             control.imagePosition = .imageOnly; control.setButtonType(.toggle)
             control.toolTip = title; control.setAccessibilityLabel(title)
             control.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            WorkspaceControlStyle.icon(control)
             workspaceToggleButtons[pane] = control; toggles.append(control)
         }
         let paneButtons = NSStackView(views: toggles); paneButtons.spacing = 3
         let stack = NSStackView(views: [workspaceMode, project, flexibleSpace(), transport, display, flexibleSpace(), paneButtons])
-        stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(stack)
+        stack.spacing = 10; stack.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 12),
                                      stack.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -12),
                                      stack.centerYAnchor.constraint(equalTo: surface.centerYAnchor)])
         return surface
     }
 
-    func makeWorkspaceEditBar(_ controls: [NSView]) -> NSView {
-        // Horizontal scrolling preserves native hit targets on a narrow center
-        // pane without making the entire window inherit this row's minimum width.
-        let scroll = NSScrollView(); scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay; scroll.drawsBackground = false
-        let stack = NSStackView(views: controls); stack.spacing = 6; stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
-        stack.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = stack
-        stack.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        scroll.setAccessibilityLabel("Команды аранжировки: импорт, дорожки, история, сетка, масштаб, сохранение")
-        return scroll
+    /// Rebuilding track projections must not jump back to the beginning of the
+    /// arrangement. Let NSClipView clamp when deletion shortens the document.
+    func restoreArrangementViewport(_ origin: NSPoint?) {
+        guard let origin, let scroll = timelineScroll, scroll.documentView != nil else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let clip = scroll.contentView
+        let requested = NSRect(origin: origin, size: clip.bounds.size)
+        clip.scroll(to: clip.constrainBoundsRect(requested).origin)
+        scroll.reflectScrolledClipView(clip)
+        if let headers = trackHeaderScroll {
+            var headerBounds = headers.contentView.bounds
+            headerBounds.origin.y = clip.bounds.origin.y
+            headers.contentView.scroll(to: headers.contentView.constrainBoundsRect(headerBounds).origin)
+            headers.reflectScrolledClipView(headers.contentView)
+        }
     }
 
     func makeWorkspaceStatusBar() -> NSView {

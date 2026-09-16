@@ -70,3 +70,42 @@ PNG AppKit не заменяет ручную проверку VoiceOver, кла
 и #4 (графический piano roll) не сбрасываются и не переписываются. В этой ветке
 нижняя панель размещает имеющиеся базовые редакторы. Их новые версии нужно
 объединить отдельным интеграционным проходом, сохранив callbacks и нативные проверки.
+
+## Navigation and density refinement
+
+The ruler now consumes native mouse events rather than only storing callbacks:
+a marker chip seeks the existing session locator, a double-click in the marker
+band invokes the existing add-marker dialog, and a context click obtains the
+existing rename/delete menu. Chips represent **point locators**, not a new
+arrangement-section model. Their labels are clipped before the next locator;
+nearby collapsed chips still have a flag hit target. Beat labels continue to
+come from the authoritative tempo map; seconds and hit testing share the same
+48 kHz frame coordinate system.
+
+The command bar keeps import, track creation, Undo/Redo, grid and zoom visible.
+Track creation and secondary commands use AppKit `NSPopUpButton` / `NSMenu`;
+their items refer to the original buttons, preserving target, sender and all
+existing recording/Undo guards. Disabled or hidden sources are checked again
+at dispatch, even when a previously opened menu item has become stale. No
+additional command registry or third-party UI framework is introduced.
+
+Refresh still rebuilds track projections, but preserves the native scroll
+origin and clamps it through `NSClipView.constrainBoundsRect`. This prevents
+selection, gain changes and Undo from jumping to the start of a zoomed
+arrangement. One shared lane height aligns audio, MIDI and pinned headers.
+Only the authoritative selected channel is highlighted; an old inspector
+selection cannot highlight a second track. Validation errors are cleared when
+the inspected clip changes. Native controls retain AppKit tracking and
+accessibility; the new drawing is limited to styling and ruler visuals.
+
+Run `bash scripts/test-workspace-ui.sh` after `./scripts/build-macos.sh` on a
+Mac. The integration harness exercises native menu dispatch and mouse events,
+actual session seek/revision/recording guards, retained scroll coordinates,
+compact command-bar bounds, and the previous browser/inspector/rack tests.
+The usual workflow captures real AppKit PNGs at three window sizes. Synthetic
+input is not a substitute for physical device or interactive user acceptance.
+
+Primary AppKit contracts used here:
+[menu item validation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MenuList/Articles/EnablingMenuItems.html),
+[clip-view bounds constraints](https://developer.apple.com/documentation/appkit/nsclipview/constrainboundsrect(_:)),
+and [native color blending](https://developer.apple.com/documentation/appkit/nscolor/blended(withfraction:of:)).

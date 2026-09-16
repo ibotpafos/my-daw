@@ -57,6 +57,27 @@ func runWorkspaceIntegrationTests() {
     expect(ObjectIdentifier(controller.inspectorBrowser.midiEditor) == editorIdentity, "Editor identity retained")
     screenshot("workspace-empty")
 
+    // Menu commands retain the original control as sender and recheck state.
+    var menuCalls = 0
+    let source = WorkspaceActionButton("Test command") { menuCalls += 1 }
+    let popup = WorkspaceCommandMenu("Test", sources: [source])
+    guard let commandMenu = popup.menu else { fatalError("Missing native menu") }
+    popup.menuNeedsUpdate(commandMenu)
+    expect(commandMenu.numberOfItems == 2, "One source command plus native pull-down heading")
+    let staleItem = commandMenu.items[1]
+    popup.dispatch(staleItem); expect(menuCalls == 1, "Menu dispatches the original button")
+    source.isEnabled = false
+    popup.dispatch(staleItem); expect(menuCalls == 1, "Stale menu cannot bypass a disabled control")
+    popup.menuNeedsUpdate(commandMenu)
+    expect(!commandMenu.items[1].isEnabled, "Menu refresh projects current availability")
+    source.isEnabled = true; source.isHidden = true
+    popup.dispatch(staleItem); expect(menuCalls == 1, "Hidden command cannot be dispatched")
+    popup.menuNeedsUpdate(commandMenu)
+    expect(commandMenu.numberOfItems == 1, "Hidden command is absent")
+    let foreign = NSMenuItem(title: "Foreign", action: nil, keyEquivalent: "")
+    foreign.representedObject = WorkspaceActionButton("Foreign") { menuCalls += 100 }
+    popup.dispatch(foreign); expect(menuCalls == 1, "Unrelated controls rejected")
+
     // Exercise real browser table selection, search, availability and callback guards.
     let browser = controller.libraryBrowser
     let wave = temporary.appendingPathComponent("Pulse.wav")
@@ -151,6 +172,44 @@ func runWorkspaceIntegrationTests() {
         expect(daw_add_marker(session, frame, name, revision()) == 0, "Create real marker")
     }
     controller.selectedMixerID = tracks[4]; controller.refresh(); controller.pollTransport()
+    settle(1536, 1000)
+    let ruler = controller.timelineRuler
+    func mouse(_ point: NSPoint, clicks: Int = 1, right: Bool = false) -> NSEvent {
+        let location = ruler.convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(with: right ? .rightMouseDown : .leftMouseDown,
+            location: location, modifierFlags: [], timestamp: 0, windowNumber: controller.window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: clicks, pressure: 1) else { fatalError("Mouse fixture") }
+        return event
+    }
+    expect(ruler.markerRects.count == 3, "All session point markers projected")
+    let verseRect = ruler.markerRects[1].rect
+    let versePoint = NSPoint(x: verseRect.midX, y: verseRect.midY)
+    let beforeSeek = revision()
+    ruler.mouseDown(with: mouse(versePoint))
+    expect(controller.playheadFrame == 192000, "Real marker click seeks the actual session")
+    expect(revision() == beforeSeek, "Marker navigation does not mutate project")
+    controller.isRecording = true
+    ruler.mouseDown(with: mouse(NSPoint(x: 0, y: 12)))
+    expect(controller.playheadFrame == 192000, "Ruler retains existing recording seek guard")
+    controller.isRecording = false
+    expect((ruler.menu(for: mouse(versePoint, right: true))?.numberOfItems ?? 0) >= 2,
+           "Right click returns actual marker rename/delete menu")
+    let originalAddMarker = ruler.onMarkerAdd
+    var addedMarker: UInt64?
+    ruler.onMarkerAdd = { addedMarker = $0 }
+    let addPoint = NSPoint(x: ruler.bounds.width * 0.75, y: 10)
+    ruler.mouseDown(with: mouse(addPoint, clicks: 2))
+    expect(addedMarker == ruler.frame(atX: addPoint.x), "Double click dispatches bounded marker insertion position")
+    ruler.onMarkerAdd = originalAddMarker
+    expect(ruler.frame(atX: -10) == 0 && ruler.frame(atX: .nan) == 0, "Invalid/negative ruler coordinate")
+    expect(ruler.frame(atX: ruler.bounds.width) == ruler.projectFrames, "Right edge is exact project endpoint")
+    expect(ruler.marker(at: NSPoint(x: versePoint.x, y: TimelineRulerView.markerBand + 1)) == nil,
+           "Marker hit tests do not leak into musical ruler")
+    for pair in zip(ruler.markerRects, ruler.markerRects.dropFirst()) {
+        expect(pair.0.rect.maxX <= pair.1.rect.minX, "Marker chips never overlap")
+    }
+    controller.seekAudio(0)
+
     expect(controller.midiArrangementViews.count == 3, "MIDI tracks have real arrangement overview")
     expect(controller.midiArrangementViews[0].clips.count == 3 && controller.midiArrangementViews[0].clips[0].notes.count == 24, "All MIDI clips/notes projected")
     controller.midiArrangementViews[0].onSelect?(1, true)
@@ -169,6 +228,31 @@ func runWorkspaceIntegrationTests() {
     controller.inspectorBrowser.changeChannel()
     expect(revision() == beforeInvalid + 1, "Inspector fader dispatches actual domain command")
     controller.undo(); expect(controller.inspectorBrowser.channel?.volumeDb == 0, "Inspector change undo")
+
+    expect(controller.inspectorBrowser.validationMessage == nil, "A new selection clears stale validation")
+
+    // Selection and ordinary edits must retain a zoomed/scrolled arrangement.
+    settle(1060, 700); controller.setTimelineZoom(2)
+    root.layoutSubtreeIfNeeded()
+    controller.restoreArrangementViewport(NSPoint(x: 100, y: 100))
+    let viewport = controller.timelineScroll.contentView.bounds.origin
+    expect(viewport.x > 50 && viewport.y > 50, "Scroll test actually uses both axes")
+    controller.selectedMixerID = tracks[1]; controller.inspectorTrackID = tracks[4]
+    controller.refresh()
+    let selectedHeaders = controller.trackHeaderRows.arrangedSubviews.compactMap { $0 as? PinnedTrackHeaderView }.filter { $0.model.selected }
+    expect(selectedHeaders.count == 1 && selectedHeaders[0].model.id == tracks[1], "One authoritative selected track")
+    expect(controller.timelineScroll.contentView.bounds.origin == viewport, "Selection refresh preserves viewport")
+    controller.mixerSetVolume(tracks[4], -6)
+    expect(controller.timelineScroll.contentView.bounds.origin == viewport, "Gain edit preserves viewport")
+    controller.undo()
+    expect(controller.timelineScroll.contentView.bounds.origin == viewport, "Undo preserves viewport")
+    expect(abs(controller.trackHeaderScroll.contentView.bounds.origin.y - viewport.y) < 1, "Pinned headers follow retained viewport")
+    controller.restoreArrangementViewport(NSPoint(x: 100000, y: 100000))
+    let limited = controller.timelineScroll.contentView.bounds
+    expect(limited.maxX <= (controller.timelineScroll.documentView?.bounds.width ?? 0) + 1, "Scroll restoration clamps to shortened width")
+    controller.restoreArrangementViewport(.zero); controller.setTimelineZoom(1)
+    controller.selectedMixerID = tracks[4]; controller.updateMixerInspector(tracks[4])
+    settle(1536, 1000)
 
     // System AU only, no external plugin or audio device. Use the existing catalog.
     controller.loadSupportedAudioUnits(); controller.refreshBrowserCatalog()
@@ -200,6 +284,13 @@ func runWorkspaceIntegrationTests() {
         }
         expect(abs((controller.timelineWidthConstraint?.constant ?? 0) - controller.timelineScroll.contentSize.width) < 2, "Zoom 1 fits viewport")
         expect(controller.trackHeaderRows.arrangedSubviews.count == controller.rows.arrangedSubviews.count, "Pinned header and lane counts align")
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let bar = descendants(root).compactMap({ $0 as? WorkspaceCommandBar }).first else { fatalError("Actual command bar missing") }
+        expect(bar.commands.arrangedSubviews.contains(where: { $0 === controller.undoButton }), "Original Undo control retained")
+        expect(bar.commands.frame.width <= bar.scroll.contentSize.width + 1, "Frequent commands fit without horizontal scrolling")
+        expect(controller.playButton.frame.height >= 28 && controller.recordButton.frame.height >= 28, "Readable transport hit targets")
+        let headers = controller.trackHeaderRows.arrangedSubviews.compactMap { $0 as? PinnedTrackHeaderView }
+        expect(headers.allSatisfy { abs($0.frame.height - PinnedTrackHeaderView.laneHeight) < 1 }, "Consistent compact lane height")
         screenshot("workspace-\(Int(width))")
     }
     settle(1536,1000)

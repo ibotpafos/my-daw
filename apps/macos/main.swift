@@ -319,7 +319,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.onDeleteSelectedClip = { [weak self] in self?.deleteCurrentSelectedClip() }
         window.onDeleteSelectedTrack = { [weak self] in self?.deleteCurrentSelectedTrack() }
         window.onZoomIn = { [weak self] in self?.zoomIn() };window.onZoomOut = { [weak self] in self?.zoomOut() };window.onZoomReset = { [weak self] in self?.resetZoom() }
-        let root = NSView(); window.contentView = root
+        let root = NSView(); root.wantsLayer = true
+        root.layer?.backgroundColor = DAWDesignTokens.Color.canvas.cgColor
+        window.contentView = root
         let content = NSStackView(); content.orientation = .vertical; content.alignment = .leading; content.spacing = 6
         content.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(content)
         NSLayoutConstraint.activate([
@@ -393,12 +395,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         content.addArrangedSubview(toolbar)
         toolbar.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         toolbar.heightAnchor.constraint(equalToConstant: 68).isActive = true
-        let editBar = makeWorkspaceEditBar([
-            importButton, addTrackButton, addMidiTrackButton, addBusButton, undoButton, redoButton,
-            gridPopup, button("＋", #selector(zoomIn)), button("−", #selector(zoomOut)),
-            rangeStartButton, rangeEndButton, clearRangeButton, openButton, saveButton,
-            exportButton, dawprojectButton, workflowButton, resolveImportButton, cancelImportButton, cancelExportButton
-        ])
+        let editBar = WorkspaceCommandBar(
+            importButton: importButton, add: [addTrackButton, addMidiTrackButton, addBusButton],
+            history: [undoButton, redoButton], grid: gridPopup,
+            zoom: [button("−", #selector(zoomOut)), button("1×", #selector(resetZoom)), button("＋", #selector(zoomIn))],
+            more: [rangeStartButton, rangeEndButton, clearRangeButton, openButton, saveButton,
+                   exportButton, dawprojectButton, workflowButton],
+            transient: [resolveImportButton, cancelImportButton, cancelExportButton])
         playButton.target = self; playButton.action = #selector(playAudio)
         stopButton.target = self; stopButton.action = #selector(stopAudio); stopButton.isEnabled = false
         recordButton.target = self; recordButton.action = #selector(toggleRecording)
@@ -412,7 +415,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         transportLabel.textColor = DAWDesignTokens.Color.mint
         let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 4
+        rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 2
         rows.translatesAutoresizingMaskIntoConstraints = false
         let document = DraftCanvas(); timelineDocument=document;document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(timelineRuler);document.addSubview(rows); scroll.documentView = document
@@ -425,7 +428,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             rows.topAnchor.constraint(equalTo: timelineRuler.bottomAnchor), rows.bottomAnchor.constraint(equalTo: document.bottomAnchor)
         ])
         let headerScroll=NSScrollView();trackHeaderScroll=headerScroll;headerScroll.hasVerticalScroller=false;headerScroll.hasHorizontalScroller=false;headerScroll.drawsBackground=false
-        trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=4;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
+        trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=2;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
         let headerDocument=DraftCanvas();headerDocument.translatesAutoresizingMaskIntoConstraints=false;let tracksHeading=label("TRACKS",size:10,color:.tertiaryLabelColor);tracksHeading.font = .systemFont(ofSize:10,weight:.semibold);tracksHeading.translatesAutoresizingMaskIntoConstraints=false;headerDocument.addSubview(tracksHeading);headerDocument.addSubview(trackHeaderRows);headerScroll.documentView=headerDocument
         NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
         scroll.contentView.postsBoundsChangedNotifications=true;headerScroll.contentView.postsBoundsChangedNotifications=true
@@ -973,6 +976,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func loadInstalledVST3(){let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_vst3_scan_helper").path;var available:UInt32=0;var quarantined:UInt32=0;var invalidated:UInt32=0;if let cache=vst3CacheURL,daw_load_installed_vst3_scan_cache(session,helper,cache.path,&available,&quarantined,&invalidated)==0{reloadVST3Popup();let stale=invalidated>0 ? ", обновить \(invalidated)":"";scanVST3Button.title=quarantined==0 ? "VST3: \(available)\(stale)":"VST3: \(available), карантин \(quarantined)\(stale)"}}
     func reloadVST3Popup(){vst3Catalog.removeAll();while masterVST3Popup.numberOfItems>1{masterVST3Popup.removeItem(at:1)};var count:UInt32=0;guard daw_get_installed_vst3_count(session,&count)==0 else{return};for index in 0..<count{var item=daw_vst3_component();item.struct_size=UInt32(MemoryLayout<daw_vst3_component>.size);guard daw_get_installed_vst3(session,index,&item)==0 else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let vendor=withUnsafeBytes(of:item.vendor){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let instrument=item.available != 0 && (item.flags & UInt32(DAW_VST3_FLAG_INSTRUMENT)) != 0;/* flags осмысленны только при available != 0 — контракт моста */vst3Catalog.append((index,name,vendor,item.available != 0,instrument));if item.available != 0{masterVST3Popup.addItem(withTitle:(instrument ? "🎹 " : "") + (vendor.isEmpty ? name:"\(name) — \(vendor)"));masterVST3Popup.lastItem?.representedObject=NSNumber(value:index)}};masterVST3Popup.isEnabled = masterVST3Popup.numberOfItems>1;refreshBrowserCatalog()}
     func refresh() {
+        let previousViewport = timelineScroll?.contentView.bounds.origin
+        defer { restoreArrangementViewport(previousViewport) }
         var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
         guard check(daw_get_snapshot(session, &snapshot)) else { return }
         revision = snapshot.revision
@@ -1103,18 +1108,18 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
                 wave.onToggle = { [weak self] in guard let self else { return }; if self.isPlaying { self.stopAudio() } else { self.playAudio() } }
                 timelineGroup.addArrangedSubview(wave)
-                wave.heightAnchor.constraint(equalToConstant: 72).isActive = true
+                wave.heightAnchor.constraint(equalToConstant: PinnedTrackHeaderView.laneHeight).isActive = true
                 wave.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true
                 waveforms.append(wave)
             } else if midiClipCount > 0 {
                 let midi = makeMidiArrangement(trackID: track.id, title: name, color: accent, count: midiClipCount, duration: transport.duration)
-                timelineGroup.addArrangedSubview(midi); midi.heightAnchor.constraint(equalToConstant: 72).isActive = true
+                timelineGroup.addArrangedSubview(midi); midi.heightAnchor.constraint(equalToConstant: PinnedTrackHeaderView.laneHeight).isActive = true
                 midi.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true; midiArrangementViews.append(midi)
-            } else {let empty=EmptyTimelineLaneView(message:"Импортируйте WAV/AIFF или начните запись",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:72).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
+            } else {let empty=EmptyTimelineLaneView(message:"Импортируйте WAV/AIFF или начните запись",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:PinnedTrackHeaderView.laneHeight).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
             if track.take_count>1 {for takeIndex in 0..<track.take_count{var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var takePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,takeIndex,&take)),check(daw_get_take_waveform(session,track.id,takeIndex,&takePeaks,512))else{return};let takeName=withUnsafeBytes(of:take.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let lane=TakeLaneView(frame:.zero);lane.title=takeIndex==0 ? "Основной":takeName;lane.peaks=takePeaks;lane.takeStart=take.start;lane.takeFrames=take.frames;lane.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));lane.selected=selectedTake==Int(takeIndex);lane.setAccessibilityLabel("Дубль \(lane.title)");let laneIndex=Int(takeIndex);lane.onSelect={[weak self]in self?.selectedTakes[track.id]=laneIndex;self?.refresh()};timelineGroup.addArrangedSubview(lane);lane.heightAnchor.constraint(equalToConstant:46).isActive=true;lane.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}}
-            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(72+laneCount*48)
+            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=PinnedTrackHeaderView.laneHeight+CGFloat(laneCount*48)
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
-            let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,hasMidi:midiClipCount>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
+            let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,hasMidi:midiClipCount>0,selected:(selectedMixerID ?? inspectorTrackID)==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;if armed{var auto:Int32=0;if daw_get_auto_monitor_on_arm(self?.session,&auto)==0,auto==1{var mon:Int32=0;if daw_get_record_monitor(self?.session,&mon)==0,mon==0{_=daw_set_record_monitor(self?.session,1)}}};self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
             header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)};header.onExportTrackWav={[weak self] id in self?.exportTrackAsWav(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true

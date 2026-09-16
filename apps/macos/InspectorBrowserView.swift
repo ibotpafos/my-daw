@@ -62,7 +62,7 @@ struct InspectorBrowserItem: Equatable, Identifiable {
 @MainActor
 final class InspectorBrowserView: NSView {
     var channel: InspectorChannelModel? { didSet { if channel != oldValue { reloadInspector() } } }
-    var clip: InspectorClipModel? { didSet { reloadInspector() } }
+    var clip: InspectorClipModel? { didSet { if clip != oldValue { clearValidation() }; reloadInspector() } }
     var midi: InspectorMidiModel? { didSet { applyMidi() } }
     var midiCapture: InspectorMidiCaptureModel? { didSet { applyMidiCapture() } }
     var onChannelChange: ((Double, Double) -> Void)?
@@ -95,6 +95,8 @@ final class InspectorBrowserView: NSView {
     private let clipForm = NSStackView()
     private var fields: [NSTextField] = []
     private let validation = NSTextField(wrappingLabelWithString: "")
+    var validationMessage: String? { validation.isHidden ? nil : validation.stringValue }
+    private func clearValidation() { validation.isHidden = true; validation.stringValue = "" }
     private let midiCaptureForm = NSStackView()
     private let midiInputPopup = NSPopUpButton()
     private let midiRecordButton = NSButton(title: "Запись с клавиатуры", target: nil, action: nil)
@@ -113,7 +115,7 @@ final class InspectorBrowserView: NSView {
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
         let document = DraftCanvas(); document.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = document
-        form.orientation = .vertical; form.alignment = .leading; form.spacing = 14
+        form.orientation = .vertical; form.alignment = .leading; form.spacing = 10
         form.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(form)
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 14),
@@ -221,8 +223,8 @@ final class InspectorBrowserView: NSView {
     }
     @objc private func rename() { guard channelName.isEnabled else { return }; onChannelRename?(channelName.stringValue) }
     @objc func changeChannel() { guard editingEnabled, channel != nil else { return }; onChannelChange?(volume.doubleValue, pan.doubleValue) }
-    @objc private func changeMute() { onChannelMute?(mute.state == .on) }
-    @objc private func changeSolo() { onChannelSolo?(solo.state == .on) }
+    @objc private func changeMute() { guard mute.isEnabled, editingEnabled else { return }; onChannelMute?(mute.state == .on) }
+    @objc private func changeSolo() { guard solo.isEnabled, editingEnabled else { return }; onChannelSolo?(solo.state == .on) }
     @objc private func showDevices() { onShowDevices?() }
     @objc private func selectMidiInput() {
         guard midiInputIDs.indices.contains(midiInputPopup.indexOfSelectedItem) else { return }
