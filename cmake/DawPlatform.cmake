@@ -119,5 +119,18 @@ if(APPLE)
     target_compile_definitions(daw_core PRIVATE DAW_VST3_RUNTIME_AVAILABLE=1)
   endif()
 else()
-  target_sources(daw_core PRIVATE engine/audio/clip_resampler_stub.cpp engine/audio/input_stub.cpp engine/audio/output_stub.cpp engine/audio/duplex_stub.cpp engine/audio/effect_stub.cpp engine/audio/vst3_effect_stub.cpp engine/audio/plugin_parameters_stub.cpp)
+  # Offline conversion uses an established DSP library instead of a custom
+  # resampler or a stub that makes otherwise portable import tests fail.
+  # Install explicitly; a normal configure/build never downloads dependencies.
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SampleRate REQUIRED IMPORTED_TARGET "samplerate>=0.2.2")
+  target_link_libraries(daw_core PRIVATE PkgConfig::SampleRate)
+  target_sources(daw_core PRIVATE
+    engine/audio/clip_resampler_libsamplerate.cpp
+    engine/audio/input_stub.cpp
+    engine/audio/output_stub.cpp
+    engine/audio/duplex_stub.cpp
+    engine/audio/effect_stub.cpp
+    engine/audio/vst3_effect_stub.cpp
+    engine/audio/plugin_parameters_stub.cpp)
 endif()
