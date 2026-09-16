@@ -254,6 +254,7 @@ private final class MixerStripView: NSView {
         let canPan = model.kind != .master
         pan.isHidden = !canPan
         pan.isEnabled = canPan
+        deleteBusButton.isHidden = model.kind != .bus
         needsDisplay = true
     }
     override var isFlipped: Bool { true }
@@ -295,6 +296,10 @@ private final class MixerStripView: NSView {
         for (index, button) in activeButtons.enumerated() {
             button.frame = NSRect(x: padding + CGFloat(index) * (buttonWidth + padding), y: channelControlsY + 37, width: buttonWidth, height: 19)
         }
+        // Delete button for bus strips - positioned at top-right
+        if !deleteBusButton.isHidden {
+            deleteBusButton.frame = NSRect(x: width - padding - 20, y: padding, width: 20, height: 16)
+        }
         value.frame = NSRect(x: padding, y: channelControlsY + 58, width: width - 2 * padding, height: 13)
         let meterHeight = max(26, meterBottom - meterTop)
         meter.frame = NSRect(x: padding + 9, y: meterTop, width: 12, height: meterHeight)
@@ -327,6 +332,7 @@ private final class MixerStripView: NSView {
     @objc private func toggleMute(){onMute?(model.id,mute.state == .on)}
     @objc private func toggleSolo(){onSolo?(model.id,solo.state == .on)}
     @objc private func changePan(){onPan?(model.id,pan.doubleValue)}
+    @objc private func deleteBus(){onDeleteBus?(model.id)}
 }
 
 @MainActor
@@ -340,6 +346,7 @@ final class MixerWorkspaceView: NSScrollView {
     var onVolume: ((UInt64, Double) -> Void)?
     var onVolumeGestureEnd: ((UInt64, Double) -> Void)?
     var onPan: ((UInt64, Double) -> Void)?
+    var onDeleteBus: ((UInt64) -> Void)?
     private let canvas=MixerCanvasView()
     private var stripViews:[UInt64:MixerStripView]=[:]
     override init(frame: NSRect) { super.init(frame:frame); drawsBackground=false; hasHorizontalScroller=true; hasVerticalScroller=false; documentView=canvas }
@@ -360,6 +367,10 @@ final class MixerWorkspaceView: NSScrollView {
             strip.onVolume = { [weak self] in self?.onVolume?($0, $1) }
             strip.onVolumeEnd = { [weak self] in self?.onVolumeGestureEnd?($0, $1) }
             strip.onPan = { [weak self] in self?.onPan?($0, $1) }
+            strip.onDeleteBus = { [weak self] id in
+                guard let self else { return }
+                self.onDeleteBus?(id)
+            }
             canvas.addSubview(strip)
         }
         layoutStrips()

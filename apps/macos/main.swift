@@ -681,6 +681,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.onVolume = { [weak self] id,value in self?.mixerSetVolume(id,value) }
         mixerWorkspace.onVolumeGestureEnd = { [weak self] _,_ in self?.mixerEndVolume() }
         mixerWorkspace.onPan = { [weak self] id,value in self?.mixerSetPan(id,value) }
+        mixerWorkspace.onDeleteBus = { [weak self] id in self?.deleteBusWithConfirmation(id) }
         wireInspectorBrowser()
         setupRecovery()
         loadSupportedAudioUnits()
@@ -2062,6 +2063,35 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
     }
     func duplicateTrackNow(_ id:UInt64){ guard !isRecording else{return}; finishEditing(); stopAudio(); var newID:UInt64=0; if check(daw_duplicate_track(session,id,&newID,revision)){refresh(); pollTransport()} }
+    /// Удаление шины с подтверждением: дорожки и sends перенаправляются на мастер.
+    func deleteBusWithConfirmation(_ busID:UInt64){
+        guard !isRecording else { return }
+        // Get bus name for confirmation message
+        var bus = daw_bus(); bus.struct_size = UInt32(MemoryLayout<daw_bus>.size)
+        var found = false
+        var busName = "Шина"
+        var snap = daw_snapshot(); snap.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+        if check(daw_get_snapshot(session, &snap)) {
+            for i in 0..<Int(snap.bus_count) {
+                if check(daw_get_bus(session, UInt32(i), &bus)), bus.id == busID {
+                    busName = withUnsafeBytes(of: bus.name) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+                    found = true; break
+                }
+            }
+        }
+        guard found else { storageMessage("Шина не найдена."); return }
+        let alert = NSAlert()
+        alert.messageText = "Удалить шину «\(busName)»?"
+        alert.informativeText = "Дорожки, направляемые в эту шину, будут перенаправлены на мастер. Sends на эту шину будут удалены."
+        alert.addButton(withTitle: "Удалить")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        finishEditing(); stopAudio()
+        if check(daw_delete_bus(session, busID, bridgeRevision())) {
+            refresh(); pollTransport()
+            status.stringValue = "Шина «\(busName)» удалена, дорожки перенаправлены на мастер"
+        }
+    }
     /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
     /// «Группу N», маршрутизацию в существующие шины и возврат на мастер.
     func bridgeRevision()->UInt64 { var snap=daw_snapshot();snap.struct_size=UInt32(MemoryLayout<daw_snapshot>.size);return check(daw_get_snapshot(session,&snap)) ? snap.revision : revision }
