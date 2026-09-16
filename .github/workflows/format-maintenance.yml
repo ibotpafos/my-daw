@@ -1,0 +1,48 @@
+name: Format maintenance
+# One-time migration of the three minified translation units blocking GCC.
+# Never runs on pull_request or a fork, never pushes to main, never force-pushes.
+on:
+  push:
+    branches: ["codex/midi-hardware-acceptance"]
+    paths: [".github/workflows/format-maintenance.yml"]
+permissions:
+  contents: read
+jobs:
+  format:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/midi-hardware-acceptance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Install formatter
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18
+      - name: Format only reviewed translation units
+        run: |
+          clang-format-18 -i engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
+          python3 - <<'PY'
+          import pathlib, re, subprocess
+          paths = ['engine/domain/session.cpp', 'engine/bridge/daw.cpp', 'engine/storage/storage.cpp']
+          for name in paths:
+              before = subprocess.check_output(['git', 'show', f'HEAD:{name}'])
+              after = pathlib.Path(name).read_bytes()
+              if re.sub(rb'\s+', b'', before) != re.sub(rb'\s+', b'', after):
+                  raise SystemExit(f'Refusing non-whitespace transformation: {name}')
+          PY
+          git diff --check
+      - name: Commit formatting to the same branch
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
+          git commit -m 'style(core): expand minified C++ without changing tokens'
+          git push origin HEAD:refs/heads/codex/midi-hardware-acceptance
+      - name: Verify GCC build
+        run: |
+          cmake --preset sanitizers
+          cmake --build --preset sanitizers --parallel 2
+          ctest --preset sanitizers
