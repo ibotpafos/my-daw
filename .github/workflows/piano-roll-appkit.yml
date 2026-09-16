@@ -7,6 +7,9 @@ on:
       - 'scripts/typecheck-macos-ui.sh'
       - '.github/workflows/piano-roll-appkit.yml'
   workflow_dispatch:
+concurrency:
+  group: piano-roll-appkit-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
