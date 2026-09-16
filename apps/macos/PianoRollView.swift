@@ -67,6 +67,14 @@ private final class PRMiniPreviewView: NSView {
 
 @MainActor
 final class PianoRollEditorView: NSView {
+    private struct GhostCacheKey: Equatable {
+        var revision: UInt64
+        var trackID: UInt64
+        var clipIndex: Int
+        var start: UInt64
+        var length: UInt64
+    }
+
     var notes: [PianoRollNote] = [] { didSet { syncState() } }
     var clips: [PianoRollClipModel] = [] { didSet { reloadClips(); syncState() } }
     var selectedClip: Int? { didSet { syncClipSelection(); syncState() } }
@@ -106,6 +114,8 @@ final class PianoRollEditorView: NSView {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var windowController: PRProWindowController?
     private var syncing = false
+    private var ghostCacheKey: GhostCacheKey?
+    private var ghostCache = PRGhostLoadResult(notes: [], sourceTracks: 0, limited: false)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -194,6 +204,7 @@ final class PianoRollEditorView: NSView {
                       editable: editorEnabled && selectedClip != nil && !clips.isEmpty)
         syncing = false
         applyEnabled()
+        if windowController != nil { refreshGhostsIfNeeded() }
     }
 
     private func refreshFromState() {
@@ -229,6 +240,29 @@ final class PianoRollEditorView: NSView {
         quantizeButton.isEnabled = canEdit
         legatoButton.isEnabled = canEdit
         gridPopup.isEnabled = canEdit
+    }
+
+    private func refreshGhostsIfNeeded(force: Bool = false) {
+        guard let workspace = windowController?.workspace,
+              let app = hostApp,
+              let trackID = app.inspectorTrackID,
+              let selectedClip,
+              let clip = clips.first(where: { $0.index == selectedClip }) else {
+            ghostCacheKey = nil
+            ghostCache = PRGhostLoadResult(notes: [], sourceTracks: 0, limited: false)
+            windowController?.workspace.setGhostNotes(ghostCache)
+            return
+        }
+        let key = GhostCacheKey(revision: app.revision, trackID: trackID,
+                                clipIndex: selectedClip, start: clip.startFrames,
+                                length: clip.lengthFrames)
+        if !force, key == ghostCacheKey {
+            workspace.setGhostNotes(ghostCache)
+            return
+        }
+        ghostCache = PRGhostLoader.load(app: app, activeTrackID: trackID, activeClip: clip)
+        ghostCacheKey = key
+        workspace.setGhostNotes(ghostCache)
     }
 
     @objc private func selectClip() {
@@ -289,6 +323,7 @@ final class PianoRollEditorView: NSView {
             if let onPlayToggle = self.onPlayToggle { onPlayToggle() }
             else { self.hostApp?.togglePlayStop() }
         }
+        refreshGhostsIfNeeded(force: true)
         let title = clips.first(where: { $0.index == selectedClip })?.title
         controller.present(relativeTo: window, title: title)
     }
