@@ -25,3 +25,6 @@ apps/macos/Workspace/WorkspaceLayout.swift
 apps/macos/Workspace/WorkspaceUI.swift
 apps/macos/Workspace/WorkspaceView.swift
 apps/macos/main.swift
+apps/macos/Workspace/AudioClipDrawing.swift
+apps/macos/Workspace/InspectorSignalChain.swift
+apps/macos/Workspace/InspectorSignalChainView.swift

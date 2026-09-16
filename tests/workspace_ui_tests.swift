@@ -273,6 +273,7 @@ func runWorkspaceIntegrationTests() {
         let locked = revision(); controller.channelRack.perform(.remove(first)); expect(revision() == locked, "Rack recording guard")
         controller.isRecording = false; controller.refreshDeviceRack()
     } else { fatalError("Required system AU effect missing; not a passing skip") }
+    assertions += runSignalChainTests(controller)
     browser.audioItems.removeAll(where: { $0.id == audio.id || $0.id == missing.id })
     controller.currentURL = temporary.appendingPathComponent("Midnight Feelings.mydawdraft")
     controller.updateWorkspaceChrome(); workspace.resetLayout()

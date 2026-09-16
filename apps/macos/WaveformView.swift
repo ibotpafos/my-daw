@@ -52,6 +52,8 @@ final class WaveformView: NSView {
     var rangeEnd: UInt64? { didSet { needsDisplay = true } }
     var loopEnabled = false { didSet { needsDisplay = true } }
     var trackAccent: NSColor = .systemBlue { didSet { needsDisplay = true } }
+    var trackTitle = "Клип" { didSet { if trackTitle != oldValue { needsDisplay = true } } }
+    var selectionActive = true { didSet { if selectionActive != oldValue { needsDisplay = true } } }
     var showsEmbeddedRuler = false { didSet { needsDisplay = true } }
     var onEditBegin: (() -> Void)?
     var onEdit: ((Int, UInt64, UInt64, UInt64) -> Void)?
@@ -101,10 +103,10 @@ final class WaveformView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     private var lane: NSRect { NSRect(x: showsEmbeddedRuler ? 14:0, y: showsEmbeddedRuler ? 25:4, width: max(1, bounds.width - (showsEmbeddedRuler ? 28:0)), height: max(1, bounds.height - (showsEmbeddedRuler ? 40:8))) }
-    private func clipRect(_ clip: ClipGeometry) -> NSRect {
+    func clipRect(_ clip: ClipGeometry) -> NSRect {
         let x = lane.minX + lane.width * CGFloat(Double(clip.start) / Double(max(1, projectFrames)))
         let width = max(2, lane.width * CGFloat(Double(clip.length) / Double(max(1, projectFrames))))
-        return NSRect(x: x, y: lane.minY + 7, width: width, height: max(1, lane.height - 14))
+        return NSRect(x: x, y: lane.minY, width: width, height: lane.height)
     }
     private func hitZone(for index: Int, at point: NSPoint) -> HitZone {
         let clip = clips[index], rect = clipRect(clip)
@@ -249,11 +251,10 @@ final class WaveformView: NSView {
     override func accessibilityPerformDecrement() -> Bool { seek(playhead > 48000 ? playhead - 48000 : 0); return true }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        NSColor(calibratedWhite: 0.055, alpha: 1).setFill();bounds.fill()
+        DAWDesignTokens.Color.canvas.setFill(); bounds.fill()
         guard projectFrames > 0 else { return }
         if showsEmbeddedRuler {let ruler = NSRect(x: 0, y: 0, width: bounds.width, height: lane.minY - 1);NSColor(calibratedWhite: 0.095, alpha: 1).setFill(); ruler.fill();NSColor(white: 1, alpha: 0.10).setStroke(); let separator = NSBezierPath(); separator.move(to: NSPoint(x: 0, y: lane.minY - 0.5)); separator.line(to: NSPoint(x: bounds.maxX, y: lane.minY - 0.5)); separator.stroke()}
-        let laneGradient = NSGradient(colors: [NSColor(calibratedWhite: 0.075, alpha: 1), NSColor(calibratedWhite: 0.045, alpha: 1)])
-        laneGradient?.draw(in: lane, angle: 90)
+        DAWDesignTokens.Color.canvas.setFill(); lane.fill()
         let duration = Double(projectFrames) / 48000
         let tickStep = duration > 30 ? 10.0 : (duration > 10 ? 5.0 : (duration > 3 ? 1.0 : 0.5))
         if snapFrames > 0 {
@@ -279,32 +280,10 @@ final class WaveformView: NSView {
             rangeColor.withAlphaComponent(loopEnabled ? 0.20:0.15).setFill(); NSRect(x: x, y: lane.minY, width: width, height: lane.height).fill()
             rangeColor.withAlphaComponent(0.85).setStroke(); let outline=NSBezierPath(rect:NSRect(x:x,y:lane.minY,width:width,height:lane.height)); outline.lineWidth=1; outline.stroke()
         }
-        for (index,clip) in clips.enumerated() {
-            let rect = clipRect(clip); let clipX=rect.minX; let clipWidth=rect.width
-            let selected = index == selectedIndex || selectedIndices.contains(index); let hovered = index == hoveredIndex
-            let body = clip.color != 0 ? dawColorFromHex(clip.color) : trackAccent
-            if selected { NSColor.systemMint.withAlphaComponent(0.10).setFill(); NSBezierPath(roundedRect: rect.insetBy(dx: -3, dy: -3), xRadius: 7, yRadius: 7).fill() }
-            (selected ? body.withAlphaComponent(clip.muted ? 0.30 : 0.82) : body.withAlphaComponent(clip.muted ? (hovered ? 0.20 : 0.12) : (hovered ? 0.48 : 0.30))).setFill()
-            NSBezierPath(roundedRect:rect,xRadius:6,yRadius:6).fill()
-            (selected ? NSColor.systemMint : NSColor(white:1,alpha:0.22)).withAlphaComponent(selected ? 0.95 : (hovered ? 0.55 : 0.25)).setStroke()
-            let border = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6); border.lineWidth = selected ? 1.5 : 1; border.stroke()
-            let clipPeaks=clip.sourcePeaks.isEmpty ? peaks:clip.sourcePeaks;let clipSourceFrames=clip.sourceFramesForTake>0 ? clip.sourceFramesForTake:sourceFrames;let maximum=max(0.000001,clipPeaks.max() ?? 0)
-            let waveform=NSBezierPath(); waveform.lineWidth=1
-            for (i,peak) in clipPeaks.enumerated() {
-                let begin=Double(i)/Double(clipPeaks.count)*Double(clipSourceFrames); let end=Double(i+1)/Double(clipPeaks.count)*Double(clipSourceFrames)
-                let visibleBegin=max(begin,Double(clip.sourceOffset)), visibleEnd=min(end,Double(clip.sourceOffset+clip.length)); guard visibleEnd>visibleBegin else { continue }
-                let x=clipX+CGFloat((visibleBegin+visibleEnd)/2-Double(clip.sourceOffset))/CGFloat(clip.length)*clipWidth; let height=CGFloat(peak/maximum)*rect.height*0.43
-                waveform.move(to:NSPoint(x:x,y:rect.midY-height)); waveform.line(to:NSPoint(x:x,y:rect.midY+height))
-            }
-            NSColor.systemMint.withAlphaComponent(selected ? 0.92 : 0.50).setStroke(); waveform.stroke()
-            let handleColor = selected ? NSColor.systemMint : NSColor(white: 1, alpha: hovered ? 0.55 : 0.26)
-            handleColor.setFill(); NSBezierPath(roundedRect: NSRect(x:rect.minX-2,y:rect.midY-12,width:4,height:24),xRadius:2,yRadius:2).fill(); NSBezierPath(roundedRect: NSRect(x:rect.maxX-2,y:rect.midY-12,width:4,height:24),xRadius:2,yRadius:2).fill()
-            let fadeColor = selected ? NSColor.white.withAlphaComponent(0.76) : NSColor.white.withAlphaComponent(0.36); fadeColor.setStroke()
-            let fadeInX = clip.fadeIn > 0 ? clipX+clipWidth*CGFloat(Double(clip.fadeIn)/Double(clip.length)) : clipX+min(20,clipWidth*0.18)
-            let fadeOutX = clip.fadeOut > 0 ? clipX+clipWidth*CGFloat(Double(clip.length-clip.fadeOut)/Double(clip.length)) : clipX+clipWidth-min(20,clipWidth*0.18)
-            let fadeInPath=NSBezierPath(); fadeInPath.move(to:NSPoint(x:clipX,y:rect.maxY)); fadeInPath.line(to:NSPoint(x:fadeInX,y:rect.minY)); fadeInPath.stroke()
-            let fadeOutPath=NSBezierPath(); fadeOutPath.move(to:NSPoint(x:fadeOutX,y:rect.minY)); fadeOutPath.line(to:NSPoint(x:rect.maxX,y:rect.maxY)); fadeOutPath.stroke()
-            if selected || hovered { let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.white.withAlphaComponent(0.72)]; let tag="Клип \(index + 1)\(clip.looped ? " · ↻" : "")\(clip.muted ? " · MUTE" : "")\(clip.gainDb == 0 ? "" : String(format:" · %+.1f dB",clip.gainDb))\(clip.pan == 0 ? "" : String(format:" · P %@%d%%", clip.pan < 0 ? "L": "R", Int(abs(clip.pan) * 100 + 0.5)))"; (tag as NSString).draw(at:NSPoint(x:rect.minX+8,y:rect.minY+7),withAttributes:attrs) }
+        for (index, clip) in clips.enumerated() {
+            AudioClipDrawing.draw(clip, title: trackTitle, index: index, rect: clipRect(clip), accent: trackAccent,
+                selected: selectionActive && (index == selectedIndex || selectedIndices.contains(index)), hovered: index == hoveredIndex,
+                fallbackPeaks: peaks, sourceFrames: sourceFrames)
         }
         if !automationPoints.isEmpty {
             func automationY(_ gain:Double)->CGFloat{let visible=min(12,max(-60,gain));return lane.maxY-CGFloat((visible+60)/72)*lane.height}

@@ -104,6 +104,7 @@ extension DraftApp {
     }
 
     func wireWorkspace() {
+        wireInspectorSignalChain()
         wireTimelineNavigation()
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
@@ -176,6 +177,11 @@ extension DraftApp {
         libraryBrowser.mutationEnabled = !isRecording && !midiTakeArmed
     }
     func refreshDeviceRack() {
+        for (id, wave) in laneViews {
+            wave.trackTitle = mixerWorkspace.strips.first(where: { $0.id == id })?.title ?? "Клип"
+            wave.selectionActive = id == selectedMixerID
+        }
+        defer { refreshInspectorSignalChain() }
         guard session != nil, let id = selectedMixerID,
               let strip = mixerWorkspace.strips.first(where: { $0.id == id }) else {
             channelRack.update(target: nil, title: "", output: "", accent: DAWDesignTokens.Color.accent, devices: [], editable: false); return

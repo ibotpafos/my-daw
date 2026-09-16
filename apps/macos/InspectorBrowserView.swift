@@ -90,8 +90,11 @@ final class InspectorBrowserView: NSView {
     private let panCaption = NSTextField(labelWithString: "ПАНОРАМА")
     private let mute = NSButton(title: "Mute", target: nil, action: nil)
     private let solo = NSButton(title: "Solo", target: nil, action: nil)
-    private let insertSummary = NSTextField(wrappingLabelWithString: "")
-    private let sendSummary = NSTextField(wrappingLabelWithString: "")
+    let signalChain = InspectorSignalChainView(frame: .zero)
+    private let channelIcon = NSImageView()
+    private let channelBadge = WorkspaceSurface()
+    private let volumeValue = NSTextField(labelWithString: "")
+    private let panValue = NSTextField(labelWithString: "")
     private let clipForm = NSStackView()
     private var fields: [NSTextField] = []
     private let validation = NSTextField(wrappingLabelWithString: "")
@@ -103,12 +106,13 @@ final class InspectorBrowserView: NSView {
     private let midiCaptureStatus = NSTextField(wrappingLabelWithString: "")
     private var midiInputIDs: [UInt32] = []
     private var midiInputTitles: [String] = []
-    var editingEnabled = true { didSet { if editingEnabled != oldValue { reloadInspector(); applyMidi() } } }
+    var editingEnabled = true { didSet { if editingEnabled != oldValue { signalChain.setEditingEnabled(editingEnabled); reloadInspector(); applyMidi() } } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true; layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.stringValue = "Инспектор"
         titleLabel.textColor = DAWDesignTokens.Color.text
         titleLabel.translatesAutoresizingMaskIntoConstraints = false; addSubview(titleLabel)
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
@@ -121,7 +125,7 @@ final class InspectorBrowserView: NSView {
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 14),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -129,12 +133,16 @@ final class InspectorBrowserView: NSView {
             form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -14),
             form.topAnchor.constraint(equalTo: document.topAnchor), form.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -14)
         ])
-        channelName.font = .systemFont(ofSize: 16, weight: .semibold)
+        channelName.font = .systemFont(ofSize: 13, weight: .semibold)
+        channelName.isBordered = false; channelName.drawsBackground = false
+        channelName.focusRingType = .exterior
+        channelName.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        channelName.setAccessibilityHelp("Введите имя и нажмите Return, чтобы переименовать канал")
         channelName.target = self; channelName.action = #selector(rename)
         channelName.setAccessibilityLabel("Имя выбранного канала")
         selection.font = .systemFont(ofSize: 11); selection.textColor = DAWDesignTokens.Color.secondaryText
         for (slider, action) in [(volume, #selector(changeChannel)), (pan, #selector(changeChannel))] {
-            slider.target = self; slider.action = action; slider.isContinuous = false
+            slider.target = self; slider.action = action; slider.isContinuous = false; slider.controlSize = .mini
         }
         volume.setAccessibilityLabel("Громкость выбранного канала, dB")
         pan.setAccessibilityLabel("Панорама выбранного канала")
@@ -145,7 +153,6 @@ final class InspectorBrowserView: NSView {
         let flags = NSStackView(views: [mute, solo]); flags.spacing = 8
         let devices = NSButton(title: "Открыть устройства канала ↗", target: self, action: #selector(showDevices))
         devices.bezelStyle = .inline; devices.font = .systemFont(ofSize: 11, weight: .medium)
-        for summary in [insertSummary, sendSummary] { summary.font = .systemFont(ofSize: 12); summary.textColor = DAWDesignTokens.Color.secondaryText; summary.maximumNumberOfLines = 12 }
         clipForm.orientation = .vertical; clipForm.alignment = .leading; clipForm.spacing = 8
         for (index, name) in ["Начало · с", "Смещение исходника · с", "Длительность · с", "Fade in · с", "Fade out · с"].enumerated() {
             let field = NSTextField(string: "0.000"); field.tag = index; field.target = self; field.action = #selector(changeClip)
@@ -161,8 +168,30 @@ final class InspectorBrowserView: NSView {
         midiCaptureStatus.font = .systemFont(ofSize: 10); midiCaptureStatus.textColor = DAWDesignTokens.Color.secondaryText
         midiCaptureForm.orientation = .vertical; midiCaptureForm.alignment = .leading; midiCaptureForm.spacing = 6
         [caption("MIDI-ВХОД"), midiInputPopup, midiRecordButton, midiCaptureStatus].forEach { midiCaptureForm.addArrangedSubview($0) }
-        let children: [NSView] = [channelName, selection, volumeCaption, volume, panCaption, pan, flags,
-                                   caption("ПЛАГИНЫ"), insertSummary, devices, caption("ПОСЫЛЫ"), sendSummary,
+        channelBadge.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        channelBadge.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        channelIcon.translatesAutoresizingMaskIntoConstraints = false; channelBadge.addSubview(channelIcon)
+        NSLayoutConstraint.activate([
+            channelIcon.centerXAnchor.constraint(equalTo: channelBadge.centerXAnchor),
+            channelIcon.centerYAnchor.constraint(equalTo: channelBadge.centerYAnchor),
+            channelIcon.widthAnchor.constraint(equalToConstant: 27), channelIcon.heightAnchor.constraint(equalToConstant: 30)
+        ])
+        let identity = NSStackView(views: [channelName, selection]); identity.orientation = .vertical
+        identity.alignment = .leading; identity.spacing = 4
+        channelName.widthAnchor.constraint(equalTo: identity.widthAnchor).isActive = true
+        let channelHeader = NSStackView(views: [channelBadge, identity]); channelHeader.spacing = 10
+        func controlRow(_ caption: NSTextField, _ slider: NSSlider, _ value: NSTextField) -> NSView {
+            caption.font = .systemFont(ofSize: 10, weight: .medium)
+            caption.widthAnchor.constraint(equalToConstant: 58).isActive = true
+            value.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            value.textColor = DAWDesignTokens.Color.text; value.alignment = .right
+            value.widthAnchor.constraint(equalToConstant: 57).isActive = true
+            let row = NSStackView(views: [caption, slider, value]); row.spacing = 5
+            row.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            return row
+        }
+        let children: [NSView] = [channelHeader, controlRow(volumeCaption, volume, volumeValue),
+                                   controlRow(panCaption, pan, panValue), flags, signalChain, devices,
                                    midiCaptureForm, clipForm, validation]
         for child in children { form.addArrangedSubview(child); child.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         midiEditor.onClipSelect = { [weak self] in self?.onMidiClipSelect?($0) }
@@ -182,18 +211,23 @@ final class InspectorBrowserView: NSView {
         let model = channel ?? InspectorChannelModel()
         if channelName.currentEditor() == nil { channelName.stringValue = model.title }
         selection.stringValue = channel == nil ? "Выберите дорожку, шину или мастер." : model.kind
-        titleLabel.textColor = channel?.accent ?? DAWDesignTokens.Color.text
+        channelIcon.image = NSImage(systemSymbolName: model.kind == "MASTER" ? "speaker.wave.2.fill" :
+            (model.kind == "BUS" ? "arrow.triangle.branch" : (midi?.clips.isEmpty == false ? "pianokeys" : "waveform")),
+            accessibilityDescription: model.kind)
+        channelIcon.contentTintColor = model.accent
+        channelBadge.layer?.backgroundColor = model.accent.withAlphaComponent(0.13).cgColor
+        channelBadge.layer?.borderColor = model.accent.withAlphaComponent(0.25).cgColor
         volume.doubleValue = model.volumeDb; pan.doubleValue = model.pan
-        volumeCaption.stringValue = String(format: "ГРОМКОСТЬ   %+.1f dB", model.volumeDb)
-        panCaption.stringValue = abs(model.pan) < 0.001 ? "ПАНОРАМА   C" : String(format: "ПАНОРАМА   %.0f %@", abs(model.pan * 100), model.pan < 0 ? "L" : "R")
+        volumeCaption.stringValue = "Громкость"
+        volumeValue.stringValue = String(format: "%+.1f dB", model.volumeDb)
+        panCaption.stringValue = "Панорама"
+        panValue.stringValue = abs(model.pan) < 0.001 ? "C" : String(format: "%.0f %@", abs(model.pan * 100), model.pan < 0 ? "L" : "R")
         mute.state = model.muted ? .on : .off; solo.state = model.solo ? .on : .off
         volume.isEnabled = channel != nil && editingEnabled
         pan.isEnabled = channel != nil && model.kind != "MASTER" && editingEnabled
         channelName.isEnabled = channel != nil && model.renameable && editingEnabled
         mute.isEnabled = channel != nil && model.kind != "MASTER" && editingEnabled
-        solo.isEnabled = channel != nil && model.kind == "TRACK" && editingEnabled
-        insertSummary.stringValue = model.inserts.isEmpty ? "Нет плагинов" : model.inserts.enumerated().map { "\($0.offset + 1)  \($0.element)" }.joined(separator: "\n")
-        sendSummary.stringValue = model.sends.isEmpty ? "Нет посылов" : model.sends.joined(separator: "\n")
+        solo.isEnabled = channel != nil && model.kind.hasPrefix("TRACK") && editingEnabled
         clipForm.isHidden = clip == nil
         if let clip {
             for (index, value) in [clip.startFrames, clip.sourceOffsetFrames, clip.lengthFrames, clip.fadeInFrames, clip.fadeOutFrames].enumerated() {
@@ -207,6 +241,7 @@ final class InspectorBrowserView: NSView {
         midiEditor.clips = midi?.clips ?? []; midiEditor.selectedClip = midi?.selectedClip
         midiEditor.notes = midi?.notes ?? []
         applyMidiCapture()
+        reloadInspector()
     }
     private func applyMidiCapture() {
         guard let capture = midiCapture, let midi, !midi.clips.isEmpty else { midiCaptureForm.isHidden = true; return }
