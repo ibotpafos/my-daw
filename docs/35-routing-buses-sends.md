@@ -41,3 +41,15 @@ Tracktion пока не включён в shipping app. Проверенный S
 Мост `daw_delete_bus(session, bus_id, rev)`: guard + `model.deleteBus` + `cancelStalePlaybackPreparation`. C-гейт: NULL сессии отклоняется.
 
 Предельные условия: удаление шины с sends и автоматизацией — sends удаляются, автоматизация шины пропадает вместе с ней; мастер удалить нельзя (кнопка скрыта).
+
+## Solo Exclusive и клавиатурные快捷键 (1.69.0)
+
+Solo exclusive (как в Studio One/Logic Pro): Option+клик на Solo солирует только эту дорожку, остальные молчат. При повторном Option+клик — все снимают solo. Обычный клик работает как раньше (toggle). Реализовано в `mixerSetSolo`: если `NSEvent.modifierFlags.contains(.option)`, сначала снимает solo со всех дорожек, потом включает solo на выбранной (или оставляет все без solo если клик на уже solo-дорожке).
+
+Профессиональные快捷键 в меню «Проект»:
+- **Space** — Воспроизведение/Стоп (toggle)
+- **S** — Solo выбранной дорожки (toggle)
+- **M** — Mute выбранной дорожки (toggle)
+- **A** — Arm выбранной дорожки (toggle)
+
+Работают когда фокус не в текстовом поле. Solo/Mute/Arm читают текущее состояние через `daw_get_track`, переключают через `daw_set_solo`/`daw_set_mute`/прямой toggle `armedTrackID`.

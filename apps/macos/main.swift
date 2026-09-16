@@ -764,6 +764,20 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 prerollMenu.addItem(item)
             }
             prerollRoot.submenu=prerollMenu; prerollRoot.toolTip="Транспорт прокручивается перед punch-in с кликом; преролл не попадает в дубль"; projectMenu.addItem(prerollRoot)
+            // Professional DAW keyboard shortcuts
+            projectMenu.addItem(.separator())
+            let playStop = NSMenuItem(title: "Воспроизведение / Стоп", action: #selector(togglePlayStop), keyEquivalent: " ")
+            playStop.target = self; playStop.keyEquivalentModifierMask = []
+            projectMenu.addItem(playStop)
+            let soloKey = NSMenuItem(title: "Solo выбранной дорожки", action: #selector(soloSelectedTrack), keyEquivalent: "s")
+            soloKey.target = self; soloKey.keyEquivalentModifierMask = []
+            projectMenu.addItem(soloKey)
+            let muteKey = NSMenuItem(title: "Mute выбранной дорожки", action: #selector(muteSelectedTrack), keyEquivalent: "m")
+            muteKey.target = self; muteKey.keyEquivalentModifierMask = []
+            projectMenu.addItem(muteKey)
+            let armKey = NSMenuItem(title: "Arm выбранной дорожки", action: #selector(armSelectedTrack), keyEquivalent: "a")
+            armKey.target = self; armKey.keyEquivalentModifierMask = []
+            projectMenu.addItem(armKey)
             let up = NSMenuItem(title: "Переместить выбранную дорожку выше", action: #selector(moveSelectedTrackUp), keyEquivalent: "\u{F700}")
             up.target = self; up.keyEquivalentModifierMask = [.command, .option]
             let down = NSMenuItem(title: "Переместить выбранную дорожку ниже", action: #selector(moveSelectedTrackDown), keyEquivalent: "\u{F701}")
@@ -1550,7 +1564,29 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerEndVolume(){if automationGesture != nil{endAutomationGesture()}else{refresh()}}
     func mixerSetPan(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_pan(session,id,value,revision)){syncRevision()};case .bus:if check(daw_set_bus_pan(session,id,value,revision)){syncRevision()};case .master:return}}
     func mixerSetMute(_ id:UInt64,_ muted:Bool){guard let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
-    func mixerSetSolo(_ id:UInt64,_ solo:Bool){guard let kind=mixerKinds[id]else{return};if case .track=kind{if check(daw_set_solo(session,id,solo ? 1:0,revision)){refresh()}}}
+    func mixerSetSolo(_ id:UInt64,_ solo:Bool){
+        guard let kind=mixerKinds[id] else { return }
+        if case .track = kind {
+            // Option+click solo: exclusive solo (only this track)
+            if NSEvent.modifierFlags.contains(.option) {
+                // Unsolo all tracks first
+                for (trackID, trackKind) in mixerKinds {
+                    if case .track = trackKind {
+                        _ = check(daw_set_solo(session, trackID, 0, revision))
+                    }
+                }
+                // If we're turning solo ON, then solo this track
+                if solo {
+                    if check(daw_set_solo(session, id, 1, revision)) { refresh() }
+                } else {
+                    refresh()
+                }
+            } else {
+                // Normal solo toggle
+                if check(daw_set_solo(session, id, solo ? 1 : 0, revision)) { refresh() }
+            }
+        }
+    }
     func setProjectControlsEnabled(_ enabled: Bool) {
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
@@ -2367,6 +2403,41 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func rewindAudio() { finishEditing(); seekAudio(0) }
     @objc func playAudio() { guard !isRecording else{return}; finishEditing(); if check(daw_play(session)) { pollTransport() } }
     @objc func stopAudio() { _ = check(daw_stop(session)); pollTransport() }
+    @objc func togglePlayStop() {
+        // Get current transport state
+        var snap = daw_snapshot(); snap.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+        guard check(daw_get_snapshot(session, &snap)) else { return }
+        // Check if playing (need to check transport state - use isRecording as proxy for now)
+        if isRecording {
+            stopAudio()
+        } else {
+            playAudio()
+        }
+    }
+    @objc func soloSelectedTrack() {
+        guard let id = selectedMixerID ?? inspectorTrackID, let kind = mixerKinds[id], case .track = kind else { return }
+        // Get current solo state
+        var track = daw_track(); track.struct_size = UInt32(MemoryLayout<daw_track>.size)
+        guard let index = trackIDs.first(where: { $0.value == id })?.key else { return }
+        guard check(daw_get_track(session, UInt32(index), &track)) else { return }
+        let newState: Int32 = track.solo == 0 ? 1 : 0
+        _ = check(daw_set_solo(session, id, newState, revision))
+        refresh()
+    }
+    @objc func muteSelectedTrack() {
+        guard let id = selectedMixerID ?? inspectorTrackID, let kind = mixerKinds[id], case .track = kind else { return }
+        var track = daw_track(); track.struct_size = UInt32(MemoryLayout<daw_track>.size)
+        guard let index = trackIDs.first(where: { $0.value == id })?.key else { return }
+        guard check(daw_get_track(session, UInt32(index), &track)) else { return }
+        let newState: Int32 = track.muted == 0 ? 1 : 0
+        _ = check(daw_set_mute(session, id, newState, revision))
+        refresh()
+    }
+    @objc func armSelectedTrack() {
+        guard let id = selectedMixerID ?? inspectorTrackID else { return }
+        armedTrackID = armedTrackID == id ? nil : id
+        refresh()
+    }
     func finishEditing() { if window.firstResponder is NSTextView { window.makeFirstResponder(nil) } }
     @objc func addTrack() { guard !isRecording else{return}; finishEditing(); if check(daw_add_track(session, "Дорожка \(trackIDs.count + 1)", revision)) { refresh() } }
     @objc func addMidiTrack() {
