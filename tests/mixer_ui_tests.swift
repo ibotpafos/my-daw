@@ -97,6 +97,21 @@ struct MixerUITests {
         let buttons = track.subviews.compactMap { $0 as? MixerActionButton }
         let eqButton = buttons.first { $0.title.contains("AUParametricEQ") }!
         let sendButton = buttons.first { $0.title.contains("Vocal Reverb") }!
+
+        // Section focus is explicit presentation state; it never changes inserts/sends themselves.
+        mixer.setRackMode(.faders)
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(eqButton.isHidden && sendButton.isHidden)
+        mixer.setRackMode(.inserts)
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(!eqButton.isHidden && sendButton.isHidden)
+        mixer.setRackMode(.sends)
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(eqButton.isHidden && !sendButton.isHidden)
+        mixer.setRackMode(.full)
+        mixer.needsLayout = true; mixer.layoutSubtreeIfNeeded()
+        precondition(!eqButton.isHidden && !sendButton.isHidden)
+
         eqButton.performClick(nil); sendButton.performClick(nil)
         precondition(insertEdits == [1008] && sendEdits == [100], "Stable insert/send action IDs")
         mixer.setSendTarget(100)
@@ -163,6 +178,6 @@ struct MixerUITests {
         mixer.contentView.scroll(to:NSPoint(x:12000,y:0));mixer.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.post(name:NSView.boundsDidChangeNotification,object:mixer.contentView)
         precondition(mixer.stripViews[1]!.isHidden)
-        print("Mixer AppKit tests PASS: scales, search, visibility, fixed zones, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
+        print("Mixer AppKit tests PASS: scales, search, visibility, fixed zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }
