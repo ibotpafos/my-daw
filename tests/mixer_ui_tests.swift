@@ -6,6 +6,7 @@ struct MixerUITests {
     static func main() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         for i in 0...1440 {
             let db = -120 + Double(i) / 10
             precondition(abs(MixerScale.decibels(MixerScale.position(db)) - db) < 0.000001)
@@ -20,8 +21,22 @@ struct MixerUITests {
         let window = NSWindow(contentRect:NSRect(x:0,y:0,width:1450,height:930),styleMask:[.titled,.resizable],backing:.buffered,defer:false)
         let mixer = MixerWorkspaceView(frame:NSRect(x:0,y:0,width:1450,height:900))
         window.contentView = mixer
-        var tracks = (1...12).map { index in
-            MixerStripModel(id:UInt64(index),kind:.track,title:["Kick","Snare","Hi-hat","Percussion","Bass","Piano","Pad","Lead Vocal","Double L","Double R","Adlibs","Guitar"][index-1],color:index < 5 ? .systemTeal:index < 8 ? .systemPurple:.systemOrange,volumeDb:-Double(index)/2,outputName:index > 7 ? "Vocal Bus":"Master",sends:index > 7 ? [MixerSendSummary(destination:"Vocal Reverb",gainDb:-18,preFader:false,busID:100)]:[],isSelected:index==8,outputID:index > 7 ? 101:0)
+        let names = ["Kick","Snare","Hi-hat","Percussion","Bass","Piano","Pad","Lead Vocal","Double L","Double R","Adlibs","Guitar"]
+        var tracks: [MixerStripModel] = []
+        for index in 1...12 {
+            var model = MixerStripModel(id: UInt64(index), kind: .track, title: names[index-1])
+            model.color = index < 5 ? NSColor.systemTeal : (index < 8 ? NSColor.systemPurple : NSColor.systemOrange)
+            model.volumeDb = -Double(index) / 2
+            model.isSelected = index == 8
+            model.outputName = index > 7 ? "Vocal Bus" : "Master"
+            model.outputID = index > 7 ? 101 : 0
+            model.hasMidi = (5...7).contains(index)
+            model.inserts = [MixerInsertSummary(name: "AUParametricEQ", id: UInt64(1000+index))]
+            if index > 7 {
+                model.sends = [MixerSendSummary(destination: "Vocal Reverb", gainDb: -18, preFader: false, busID: 100)]
+                model.inserts.append(MixerInsertSummary(name: "AUDynamics", id: UInt64(2000+index)))
+            }
+            tracks.append(model)
         }
         tracks.append(MixerStripModel(id:100,kind:.bus,title:"Vocal Reverb",color:.systemPurple,volumeDb:-3))
         tracks.append(MixerStripModel(id:101,kind:.bus,title:"Vocal Bus",color:.systemOrange))
@@ -51,6 +66,20 @@ struct MixerUITests {
             precondition(id == 8 && bus == 100 && abs(value+6)<0.00001)
             sendChanges += 1
         }
+        var insertEdits: [UInt64] = [], sendEdits: [UInt64] = []
+        mixer.onInsert = { id, action in
+            precondition(id == 8)
+            if case .edit(let pluginID) = action { insertEdits.append(pluginID) }
+        }
+        mixer.onSend = { id, action in
+            precondition(id == 8)
+            if case .edit(let busID) = action { sendEdits.append(busID) }
+        }
+        let buttons = track.subviews.compactMap { $0 as? MixerActionButton }
+        let eqButton = buttons.first { $0.title.contains("AUParametricEQ") }!
+        let sendButton = buttons.first { $0.title.contains("Vocal Reverb") }!
+        eqButton.performClick(nil); sendButton.performClick(nil)
+        precondition(insertEdits == [1008] && sendEdits == [100], "Stable insert/send action IDs")
         mixer.setSendTarget(100)
         precondition(!mixer.stripViews[1]!.fader.isEnabled)
         precondition(track.fader.isEnabled && abs(track.fader.valueDb+18)<0.00001)
@@ -95,14 +124,19 @@ struct MixerUITests {
         mixer.updateMeters(meters)
         mixer.contentView.scroll(to:.zero)
         let url=URL(fileURLWithPath:"build/mixer-ui.png")
-        if let rep=mixer.bitmapImageRepForCachingDisplay(in:mixer.bounds) {
-            mixer.cacheDisplay(in:mixer.bounds,to:rep)
-            if let data=rep.representation(using:.png,properties:[:]) { try data.write(to:url) }
+        guard let rep = mixer.bitmapImageRepForCachingDisplay(in: mixer.bounds) else {
+            fatalError("Could not allocate real AppKit screenshot")
         }
+        mixer.cacheDisplay(in: mixer.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            fatalError("AppKit PNG encoding failed")
+        }
+        try data.write(to: url)
+        precondition(data.count > 10000, "Screenshot must contain actual rendered content")
         // Large session presentation; this is not a 256-audio-track DSP claim.
         mixer.strips=(1...256).map { MixerStripModel(id:UInt64($0),kind:.track,title:"Track \($0)") } + [tracks.last!]
         mixer.needsLayout=true; mixer.layoutSubtreeIfNeeded()
         precondition(mixer.visibleIDs.count == 256 && mixer.stripViews.count == 257)
-        print("Mixer AppKit tests PASS: scales, search, filters, identities, send mapping, disable, clip reset, resize, 256 strips")
+        print("Mixer AppKit tests PASS: scales, search, filters, identities, insert/send action IDs, send mapping, disable, clip reset, resize, 256 strips")
     }
 }
