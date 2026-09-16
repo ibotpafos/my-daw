@@ -1,0 +1,19 @@
+name: Piano roll AppKit typecheck
+on:
+  pull_request:
+    paths:
+      - 'apps/macos/**'
+      - 'engine/bridge/daw.h'
+      - 'scripts/typecheck-macos-ui.sh'
+      - '.github/workflows/piano-roll-appkit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typecheck:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Typecheck Swift AppKit application
+        run: bash scripts/typecheck-macos-ui.sh
