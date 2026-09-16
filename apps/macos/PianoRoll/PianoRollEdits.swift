@@ -39,4 +39,16 @@ enum PREdits {
     static func legato(_ entities:[PRNoteEntity],selected:Set<UInt64>,map:PRTimeMap)throws->[PRNoteEntity]{var following:[UInt64:UInt64]=[:],lanes:[Int:[PRNoteEntity]]=[:];for e in entities{lanes[Int(e.note.channel)*128+Int(e.note.pitch),default:[]].append(e)};for lane in lanes.values{let ordered=lane.sorted{$0.note.startFrames<$1.note.startFrames};var nextStart:UInt64?,previousStart:UInt64?,distinctNext:UInt64?;for e in ordered.reversed(){if previousStart != e.note.startFrames{distinctNext=nextStart};following[e.id]=distinctNext ?? map.clipLength;nextStart=e.note.startFrames;previousStart=e.note.startFrames}};return try checked(entities.map{e in guard selected.contains(e.id) else{return e};var c=e;let start=e.note.startFrames,desired=max(e.note.lengthFrames,(following[e.id] ?? map.clipLength)-start);c.note.lengthFrames=min(desired,min(PRLimits.noteFrames,map.clipLength-start));return c},map:map)}
     static func humanize(_ entities:[PRNoteEntity],selected:Set<UInt64>,timeBeats:Double,velocityAmount:Int,seed:UInt64,map:PRTimeMap)throws->[PRNoteEntity]{guard timeBeats.isFinite,timeBeats>=0 else{throw PREditError.invalidNote};var generator=PRRandom(seed:seed);return try checked(try entities.map{e in guard selected.contains(e.id) else{return e};let n=e.note,l=map.length(n),j=generator.signedUnit()*timeBeats,s=min(map.durationBeats-l,max(0,map.start(n)+j)),v=Int(n.velocity)+Int((generator.signedUnit()*Double(max(0,min(126,velocityAmount)))).rounded());var c=e;if abs(s-map.start(n))>1e-12{c.note=try map.note(start:s,end:s+l,pitch:n.pitch,channel:n.channel,velocity:UInt8(max(1,min(127,v))))}else{c.note.velocity=UInt8(max(1,min(127,v)))};return c},map:map)}
 }
-struct PRRandom{private var state:UInt64;init(seed:UInt64){state=seed}mutating func signedUnit()->Double{state &+= 0x9e3779b97f4a7c15;var z=state;z=(z^(z>>30)) &* 0xbf58476d1ce4e5b9;z=(z^(z>>27)) &* 0x94d049bb133111eb;z ^= z>>31;return Double(z>>11)/Double(UInt64(1)<<53)*2-1}}
+
+struct PRRandom {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func signedUnit() -> Double {
+        state &+= 0x9e3779b97f4a7c15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
+        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+        z ^= z >> 31
+        return Double(z >> 11) / Double(UInt64(1) << 53) * 2 - 1
+    }
+}
