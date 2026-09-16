@@ -53,12 +53,14 @@ final class PRProState {
     }
 
     func receive(notes: [PianoRollNote], map: PRTimeMap?, editable: Bool) {
+        let pending = pendingCommit
+        let expectedEcho = pending?.map(\.note)
         if gesture != nil {
             gesture = nil
             preview = nil
             status = "Проект изменился во время жеста — жест отменён."
         }
-        let preferred = pendingCommit ?? store.entities
+        let preferred = pending ?? store.entities
         store.replace(with: notes, preferring: preferred)
         pendingCommit = nil
         timeMap = map
@@ -66,6 +68,11 @@ final class PRProState {
         selection.formIntersection(Set(store.entities.map(\.id)))
         index = PRNoteIndex(store.entities)
         generation &+= 1
+        if let expectedEcho {
+            status = notes == expectedEcho
+                ? "Изменение применено · ⌘Z — отменить в проекте"
+                : "Изменение отклонено движком · показана актуальная версия проекта"
+        }
         changed()
     }
 
@@ -180,7 +187,7 @@ final class PRProState {
         store.replace(with: candidate.map(\.note), preferring: candidate)
         index = PRNoteIndex(store.entities)
         selection.formIntersection(Set(store.entities.map(\.id)))
-        status = "Изменение применено · ⌘Z — отменить в проекте"
+        status = "Применяем изменение…"
         changed()
         onCommit?(candidate.map(\.note))
     }
