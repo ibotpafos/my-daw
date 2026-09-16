@@ -56,7 +56,10 @@ enum WorkspaceControlStyle {
         button.wantsLayer = true
         button.layer?.cornerRadius = 5
         button.layer?.backgroundColor = DAWDesignTokens.Color.raisedSurface.cgColor
-        button.imageSymbolConfiguration = .init(pointSize: 12, weight: .medium)
+        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        if let configured = button.image?.withSymbolConfiguration(configuration) {
+            button.image = configured
+        }
         button.contentTintColor = DAWDesignTokens.Color.text
         button.heightAnchor.constraint(equalToConstant: height).isActive = true
     }
