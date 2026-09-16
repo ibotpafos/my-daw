@@ -144,6 +144,7 @@ int main(int argc, char** argv) {
     MIDIClientRef client = 0;
     MIDIPortRef port = 0;
     Counters counters;
+    Counters* counterPtr = &counters;
 
     OSStatus status = MIDIClientCreate(CFSTR("My DAW MIDI hardware probe"), nullptr, nullptr, &client);
     if (status != noErr) {
@@ -152,7 +153,7 @@ int main(int argc, char** argv) {
     }
     status = MIDIInputPortCreateWithProtocol(
         client, CFSTR("Probe input"), kMIDIProtocol_1_0, &port,
-        ^(const MIDIEventList* eventList, void*) { receive(eventList, counters); });
+        ^(const MIDIEventList* eventList, void*) { receive(eventList, *counterPtr); });
     if (status != noErr) {
         std::cerr << "MIDIInputPortCreateWithProtocol failed: " << status << '\n';
         MIDIClientDispose(client);
