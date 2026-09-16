@@ -51,7 +51,9 @@ endif()
 target_link_libraries(daw_core PUBLIC Threads::Threads)
 target_compile_options(daw_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 if(DAW_SANITIZERS)
-  target_compile_options(daw_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+  # A recovered UBSan diagnostic can otherwise leave CTest green despite UB.
+  # Propagate the fatal policy to the test executables as well as the library.
+  target_compile_options(daw_core PUBLIC -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
   target_link_options(daw_core PUBLIC -fsanitize=address,undefined)
 endif()
 if(DAW_THREAD_SANITIZER)
