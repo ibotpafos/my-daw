@@ -107,6 +107,7 @@ extension DraftApp {
         wireRackParameters()
         wireInspectorSignalChain()
         wireTimelineNavigation()
+        wireArrangementOverview()
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
             self.workspaceDock?.select(preference.dockTab)
@@ -240,6 +241,7 @@ extension DraftApp {
         if check(result) { refresh(); pollTransport() }
     }
     func updateWorkspaceChrome() {
+        updateArrangementOverview()
         channelRack.setParameterEditingEnabled(!isRecording && !midiTakeArmed && automationGesture == nil && pluginParameterGesture == nil)
         timelineRuler.cycleRange.editingEnabled = !isRecording && !midiTakeArmed
         projectTitleLabel.stringValue = currentURL?.deletingPathExtension().lastPathComponent ?? "Новый черновик"
