@@ -1,6 +1,11 @@
 import AppKit
 
 @MainActor
+private final class PRInspectorStack: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
+@MainActor
 final class PRProWorkspaceView: NSView {
     let state: PRProState
     let canvas: PRProCanvas
@@ -10,7 +15,7 @@ final class PRProWorkspaceView: NSView {
     private let velocityLane: PRProVelocityLane
     private let laneGrip = PRProLaneGrip()
     private let toolbar = NSStackView()
-    private let inspector = NSStackView()
+    private let inspector = PRInspectorStack()
     let inspectorScroll = NSScrollView() // Internal read-only surface for native layout acceptance.
     private let quantizeStrength = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let statusField = NSTextField(labelWithString: "")
@@ -62,6 +67,8 @@ final class PRProWorkspaceView: NSView {
         keyboard = PRProKeyboardView(state: state)
         velocityLane = PRProVelocityLane(state: state)
         super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
         canvas.workspace = self
         ruler.workspace = self
         keyboard.workspace = self
@@ -115,8 +122,10 @@ final class PRProWorkspaceView: NSView {
         toolControl.target = self; toolControl.action = #selector(changeTool)
         toolControl.selectedSegment = PRTool.select.rawValue
         for (index, tool) in PRTool.allCases.enumerated() {
+            toolControl.setWidth(30, forSegment: index)
             toolControl.setToolTip("\(tool.title) · \(tool.shortcut)", forSegment: index)
         }
+        toolControl.setContentCompressionResistancePriority(.required, for: .horizontal)
         gridPopup.addItems(withTitles: PRGridDivision.allCases.map(\.title))
         gridPopup.selectItem(at: PRGridDivision.sixteenth.rawValue)
         gridPopup.target = self; gridPopup.action = #selector(changeGrid)
@@ -145,6 +154,7 @@ final class PRProWorkspaceView: NSView {
         let musicRow = NSStackView(views: [rootPopup, scalePopup, scaleLock, foldButton, followButton,
             separator(), quantize, legato, humanize, reverse, flexible()])
         for row in [editRow, musicRow] {
+            row.distribution = .fill
             row.spacing = 6; row.alignment = .centerY
             toolbar.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true
@@ -198,8 +208,17 @@ final class PRProWorkspaceView: NSView {
         rampTo.identifier = NSUserInterfaceItemIdentifier("piano.roll.ramp.to")
         rampFrom.target = self; rampFrom.action = #selector(previewRampNow)
         rampTo.target = self; rampTo.action = #selector(previewRampNow)
-        let ramp = NSStackView(views: [rampFrom, NSTextField(labelWithString: "→"), rampTo])
+        let rampArrow = NSTextField(labelWithString: "→")
+        let ramp = NSStackView(views: [rampFrom, rampArrow, rampTo])
+        ramp.distribution = .fill
         ramp.spacing = 4; ramp.alignment = .centerY
+        rampArrow.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        rampFrom.widthAnchor.constraint(equalTo: rampTo.widthAnchor).isActive = true
+        rampFrom.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        for field in [rampFrom, rampTo] {
+            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         inspector.addArrangedSubview(ramp)
         inspector.addArrangedSubview(button("Preview Ramp", #selector(previewRampNow)))
         inspector.addArrangedSubview(divider())
@@ -379,6 +398,13 @@ final class PRProWorkspaceView: NSView {
     }
 
     func focusCanvas() { window?.makeFirstResponder(canvas) }
+
+    func scrollInspectorToTop() {
+        guard let document = inspectorScroll.documentView else { return }
+        let y = document.isFlipped ? 0 : max(0, document.bounds.height - inspectorScroll.contentSize.height)
+        inspectorScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        inspectorScroll.reflectScrolledClipView(inspectorScroll.contentView)
+    }
 
     func scroll(to point: NSPoint) {
         let maxX = max(0, canvas.bounds.width - scrollView.contentSize.width)

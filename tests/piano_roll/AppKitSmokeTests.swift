@@ -44,6 +44,7 @@ struct AppKitSmokeTests {
 
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         let appDelegate = DraftApp()
         appDelegate.tempoBars = (0..<9).map { index in
             ProjectBarStart(frame: UInt64(index * 96_000), beats: Double(index * 4), number: index + 1)
@@ -190,17 +191,44 @@ struct AppKitSmokeTests {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
         }
+        workspace.fit(selectionOnly: false)
+        workspace.scrollInspectorToTop()
+        workspace.layoutSubtreeIfNeeded()
+        check(workspace.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
+              "native screenshots use production dark appearance")
+        check(from.frame.width >= 40 && to.frame.width >= 40 && abs(from.frame.width - to.frame.width) < 1,
+              "velocity ramp endpoints have equal usable field widths")
+        check(to.frame.maxX <= to.superview!.bounds.maxX + 1,
+              "second velocity ramp endpoint stays inside its row")
+        let document = workspace.inspectorScroll.documentView!
+        let selectionTitle = descendants(document).compactMap { $0 as? NSTextField }.first { $0.stringValue == "SELECTION" }!
+        let titleRect = document.convert(selectionTitle.bounds, from: selectionTitle)
+        check(workspace.inspectorScroll.contentView.documentVisibleRect.intersects(titleRect),
+              "inspector opens at Selection rather than its bottom controls")
         try screenshot("piano-roll-1280.png")
         window.setContentSize(NSSize(width: 980, height: 560))
         window.layoutIfNeeded(); workspace.layoutSubtreeIfNeeded()
         check(workspace.canvas.frame.width > 400, "minimum window still has usable note canvas")
         check(workspace.inspectorScroll.documentView!.frame.height > workspace.inspectorScroll.contentSize.height,
               "minimum window keeps long inspector scrollable instead of clipping controls")
+        workspace.fit(selectionOnly: false)
+        workspace.scrollInspectorToTop()
+        workspace.layoutSubtreeIfNeeded()
         try screenshot("piano-roll-980.png")
 
         let controller = PRProWindowController(state: state)
         check(controller.window?.minSize.width == 980, "dedicated editor window has desktop minimum width")
         check(controller.window?.contentView === controller.workspace, "dedicated window owns pro workspace")
+        controller.prepareForPresentation()
+        let shown = controller.workspace.canvas.visibleRect
+        check(state.entities.allSatisfy { entity in
+            guard let rect = PRProDrawing.noteRect(entity.note, state: state, rows: controller.workspace.rows) else { return false }
+            return shown.intersects(rect)
+        }, "first presentation brings recorded note pitches into view")
+        let priorOrigin = controller.workspace.scrollOrigin
+        controller.prepareForPresentation()
+        check(controller.workspace.scrollOrigin == priorOrigin,
+              "reopening the same editor preserves its viewport")
         controller.close()
         window.close()
 

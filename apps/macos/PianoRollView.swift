@@ -200,6 +200,7 @@ final class PianoRollEditorView: NSView {
     /// The host must replace binding, metadata and notes in ONE receive. Property
     /// didSet callbacks alone would acknowledge a pending commit with old notes.
     func apply(model: InspectorMidiModel?) {
+        let previousContext = context
         syncing = true
         context = model?.context
         notes = model?.notes ?? []
@@ -208,6 +209,12 @@ final class PianoRollEditorView: NSView {
         editorEnabled = model?.editable ?? false
         syncing = false
         syncState()
+        if let next = context, previousContext?.sameClip(as: next) != true,
+           let controller = windowController, controller.window?.isVisible == true {
+            controller.workspace.layoutSubtreeIfNeeded()
+            controller.workspace.fit(selectionOnly: false)
+            controller.workspace.scrollInspectorToTop()
+        }
     }
 
     private func syncState() {

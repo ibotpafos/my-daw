@@ -6,6 +6,7 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
     let workspace: PRProWorkspaceView
     var onClose: (() -> Void)?
     private var playheadTimer: Timer?
+    private var fittedInitialContent = false
 
     init(state: PRProState) {
         self.state = state
@@ -14,6 +15,7 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Piano Roll — My DAW"
+        window.appearance = NSAppearance(named: .darkAqua)
         window.minSize = NSSize(width: 980, height: 560)
         window.isReleasedWhenClosed = false
         window.contentView = workspace
@@ -31,9 +33,22 @@ final class PRProWindowController: NSWindowController, NSWindowDelegate {
         }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        workspace.refreshFromState()
-        workspace.focusCanvas()
+        prepareForPresentation()
         startPlayheadPolling()
+    }
+
+    /// Initial framing belongs to presentation, after the real viewport has
+    /// been laid out. A new editor must not start at MIDI pitch 127.
+    func prepareForPresentation() {
+        window?.layoutIfNeeded()
+        workspace.layoutSubtreeIfNeeded()
+        workspace.refreshFromState()
+        if !fittedInitialContent {
+            workspace.fit(selectionOnly: false)
+            workspace.scrollInspectorToTop()
+            fittedInitialContent = true
+        }
+        workspace.focusCanvas()
     }
 
     private func startPlayheadPolling() {
