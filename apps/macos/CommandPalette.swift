@@ -31,10 +31,14 @@ enum DAWCommandPaletteKey {
 @MainActor
 private final class DAWCommandPalettePanel: NSPanel {
     var onCancel: (() -> Void)?
+    var onToggle: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if DAWCommandPaletteKey.isToggle(event) {
-            if !event.isARepeat { onCancel?() }
+            if let input = firstResponder as? NSTextInputClient, input.hasMarkedText() {
+                return super.performKeyEquivalent(with: event)
+            }
+            if !event.isARepeat { onToggle?() }
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -101,9 +105,11 @@ private final class DAWCommandPaletteRowView: NSTableCellView {
 
     func configure(_ item: DAWCommandSearchItem) {
         titleLabel.stringValue = item.title
-        pathLabel.stringValue = item.path
+        pathLabel.stringValue = [item.path, item.aliases.joined(separator: "; ")]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+        toolTip = [item.title, pathLabel.stringValue].joined(separator: " — ")
         shortcutLabel.stringValue = item.shortcut
-        setAccessibilityLabel([item.title, item.path, item.shortcut].filter { !$0.isEmpty }.joined(separator: ", "))
+        setAccessibilityLabel(([item.title, item.path, item.shortcut] + item.aliases).filter { !$0.isEmpty }.joined(separator: ", "))
     }
 }
 
@@ -120,6 +126,11 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
     private let scopes = NSSegmentedControl(labels: ["Все", "Недавние", "Частые"],
                                             trackingMode: .selectOne, target: nil, action: nil)
     private let clearButton = NSButton(title: "Очистить историю", target: nil, action: nil)
+    private let aliasButton = NSButton(title: "Свои названия…", target: nil, action: nil)
+    private let aliasEditor = DAWCommandAliasEditor(frame: .zero)
+    private var aliasEditorHeight: NSLayoutConstraint!
+    private var editingAliasID: String?
+    private let aliasStore: DAWCommandAliasStore
     private let resultLabel = NSTextField(labelWithString: "")
     private let usageStore: DAWCommandUsageStore
     private weak var hostWindow: NSWindow?
@@ -128,8 +139,10 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
     private var visibleEntries: [DAWCommandPaletteEntry] = []
     private var dismissing = false
 
-    init(usageStore: DAWCommandUsageStore = DAWCommandUsageStore()) {
+    init(usageStore: DAWCommandUsageStore = DAWCommandUsageStore(),
+         aliasStore: DAWCommandAliasStore = DAWCommandAliasStore()) {
         self.usageStore = usageStore
+        self.aliasStore = aliasStore
         super.init()
         configurePanel()
     }
@@ -147,6 +160,7 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         // field editor. No menu target is ever resolved against the palette.
         hostWindow = window
         previousFirstResponder = window.firstResponder
+        aliasStore.reload()
         entries = collectMenuCommands()
         scopes.selectedSegment = DAWCommandPaletteScope.all.rawValue
         searchField.stringValue = ""
@@ -172,6 +186,9 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         let responder = previousFirstResponder
         hostWindow = nil
         previousFirstResponder = nil
+        editingAliasID = nil
+        aliasEditor.isHidden = true
+        aliasEditorHeight.constant = 0
         entries.removeAll()
         visibleEntries.removeAll()
         host?.removeChildWindow(panel)
@@ -187,7 +204,8 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
 
     private func configurePanel() {
         panel.delegate = self
-        panel.onCancel = { [weak self] in self?.dismiss() }
+        panel.onCancel = { [weak self] in self?.cancelEditorOrDismiss() }
+        panel.onToggle = { [weak self] in self?.dismiss() }
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = false
@@ -216,6 +234,14 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         scopes.target = self
         scopes.action = #selector(scopeChanged)
         scopes.setAccessibilityLabel("Все команды, недавние или частые")
+        aliasButton.target = self
+        aliasButton.action = #selector(editAliases)
+        aliasButton.bezelStyle = .rounded
+        aliasButton.controlSize = .small
+        aliasButton.setAccessibilityHelp("Задать свои поисковые названия выбранной команды, не выполняя её")
+        aliasEditor.isHidden = true
+        aliasEditor.onSave = { [weak self] values in self?.saveAliases(values) }
+        aliasEditor.onCancel = { [weak self] in self?.closeAliasEditor() }
         clearButton.target = self
         clearButton.action = #selector(clearHistory)
         clearButton.bezelStyle = .rounded
@@ -234,7 +260,7 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         tableView.target = self
         tableView.doubleAction = #selector(invokeClickedRow)
         tableView.onCommit = { [weak self] in self?.invokeSelection() }
-        tableView.onCancel = { [weak self] in self?.dismiss() }
+        tableView.onCancel = { [weak self] in self?.cancelEditorOrDismiss() }
         tableView.setAccessibilityLabel("Результаты палитры команд")
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -246,11 +272,16 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         let hint = NSTextField(labelWithString: "↑↓ выбрать    ↩ выполнить    esc / ⌘K закрыть")
         hint.font = .systemFont(ofSize: 10, weight: .regular)
         hint.textColor = .secondaryLabelColor
-        for view in [searchField, scopes, clearButton, scroll, resultLabel, hint] as [NSView] {
+        for view in [searchField, scopes, aliasButton, clearButton, scroll, aliasEditor, resultLabel, hint] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
+        aliasEditorHeight = aliasEditor.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            aliasEditorHeight,
+            aliasEditor.leadingAnchor.constraint(equalTo: searchField.leadingAnchor),
+            aliasEditor.trailingAnchor.constraint(equalTo: searchField.trailingAnchor),
+            aliasEditor.bottomAnchor.constraint(equalTo: resultLabel.topAnchor, constant: -8),
             searchField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
             searchField.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
             searchField.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
@@ -259,11 +290,13 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
             scopes.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
             clearButton.trailingAnchor.constraint(equalTo: searchField.trailingAnchor),
             clearButton.centerYAnchor.constraint(equalTo: scopes.centerYAnchor),
-            clearButton.leadingAnchor.constraint(greaterThanOrEqualTo: scopes.trailingAnchor, constant: 12),
+            aliasButton.trailingAnchor.constraint(equalTo: clearButton.leadingAnchor, constant: -6),
+            aliasButton.leadingAnchor.constraint(greaterThanOrEqualTo: scopes.trailingAnchor, constant: 6),
+            aliasButton.centerYAnchor.constraint(equalTo: scopes.centerYAnchor),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             scroll.topAnchor.constraint(equalTo: scopes.bottomAnchor, constant: 10),
-            scroll.bottomAnchor.constraint(equalTo: resultLabel.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: aliasEditor.topAnchor, constant: -8),
             resultLabel.leadingAnchor.constraint(equalTo: searchField.leadingAnchor),
             resultLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             hint.trailingAnchor.constraint(equalTo: searchField.trailingAnchor),
@@ -280,7 +313,7 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         case #selector(NSResponder.moveDown(_:)): moveSelection(1)
         case #selector(NSResponder.moveUp(_:)): moveSelection(-1)
         case #selector(NSResponder.insertNewline(_:)): invokeSelection()
-        case #selector(NSResponder.cancelOperation(_:)): dismiss()
+        case #selector(NSResponder.cancelOperation(_:)): cancelEditorOrDismiss()
         default: return false
         }
         return true
@@ -293,7 +326,7 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
         guard visibleEntries.indices.contains(row) else { return nil }
         let view = tableView.makeView(withIdentifier: DAWCommandPaletteRowView.reuseIdentifier, owner: self)
             as? DAWCommandPaletteRowView ?? DAWCommandPaletteRowView(frame: .zero)
-        view.configure(visibleEntries[row].searchItem)
+        view.configure(aliasStore.aliases.applying(to: visibleEntries[row].searchItem))
         return view
     }
 
@@ -305,19 +338,61 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
     @objc private func scopeChanged() { applyFilter(); focusSearch() }
     @objc private func clearHistory() { usageStore.clear(); applyFilter(); focusSearch() }
 
-    private func applyFilter() {
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        aliasButton.isEnabled = editingAliasID == nil && visibleEntries.indices.contains(tableView.selectedRow)
+    }
+
+    @objc private func editAliases() {
+        guard editingAliasID == nil, visibleEntries.indices.contains(tableView.selectedRow) else { return }
+        let item = visibleEntries[tableView.selectedRow].searchItem
+        // Freeze the target ID: scrolling/clicking another result cannot retarget
+        // an in-progress preference edit to a different command.
+        editingAliasID = item.id
+        aliasEditor.edit(aliasStore.aliases.applying(to: item))
+        aliasEditor.isHidden = false
+        aliasEditorHeight.constant = 90
+        aliasButton.isEnabled = false
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.makeFirstResponder(aliasEditor.input)
+        aliasEditor.input.selectText(nil)
+    }
+
+    private func saveAliases(_ values: [String]) {
+        guard let id = editingAliasID else { return }
+        do {
+            try aliasStore.set(values, for: id)
+            closeAliasEditor()
+            applyFilter(preservingID: id)
+        } catch { aliasEditor.showError(error.localizedDescription) }
+    }
+
+    private func closeAliasEditor() {
+        editingAliasID = nil
+        aliasEditor.isHidden = true
+        aliasEditorHeight.constant = 0
+        aliasButton.isEnabled = visibleEntries.indices.contains(tableView.selectedRow)
+        focusSearch()
+    }
+
+    private func cancelEditorOrDismiss() {
+        if editingAliasID != nil { closeAliasEditor() } else { dismiss() }
+    }
+
+    private func applyFilter(preservingID id: String? = nil) {
         let scope = DAWCommandPaletteScope(rawValue: scopes.selectedSegment) ?? .all
-        let commands = usageStore.history.orderedCommands(entries.map(\.searchItem), scope: scope)
+        let commands = usageStore.history.orderedCommands(entries.map { aliasStore.aliases.applying(to: $0.searchItem) }, scope: scope)
         let index = Dictionary(uniqueKeysWithValues: entries.map { ($0.searchItem.id, $0) })
         visibleEntries = DAWCommandPaletteSearch.results(in: commands, query: searchField.stringValue)
             .compactMap { index[$0.id] }
         clearButton.isEnabled = !usageStore.history.entries.isEmpty
         tableView.reloadData()
         resultLabel.stringValue = visibleEntries.isEmpty ? "Нет доступных команд" : "Показано: \(visibleEntries.count)"
+        aliasButton.isEnabled = editingAliasID == nil && !visibleEntries.isEmpty
         if visibleEntries.isEmpty { tableView.deselectAll(nil) }
         else {
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            tableView.scrollRowToVisible(0)
+            let selected = visibleEntries.firstIndex { $0.searchItem.id == id } ?? 0
+            tableView.selectRowIndexes(IndexSet(integer: selected), byExtendingSelection: false)
+            tableView.scrollRowToVisible(selected)
         }
     }
 
@@ -336,6 +411,8 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
     }
 
     private func invokeSelection() {
+        // Never turn Return/double-click during an alias edit into a DAW action.
+        guard editingAliasID == nil else { return }
         guard visibleEntries.indices.contains(tableView.selectedRow), let host = hostWindow,
               host.isVisible, host.attachedSheet == nil, NSApp.modalWindow == nil else { return }
         let entry = visibleEntries[tableView.selectedRow]

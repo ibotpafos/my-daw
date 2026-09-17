@@ -73,3 +73,5 @@ apps/macos/CommandPalette.swift
 apps/macos/Workspace/ArrangementOverviewGeometry.swift
 apps/macos/Workspace/ArrangementOverviewView.swift
 apps/macos/Workspace/ArrangementOverviewBinding.swift
+apps/macos/CommandAliases.swift
+apps/macos/CommandAliasEditor.swift
