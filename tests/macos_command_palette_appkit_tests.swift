@@ -25,6 +25,7 @@ struct CommandPaletteAppKitTests {
     static func main() {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
+        NSApp.finishLaunching()
         let savedMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = savedMenu }
         let suite = "my-daw.palette-appkit-tests.\(UUID().uuidString)"
@@ -54,13 +55,19 @@ struct CommandPaletteAppKitTests {
         menu.addItem(alpha)
         menu.addItem(beta)
         host.makeKeyAndOrderFront(nil)
+        host.makeMainWindow()
         NSApp.activate()
         host.makeFirstResponder(target)
         drain()
 
         func openPalette() -> (NSWindow, NSSearchField, NSTableView, NSSegmentedControl) {
             host.makeKeyAndOrderFront(nil)
+            host.makeMainWindow()
             host.makeFirstResponder(target)
+            drain()
+            expect(host.firstResponder === target, "fixture restores source responder")
+            let nilTarget = NSApp.target(forAction: beta.action!, to: nil, from: beta) as AnyObject?
+            print("palette fixture: key=\(NSApp.keyWindow === host), main=\(NSApp.mainWindow === host), nilTarget=\(nilTarget === target)")
             controller.present(from: host)
             drain()
             expect(controller.isVisible, "palette opens")
@@ -85,7 +92,7 @@ struct CommandPaletteAppKitTests {
         }
 
         let (_, search, table, _) = openPalette()
-        expect(table.numberOfRows == 2, "explicit and nil-target menu commands are indexed")
+        expect(table.numberOfRows == 2, "explicit and nil-target menu commands are indexed: rows=\(table.numberOfRows), alpha=\(alpha.isEnabled), beta=\(beta.isEnabled)")
         expect(usage.history.entries.isEmpty, "opening palette does not record usage")
         expect(boundKey(search, #selector(NSResponder.moveDown(_:))), "field-editor down handled")
         expect(table.selectedRow == 1, "field-editor down selects next result")
