@@ -53,19 +53,49 @@ struct PRNoteEntity: Equatable, Sendable {
     var note: PianoRollNote
 }
 
+/// The binding is ephemeral. A new/opened document gets a fresh UUID even
+/// when its saved revision, track IDs and MIDI notes happen to be identical.
+struct PRClipContext: Equatable, Sendable {
+    var documentID: UUID
+    var trackID: UInt64
+    var clipIndex: Int
+    var revision: UInt64
+
+    func sameClip(as other: PRClipContext) -> Bool {
+        documentID == other.documentID && trackID == other.trackID && clipIndex == other.clipIndex
+    }
+}
+
+struct PRCommitRequest: Sendable {
+    var context: PRClipContext
+    var clipStart: UInt64
+    var clipLength: UInt64
+    var original: [PianoRollNote]
+    var notes: [PianoRollNote]
+}
+
 struct PRNoteStore {
     private(set) var entities: [PRNoteEntity] = []
     private(set) var nextID: UInt64 = 1
 
     init(notes: [PianoRollNote] = []) { replace(with: notes) }
 
-    // Matching by value AND occurrence preserves two identical overlapping notes.
-    // A host sort or accepted echo must not make a selection jump to another note.
+    // Match value AND occurrence: identical overlapping notes are distinct.
+    // Exhaustion is an explicit ID-space reset, never a trapping increment.
     mutating func replace(with notes: [PianoRollNote], preferring preferred: [PRNoteEntity]? = nil) {
         let prior = preferred ?? entities
+        let greatest = prior.map(\.id).max() ?? 0
+        let unique = Set(prior.map(\.id))
+        if greatest >= UInt64.max - UInt64(notes.count) ||
+            nextID >= UInt64.max - UInt64(notes.count) ||
+            unique.count != prior.count || unique.contains(0) {
+            entities = notes.enumerated().map { PRNoteEntity(id: UInt64($0.offset) + 1, note: $0.element) }
+            nextID = UInt64(notes.count) + 1
+            return
+        }
         var buckets: [PianoRollNote: [UInt64]] = [:]
         for entity in prior.reversed() { buckets[entity.note, default: []].append(entity.id) }
-        if let greatest = prior.map(\.id).max() { nextID = max(nextID, greatest + 1) }
+        nextID = max(nextID, greatest + 1)
         entities = notes.map { note in
             if let id = buckets[note]?.popLast() { return PRNoteEntity(id: id, note: note) }
             defer { nextID += 1 }

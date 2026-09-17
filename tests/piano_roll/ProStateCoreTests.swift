@@ -4,9 +4,12 @@ import Foundation
     @MainActor static func main() throws {
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ name: String) {
-            precondition(condition(), name)
+            guard condition() else {
+                FileHandle.standardError.write(Data("FAIL \(name)\n".utf8))
+                exit(1)
+            }
             checks += 1
-            print("PASS \(name)")
+            FileHandle.standardOutput.write(Data("PASS \(name)\n".utf8))
         }
         let map = try PRTimeMap(clipStart: 100_000, clipLength: 384_000,
             toBeat: { Double($0) / 24_000 },
@@ -93,7 +96,7 @@ import Foundation
         state.insertChord(root: 60, kind: .minor7, inversion: 1)
         check(commits == 7 && state.selection.count == 4, "chord stamp commits once and selects voices")
         check(state.selectedEntities.allSatisfy { $0.note.channel == 2 && $0.note.velocity == 99 }, "chord stamp carries default MIDI attributes")
-        check(state.chordCandidates().contains(where: { $0.hasPrefix("C Minor") }), "selected chord gets candidate label")
+        check(state.chordCandidates().contains(where: { $0 == "C Min7/D♯" }), "selected chord gets candidate label")
         let beforeReverse = state.entities
         state.reverseSelection()
         check(commits == 7, "reversing simultaneous chord is no-op")

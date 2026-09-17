@@ -33,11 +33,11 @@ extension PRProState {
                                                   nextID: try previewBaseNextID(gesture),
                                                   map: map)
             selection = result.selection
-            previewGesture(result.entities)
+            previewGesture(result.entities, transaction: gesture.id)
             status = "Предпросмотр · Ratchet ×\(count) · gate \(Int((gate * 100).rounded()))%"
             changed()
         } catch {
-            cancelGesture()
+            cancelGesture(transaction: gesture.id)
             fail(error)
         }
     }
@@ -54,11 +54,11 @@ extension PRProState {
                                                 descending: descending,
                                                 map: map)
             selection = result.selection
-            previewGesture(result.entities)
+            previewGesture(result.entities, transaction: gesture.id)
             status = "Предпросмотр · Strum \(descending ? "↓" : "↑") · \(String(format: "%.3f", spreadBeats)) beat"
             changed()
         } catch {
-            cancelGesture()
+            cancelGesture(transaction: gesture.id)
             fail(error)
         }
     }
@@ -75,11 +75,11 @@ extension PRProState {
                                                        to: to,
                                                        map: map)
             selection = result.selection
-            previewGesture(result.entities)
+            previewGesture(result.entities, transaction: gesture.id)
             status = "Предпросмотр · Velocity \(from) → \(to)"
             changed()
         } catch {
-            cancelGesture()
+            cancelGesture(transaction: gesture.id)
             fail(error)
         }
     }

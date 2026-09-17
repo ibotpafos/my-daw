@@ -5,21 +5,39 @@ final class PRProState {
     enum GestureSource { case pointer, transform }
 
     struct Gesture {
-        var original: [PRNoteEntity]
-        var originalSelection: Set<UInt64>
-        var generation: UInt64
-        var source: GestureSource
+        let id: UUID
+        let original: [PRNoteEntity]
+        let originalSelection: Set<UInt64>
+        let generation: UInt64
+        let source: GestureSource
+    }
+
+    private struct PendingCommit {
+        let id: UUID
+        let candidate: [PRNoteEntity]
+        let original: [PRNoteEntity]
+        let originalSelection: Set<UInt64>
+        let selection: Set<UInt64>
+        let context: PRClipContext?
+        let generation: UInt64
+        let clipStart: UInt64
+        let clipLength: UInt64
     }
 
     private var store = PRNoteStore()
-    private var pendingCommit: [PRNoteEntity]?
+    private var pendingCommit: PendingCommit?
+    private var hostEditable = false
     private(set) var gesture: Gesture?
     private(set) var preview: [PRNoteEntity]?
     private(set) var generation: UInt64 = 0
-    private(set) var editable = false
     private(set) var index = PRNoteIndex([])
+    private(set) var context: PRClipContext?
+    private(set) var timeMap: PRTimeMap?
 
-    var timeMap: PRTimeMap?
+    /// A missing host echo freezes writes. The last confirmed store is retained.
+    var editable: Bool { hostEditable && pendingCommit == nil }
+    var awaitingCommit: Bool { pendingCommit != nil }
+    var canPerformEdit: Bool { editable && gesture == nil && timeMap != nil }
     var selection = Set<UInt64>()
     var tool: PRTool = .select
     var grid = PRGrid()
@@ -40,156 +58,188 @@ final class PRProState {
     var humanizeVelocity = 6
     var status = "V — выбор · B — нота · Q — квантовать · ⌘Z — undo проекта"
 
+    /// Production uses the revision-bound request; the note-only callback is
+    /// retained for embedders/tests, which must echo an authoritative snapshot.
+    var onCommitRequest: ((PRCommitRequest) -> Void)?
     var onCommit: (([PianoRollNote]) -> Void)?
     var onChange: (() -> Void)?
 
     var entities: [PRNoteEntity] { preview ?? store.entities }
     var selectedEntities: [PRNoteEntity] { entities.filter { selection.contains($0.id) } }
-    var nextID: UInt64 { max(store.nextID, (entities.map(\.id).max() ?? 0) + 1) }
+    var nextID: UInt64 {
+        let maximum = entities.map(\.id).max() ?? 0
+        return max(store.nextID, maximum == UInt64.max ? UInt64.max : maximum + 1)
+    }
     var isGesturing: Bool { gesture != nil }
     var isTransformPreview: Bool { gesture?.source == .transform }
     var pitchRows: PRPitchRows {
         PRPitchRows(used: fold ? Set(store.entities.map { Int($0.note.pitch) }) : nil)
     }
 
-    func receive(notes: [PianoRollNote], map: PRTimeMap?, editable: Bool) {
+    func receive(notes: [PianoRollNote], map: PRTimeMap?, editable: Bool,
+                 context incomingContext: PRClipContext? = nil) {
         let pending = pendingCommit
-        let expectedEcho = pending?.map(\.note)
-        if gesture != nil {
-            gesture = nil
-            preview = nil
-            status = "Проект изменился во время жеста — жест отменён."
+        let priorGesture = gesture
+        let sameClip: Bool
+        switch (context, incomingContext) {
+        case let (old?, new?): sameClip = old.sameClip(as: new)
+        case (nil, nil): sameClip = true
+        default: sameClip = false
         }
-        let preferred = pending ?? store.entities
-        store.replace(with: notes, preferring: preferred)
+        // Repeated UI refreshes of one revision are not external edits. This
+        // lets the transport refresh capture state without cancelling drags.
+        if incomingContext != nil, incomingContext == context, pending == nil,
+           notes == store.entities.map(\.note), hostEditable == (editable && map != nil),
+           map?.clipStart == timeMap?.clipStart, map?.clipLength == timeMap?.clipLength {
+            return
+        }
+        gesture = nil
+        preview = nil
         pendingCommit = nil
-        timeMap = map
-        self.editable = editable && map != nil
-        selection.formIntersection(Set(store.entities.map(\.id)))
-        index = PRNoteIndex(store.entities)
         generation &+= 1
-        if let expectedEcho {
-            status = notes == expectedEcho
+        context = incomingContext
+        timeMap = map
+        hostEditable = editable && map != nil
+        do { try PREdits.validate(notes, clipLength: map?.clipLength ?? PRLimits.timelineFrames) }
+        catch {
+            hostEditable = false
+            if !sameClip { store = PRNoteStore(); selection.removeAll() }
+            index = PRNoteIndex(store.entities)
+            fail(error)
+            return
+        }
+
+        if !sameClip {
+            store = PRNoteStore(notes: notes)
+            selection.removeAll()
+            status = "Выбран другой MIDI-клип"
+        } else if let pending {
+            let revisionMatches: Bool
+            if let old = pending.context, let new = incomingContext {
+                revisionMatches = old.sameClip(as: new) && old.revision < UInt64.max && new.revision == old.revision + 1
+            } else { revisionMatches = pending.context == nil && incomingContext == nil }
+            let accepted = notes == pending.candidate.map(\.note) && revisionMatches &&
+                map?.clipStart == pending.clipStart && map?.clipLength == pending.clipLength
+            store.replace(with: notes, preferring: accepted ? pending.candidate : pending.original)
+            selection = accepted ? pending.selection : pending.originalSelection
+            status = accepted
                 ? "Изменение применено · ⌘Z — отменить в проекте"
                 : "Изменение отклонено движком · показана актуальная версия проекта"
+        } else {
+            store.replace(with: notes)
+            if let priorGesture {
+                selection = priorGesture.originalSelection
+                status = "Проект изменился во время жеста — жест отменён."
+            }
         }
+        selection.formIntersection(Set(store.entities.map(\.id)))
+        index = PRNoteIndex(store.entities)
         changed()
     }
 
     func changed() { onChange?() }
-
-    func setStatus(_ value: String) {
-        status = value
-        changed()
-    }
-
+    func setStatus(_ value: String) { status = value; changed() }
     func fail(_ error: Error) {
         status = (error as? PREditError)?.description ?? String(describing: error)
         changed()
     }
-
     func selectAll() {
+        guard !isTransformPreview, !awaitingCommit else { return }
         selection = Set(entities.map(\.id))
         status = "Выбрано нот: \(selection.count)"
         changed()
     }
-
     func clearSelection() {
-        selection.removeAll()
-        changed()
+        guard !isTransformPreview, !awaitingCommit else { return }
+        selection.removeAll(); changed()
     }
 
     @discardableResult
     func beginGesture(source: GestureSource = .pointer) -> Bool {
-        if let active = gesture {
-            status = active.source == .transform
-                ? "Сначала примените или отмените предпросмотр преобразования."
-                : "Сначала завершите текущий жест редактирования."
-            changed()
+        guard canPerformEdit else {
+            setStatus(isTransformPreview ? "Сначала примените или отмените предпросмотр преобразования." : PREditError.unavailable.description)
             return false
         }
-        guard editable, timeMap != nil else {
-            fail(PREditError.unavailable)
-            return false
-        }
-        gesture = Gesture(original: store.entities,
-                          originalSelection: selection,
-                          generation: generation,
-                          source: source)
+        gesture = Gesture(id: UUID(), original: store.entities, originalSelection: selection,
+                          generation: generation, source: source)
         preview = nil
         return true
     }
 
-    func previewGesture(_ candidate: [PRNoteEntity]) {
-        guard gesture != nil, let map = timeMap else { return }
-        do {
-            preview = try PREdits.checked(candidate, map: map)
-            changed()
-        } catch {
-            // Invalid latest pointer position must not leave an older valid preview
-            // waiting to be committed on mouse-up.
+    /// Event sources retain this UUID. A late mouse-up cannot finish another
+    /// surface's newer transaction, even after a document reload.
+    func ownsGesture(_ id: UUID?) -> Bool { id != nil && gesture?.id == id }
+
+    func previewGesture(_ candidate: [PRNoteEntity], transaction: UUID? = nil) {
+        guard let gesture, transaction == nil || gesture.id == transaction, let map = timeMap else { return }
+        do { preview = try PREdits.checked(candidate, map: map); changed() }
+        catch {
             preview = nil
             fail(error)
         }
     }
 
-    func cancelGesture() {
-        if let gesture { selection = gesture.originalSelection }
-        gesture = nil
+    func invalidateGesture(_ error: Error, transaction: UUID? = nil) {
+        guard let gesture, transaction == nil || gesture.id == transaction else { return }
         preview = nil
+        fail(error)
+    }
+
+    func cancelGesture(transaction: UUID? = nil) {
+        guard let gesture, transaction == nil || gesture.id == transaction else { return }
+        selection = gesture.originalSelection
+        self.gesture = nil; preview = nil
         status = "Жест отменён"
         changed()
     }
 
-    func finishGesture() {
-        guard let gesture else { return }
+    func finishGesture(transaction: UUID? = nil) {
+        guard let gesture, transaction == nil || gesture.id == transaction else { return }
         let candidate = preview
-        self.gesture = nil
-        preview = nil
-        guard generation == gesture.generation else {
-            selection = gesture.originalSelection
-            fail(PREditError.staleEdit)
-            return
-        }
-        guard let candidate else {
-            selection = gesture.originalSelection
-            changed()
-            return
-        }
-        commit(candidate, original: gesture.original)
+        let candidateSelection = selection
+        self.gesture = nil; preview = nil
+        selection = gesture.originalSelection
+        guard generation == gesture.generation else { fail(PREditError.staleEdit); return }
+        guard let candidate else { changed(); return }
+        commit(candidate, original: gesture.original, selection: candidateSelection)
     }
 
     func perform(_ transform: ([PRNoteEntity], PRTimeMap) throws -> [PRNoteEntity],
                  selection replacement: Set<UInt64>? = nil) {
-        guard editable, gesture == nil, let map = timeMap else {
-            if isTransformPreview {
-                status = "Сначала примените или отмените предпросмотр преобразования."
-                changed()
-            } else {
-                fail(PREditError.unavailable)
-            }
+        guard canPerformEdit, let map = timeMap else {
+            setStatus(isTransformPreview ? "Сначала примените или отмените предпросмотр преобразования." : PREditError.unavailable.description)
             return
         }
-        do {
-            let candidate = try PREdits.checked(transform(store.entities, map), map: map)
-            if let replacement { selection = replacement }
-            commit(candidate, original: store.entities)
-        } catch { fail(error) }
+        do { commit(try transform(store.entities, map), original: store.entities, selection: replacement) }
+        catch { fail(error) }
     }
 
-    private func commit(_ candidate: [PRNoteEntity], original: [PRNoteEntity]) {
-        guard candidate.map(\.note) != original.map(\.note) else {
-            status = "Изменений нет"
-            changed()
-            return
+    private func commit(_ candidate: [PRNoteEntity], original: [PRNoteEntity],
+                        selection replacement: Set<UInt64>? = nil) {
+        guard canPerformEdit, let map = timeMap else { fail(PREditError.unavailable); return }
+        do { _ = try PREdits.checked(candidate, map: map) }
+        catch { fail(error); return }
+        guard original == store.entities else { fail(PREditError.staleEdit); return }
+        guard candidate.map(\.note) != original.map(\.note) else { setStatus("Изменений нет"); return }
+        guard onCommitRequest != nil ? context != nil : onCommit != nil else {
+            fail(PREditError.unavailable); return
         }
-        pendingCommit = candidate
-        store.replace(with: candidate.map(\.note), preferring: candidate)
-        index = PRNoteIndex(store.entities)
-        selection.formIntersection(Set(store.entities.map(\.id)))
+        let pending = PendingCommit(id: UUID(), candidate: candidate, original: original,
+            originalSelection: selection, selection: replacement ?? selection, context: context,
+            generation: generation, clipStart: map.clipStart, clipLength: map.clipLength)
+        pendingCommit = pending
         status = "Применяем изменение…"
         changed()
-        onCommit?(candidate.map(\.note))
+        // onChange is user code: it may synchronously load another clip. Never
+        // invoke its commit callback with the previous clip's candidate.
+        guard pendingCommit?.id == pending.id, generation == pending.generation else { return }
+        if let onCommitRequest, let context = pending.context {
+            onCommitRequest(PRCommitRequest(context: context, clipStart: map.clipStart,
+                clipLength: map.clipLength, original: original.map(\.note), notes: candidate.map(\.note)))
+        } else { onCommit?(candidate.map(\.note)) }
+        if pendingCommit?.id == pending.id {
+            setStatus("Нет подтверждения движка · правки заблокированы до обновления клипа")
+        }
     }
 
     func deleteSelected() {
@@ -257,40 +307,37 @@ final class PRProState {
     }
 
     func ratchet(count: Int, gate: Double) {
-        guard let map = timeMap else { fail(PREditError.unavailable); return }
+        guard canPerformEdit, let map = timeMap else { fail(PREditError.unavailable); return }
         let ids = selection
         do {
             let result = try PRTransforms.ratchet(store.entities, selected: ids, count: count,
                                                   gate: gate, nextID: nextID, map: map)
-            selection = result.selection
-            commit(result.entities, original: store.entities)
+            commit(result.entities, original: store.entities, selection: result.selection)
         } catch { fail(error) }
     }
 
     func strum(spreadBeats: Double, descending: Bool) {
-        guard let map = timeMap else { fail(PREditError.unavailable); return }
+        guard canPerformEdit, let map = timeMap else { fail(PREditError.unavailable); return }
         let ids = selection
         do {
             let result = try PRTransforms.strum(store.entities, selected: ids,
                                                 spreadBeats: spreadBeats,
                                                 descending: descending, map: map)
-            selection = result.selection
-            commit(result.entities, original: store.entities)
+            commit(result.entities, original: store.entities, selection: result.selection)
         } catch { fail(error) }
     }
 
     func velocityRamp(from: Int, to: Int) {
-        guard let map = timeMap else { fail(PREditError.unavailable); return }
+        guard canPerformEdit, let map = timeMap else { fail(PREditError.unavailable); return }
         do {
             let result = try PRTransforms.velocityRamp(store.entities, selected: selection,
                                                        from: from, to: to, map: map)
-            selection = result.selection
-            commit(result.entities, original: store.entities)
+            commit(result.entities, original: store.entities, selection: result.selection)
         } catch { fail(error) }
     }
 
     func insertChord(root: Int, kind: PRChordKind, inversion: Int) {
-        guard let map = timeMap else { fail(PREditError.unavailable); return }
+        guard canPerformEdit, let map = timeMap else { fail(PREditError.unavailable); return }
         do {
             let inserted = try PRHarmony.chord(root: root, kind: kind, inversion: inversion,
                                                start: insertionBeat,
@@ -298,8 +345,7 @@ final class PRProState {
                                                channel: defaultChannel,
                                                velocity: defaultVelocity,
                                                nextID: nextID, map: map)
-            selection = Set(inserted.map(\.id))
-            commit(store.entities + inserted, original: store.entities)
+            commit(store.entities + inserted, original: store.entities, selection: Set(inserted.map(\.id)))
         } catch { fail(error) }
     }
 

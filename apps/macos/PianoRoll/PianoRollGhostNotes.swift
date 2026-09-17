@@ -21,6 +21,9 @@ enum PRGhostLoader {
             return PRGhostLoadResult(notes: [], sourceTracks: 0, limited: false)
         }
         let activeEnd = activeEndResult.partialValue
+        let limit = min(maximumNotes, limit)
+        var inspectedNotes = 0
+        var inspectedClips = 0
         var result: [PianoRollNote] = []
         result.reserveCapacity(min(limit, 512))
         var contributingTracks = Set<UInt64>()
@@ -29,7 +32,11 @@ enum PRGhostLoader {
         for trackID in app.trackIDs.keys.sorted().compactMap({ app.trackIDs[$0] }) where trackID != activeTrackID {
             var clipCount: UInt32 = 0
             guard daw_get_midi_clip_count(app.session, trackID, &clipCount) == 0, clipCount > 0 else { continue }
-            for clipIndex in 0..<clipCount {
+            for clipIndex in 0..<min(clipCount, 64) {
+                guard inspectedClips < 256 else {
+                    return PRGhostLoadResult(notes: result, sourceTracks: contributingTracks.count, limited: true)
+                }
+                inspectedClips += 1
                 var meta = daw_midi_clip()
                 meta.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
                 meta.version = UInt32(DAW_MIDI_CLIP_VERSION)
@@ -41,11 +48,11 @@ enum PRGhostLoader {
 
                 var offset: UInt32 = 0
                 while offset < meta.note_count {
-                    if result.count >= limit {
+                    if inspectedNotes >= limit {
                         limited = true
                         return PRGhostLoadResult(notes: result, sourceTracks: contributingTracks.count, limited: limited)
                     }
-                    let remainingCapacity = min(limit - result.count, Int(DAW_MIDI_NOTES_PER_CALL))
+                    let remainingCapacity = min(limit - inspectedNotes, Int(DAW_MIDI_NOTES_PER_CALL))
                     let pageCount = min(Int(meta.note_count - offset), remainingCapacity)
                     guard pageCount > 0 else { break }
                     var page = [daw_midi_note](repeating: daw_midi_note(), count: pageCount)
@@ -54,7 +61,8 @@ enum PRGhostLoader {
                         daw_get_midi_clip(app.session, trackID, clipIndex, &meta,
                                           offset, buffer.baseAddress, UInt32(pageCount), &written)
                     }
-                    guard status == 0, written > 0 else { break }
+                    guard status == 0, written > 0, written <= UInt32(pageCount) else { limited = true; break }
+                    inspectedNotes += Int(written)
                     for item in page.prefix(Int(written)) {
                         let absoluteStartResult = meta.start.addingReportingOverflow(item.start)
                         guard !absoluteStartResult.overflow else { continue }
@@ -75,7 +83,7 @@ enum PRGhostLoader {
                                                    velocity: item.velocity))
                         contributingTracks.insert(trackID)
                         if result.count >= limit {
-                            limited = offset + written < meta.note_count || clipIndex + 1 < clipCount
+                            limited = true // The budget may also hide later source tracks.
                             return PRGhostLoadResult(notes: result, sourceTracks: contributingTracks.count, limited: limited)
                         }
                     }

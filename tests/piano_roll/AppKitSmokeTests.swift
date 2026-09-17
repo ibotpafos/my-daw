@@ -37,9 +37,9 @@ struct AppKitSmokeTests {
     static func main() throws {
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ name: String) {
-            guard condition() else { fatalError("FAIL: \(name)") }
+            guard condition() else { FileHandle.standardError.write(Data("FAIL: \(name)\n".utf8)); exit(1) }
             checks += 1
-            print("PASS \(name)")
+            FileHandle.standardOutput.write(Data("PASS \(name)\n".utf8))
         }
 
         _ = NSApplication.shared
@@ -72,7 +72,9 @@ struct AppKitSmokeTests {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 760),
                               styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = workspace
+        state.onChange = { [weak workspace] in workspace?.refreshFromState() }
         window.layoutIfNeeded()
         workspace.layoutSubtreeIfNeeded()
         workspace.refreshFromState()
@@ -140,6 +142,61 @@ struct AppKitSmokeTests {
         workspace.canvas.mouseUp(with: upEvent)
         check(commits == 2, "draw gesture creates exactly one host commit")
         check(authoritative.contains(where: { $0.pitch == targetPitch }), "draw gesture creates requested pitch")
+
+        var undoCalls = 0
+        workspace.onUndo = { undoCalls += 1 }
+        let russianUndo = NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.command], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "я", charactersIgnoringModifiers: "я", isARepeat: false, keyCode: 6)!
+        check(workspace.canvas.handleKey(russianUndo) && undoCalls == 1, "physical Cmd-Z works in Russian layout")
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let controls = descendants(workspace)
+        let from = controls.first { $0.identifier?.rawValue == "piano.roll.ramp.from" } as! NSTextField
+        let to = controls.first { $0.identifier?.rawValue == "piano.roll.ramp.to" } as! NSTextField
+        let buttons = controls.compactMap { $0 as? NSButton }
+        state.selectAll()
+        from.stringValue = "20"; to.stringValue = "100"
+        buttons.first { $0.title == "Preview Ramp" }!.performClick(nil)
+        check(state.hasTransformPreview && commits == 2, "native panel creates preview without project commit")
+        from.stringValue = "not a velocity"
+        buttons.first { $0.title == "Apply preview" }!.performClick(nil)
+        check(!state.hasTransformPreview && commits == 2, "Apply revalidates unsubmitted text instead of committing stale preview")
+        check(state.entities.map(\.note) == authoritative, "invalid native panel leaves project notes exact")
+        from.stringValue = "20"
+        state.clearSelection()
+        from.selectText(nil)
+        _ = workspace.canvas.performKeyEquivalent(with: commandA)
+        check(state.selection.isEmpty, "canvas key equivalent does not steal Cmd-A from numeric text input")
+        workspace.focusCanvas()
+        state.tool = .draw
+        workspace.canvas.mouseDown(with: down)
+        // An authoritative refresh invalidates this surface's gesture.
+        state.receive(notes: authoritative, map: map, editable: true)
+        state.selectAll(); state.previewRatchet(count: 2, gate: 1)
+        let newerGesture = state.gesture?.id
+        workspace.canvas.mouseUp(with: upEvent)
+        check(state.gesture?.id == newerGesture && state.hasTransformPreview && commits == 2,
+              "late canvas mouse-up cannot apply a newer transform transaction")
+        state.cancelTransformPreview()
+
+        check(workspace.inspectorScroll.hasVerticalScroller, "inspector exposes all controls by scrolling")
+        check(workspace.inspectorScroll.documentView != nil, "inspector has a scroll document")
+        func screenshot(_ name: String) throws {
+            guard let directory = ProcessInfo.processInfo.environment["PR_QA_DIR"] else { return }
+            workspace.layoutSubtreeIfNeeded()
+            guard let bitmap = workspace.bitmapImageRepForCachingDisplay(in: workspace.bounds) else { fatalError("bitmap") }
+            workspace.cacheDisplay(in: workspace.bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else { fatalError("png") }
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
+        }
+        try screenshot("piano-roll-1280.png")
+        window.setContentSize(NSSize(width: 980, height: 560))
+        window.layoutIfNeeded(); workspace.layoutSubtreeIfNeeded()
+        check(workspace.canvas.frame.width > 400, "minimum window still has usable note canvas")
+        check(workspace.inspectorScroll.documentView!.frame.height > workspace.inspectorScroll.contentSize.height,
+              "minimum window keeps long inspector scrollable instead of clipping controls")
+        try screenshot("piano-roll-980.png")
 
         let controller = PRProWindowController(state: state)
         check(controller.window?.minSize.width == 980, "dedicated editor window has desktop minimum width")

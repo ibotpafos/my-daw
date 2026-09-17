@@ -137,7 +137,7 @@ final class PRProKeyboardView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard let workspace else { return }
+        guard !state.isGesturing, !state.awaitingCommit, let workspace else { return }
         let point = convert(event.locationInWindow, from: nil)
         let row = Int(floor((point.y + workspace.scrollOrigin.y) / state.rowHeight))
         let pitch = workspace.rows.pitch(at: row)
@@ -165,6 +165,8 @@ final class PRProVelocityLane: NSView {
     private var base: [PRNoteEntity] = []
     private var anchorVelocity = 100
     private var editing = false
+    private var transaction: UUID?
+    private var selected = Set<UInt64>()
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -238,7 +240,7 @@ final class PRProVelocityLane: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        guard state.editable else { state.fail(PREditError.unavailable); return }
+        guard state.canPerformEdit else { state.fail(PREditError.unavailable); return }
         let point = convert(event.locationInWindow, from: nil)
         guard let item = nearest(to: point) else { return }
         if event.modifierFlags.contains(.shift) { state.selection.insert(item.id) }
@@ -246,14 +248,16 @@ final class PRProVelocityLane: NSView {
         base = state.entities
         anchorVelocity = Int(item.note.velocity)
         editing = state.beginGesture()
+        transaction = state.gesture?.id
+        selected = state.selection
         update(point)
     }
 
     private func update(_ point: NSPoint) {
-        guard editing else { return }
+        guard editing, state.ownsGesture(transaction) else { return }
         let target = Int(((baseline - point.y) / usableHeight * 127).rounded())
         let delta = min(127, max(1, target)) - anchorVelocity
-        state.previewGesture(PREdits.velocity(base, selected: state.selection, delta: delta))
+        state.previewGesture(PREdits.velocity(base, selected: selected, delta: delta), transaction: transaction)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -261,8 +265,8 @@ final class PRProVelocityLane: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if editing { state.finishGesture() }
-        editing = false; base = []
+        if editing, state.ownsGesture(transaction) { state.finishGesture(transaction: transaction) }
+        editing = false; transaction = nil; base = []
     }
 
     override func keyDown(with event: NSEvent) {

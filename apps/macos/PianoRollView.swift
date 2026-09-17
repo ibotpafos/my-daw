@@ -68,6 +68,7 @@ private final class PRMiniPreviewView: NSView {
 @MainActor
 final class PianoRollEditorView: NSView {
     private struct GhostCacheKey: Equatable {
+        var documentID: UUID?
         var revision: UInt64
         var trackID: UInt64
         var clipIndex: Int
@@ -92,6 +93,8 @@ final class PianoRollEditorView: NSView {
 
     var onClipSelect: ((Int) -> Void)?
     var onNotesChange: (([PianoRollNote]) -> Void)?
+    var onCommitRequest: ((PRCommitRequest) -> Void)?
+    private var context: PRClipContext?
     var onAddNote: (() -> Void)?
     var onRemoveNote: ((Int) -> Void)?
     var onAddClip: (() -> Void)?
@@ -184,9 +187,8 @@ final class PianoRollEditorView: NSView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6)
         ])
 
-        state.onCommit = { [weak self] committed in
-            self?.onNotesChange?(committed)
-        }
+        state.onCommitRequest = { [weak self] request in self?.onCommitRequest?(request) }
+        state.onCommit = { [weak self] committed in self?.onNotesChange?(committed) }
         state.onChange = { [weak self] in self?.refreshFromState() }
         setAccessibilityLabel("MIDI Piano Roll")
         openButton.setAccessibilityLabel("Открыть полноразмерный Piano Roll")
@@ -195,19 +197,36 @@ final class PianoRollEditorView: NSView {
         refreshFromState()
     }
 
+    /// The host must replace binding, metadata and notes in ONE receive. Property
+    /// didSet callbacks alone would acknowledge a pending commit with old notes.
+    func apply(model: InspectorMidiModel?) {
+        syncing = true
+        context = model?.context
+        notes = model?.notes ?? []
+        clips = model?.clips ?? []
+        selectedClip = model?.selectedClip
+        editorEnabled = model?.editable ?? false
+        syncing = false
+        syncState()
+    }
+
     private func syncState() {
         guard !syncing else { return }
         syncing = true
+        state.onCommitRequest = context == nil ? nil : { [weak self] request in
+            self?.onCommitRequest?(request)
+        }
         let currentPlayhead = hostApp?.playheadFrame ?? playheadFrame
         state.playheadFrame = currentPlayhead
         state.receive(notes: notes, map: resolvedTimeMap(),
-                      editable: editorEnabled && selectedClip != nil && !clips.isEmpty)
+                      editable: editorEnabled && selectedClip != nil && !clips.isEmpty, context: context)
         syncing = false
         applyEnabled()
         if windowController != nil { refreshGhostsIfNeeded() }
     }
 
     private func refreshFromState() {
+        applyEnabled()
         statusLabel.stringValue = state.status
         preview.needsDisplay = true
         windowController?.workspace.refreshFromState()
@@ -231,9 +250,9 @@ final class PianoRollEditorView: NSView {
 
     private func applyEnabled() {
         let hasClip = selectedClip != nil && !clips.isEmpty
-        let canEdit = editorEnabled && hasClip
+        let canEdit = editorEnabled && hasClip && !state.awaitingCommit && !state.isGesturing
         clipPopup.isEnabled = canEdit
-        addClipButton.isEnabled = editorEnabled
+        addClipButton.isEnabled = editorEnabled && !state.awaitingCommit && !state.isGesturing
         removeClipButton.isEnabled = canEdit
         openButton.isEnabled = canEdit && resolvedTimeMap() != nil
         addNoteButton.isEnabled = canEdit
@@ -253,7 +272,7 @@ final class PianoRollEditorView: NSView {
             windowController?.workspace.setGhostNotes(ghostCache)
             return
         }
-        let key = GhostCacheKey(revision: app.revision, trackID: trackID,
+        let key = GhostCacheKey(documentID: context?.documentID, revision: context?.revision ?? app.revision, trackID: trackID,
                                 clipIndex: selectedClip, start: clip.startFrames,
                                 length: clip.lengthFrames)
         if !force, key == ghostCacheKey {

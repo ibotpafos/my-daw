@@ -34,7 +34,7 @@ struct PRTimeMap {
     }
     func start(_ note: PianoRollNote) -> Double { beat(at: note.startFrames) }
     func end(_ note: PianoRollNote) -> Double {
-        beat(at: note.startFrames + min(note.lengthFrames, clipLength - min(clipLength, note.startFrames)))
+        beat(at: min(clipLength, note.startFrames) + min(note.lengthFrames, clipLength - min(clipLength, note.startFrames)))
     }
     func length(_ note: PianoRollNote) -> Double { max(0, end(note) - start(note)) }
 

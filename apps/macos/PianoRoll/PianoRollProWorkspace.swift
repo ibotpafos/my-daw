@@ -11,7 +11,11 @@ final class PRProWorkspaceView: NSView {
     private let laneGrip = PRProLaneGrip()
     private let toolbar = NSStackView()
     private let inspector = NSStackView()
+    let inspectorScroll = NSScrollView() // Internal read-only surface for native layout acceptance.
+    private let quantizeStrength = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let statusField = NSTextField(labelWithString: "")
+    private enum TransformKind { case ratchet, strum, ramp }
+    private var activeTransform: TransformKind?
 
     private let toolControl = NSSegmentedControl(labels: PRTool.allCases.map { $0.shortcut },
                                                  trackingMode: .selectOne, target: nil, action: nil)
@@ -96,13 +100,18 @@ final class PRProWorkspaceView: NSView {
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)),
                                                name: NSView.boundsDidChangeNotification,
                                                object: scrollView.contentView)
-        [toolbar, ruler, keyboard, scrollView, laneGrip, velocityLane, inspector].forEach(addSubview)
+        inspectorScroll.hasVerticalScroller = true
+        inspectorScroll.drawsBackground = false
+        inspectorScroll.documentView = inspector
+        inspector.translatesAutoresizingMaskIntoConstraints = false
+        inspector.widthAnchor.constraint(equalTo: inspectorScroll.contentView.widthAnchor).isActive = true
+        [toolbar, ruler, keyboard, scrollView, laneGrip, velocityLane, inspectorScroll].forEach(addSubview)
     }
 
     private func setupToolbar() {
-        toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
-        toolbar.spacing = 6
+        toolbar.orientation = .vertical
+        toolbar.alignment = .leading
+        toolbar.spacing = 4
         toolControl.target = self; toolControl.action = #selector(changeTool)
         toolControl.selectedSegment = PRTool.select.rawValue
         for (index, tool) in PRTool.allCases.enumerated() {
@@ -131,10 +140,14 @@ final class PRProWorkspaceView: NSView {
         let zoomOut = button("−", #selector(zoomOutNow))
         let zoomIn = button("+", #selector(zoomInNow))
         let fit = button("Fit", #selector(fitNow))
-        [toolControl, separator(), caption("Grid"), gridPopup, caption("Swing"), swingSlider,
-         separator(), rootPopup, scalePopup, scaleLock, foldButton, followButton,
-         separator(), quantize, legato, humanize, reverse, flexible(), fit, zoomOut, zoomIn].forEach {
-            toolbar.addArrangedSubview($0)
+        let editRow = NSStackView(views: [toolControl, separator(), caption("Grid"), gridPopup,
+            caption("Swing"), swingSlider, flexible(), fit, zoomOut, zoomIn])
+        let musicRow = NSStackView(views: [rootPopup, scalePopup, scaleLock, foldButton, followButton,
+            separator(), quantize, legato, humanize, reverse, flexible()])
+        for row in [editRow, musicRow] {
+            row.spacing = 6; row.alignment = .centerY
+            toolbar.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true
         }
     }
 
@@ -157,6 +170,10 @@ final class PRProWorkspaceView: NSView {
         inspector.addArrangedSubview(fieldRow("Velocity", velocityField, #selector(editVelocity)))
         inspector.addArrangedSubview(fieldRow("Channel 1–16", channelField, #selector(editChannel)))
         inspector.addArrangedSubview(divider())
+        quantizeStrength.target = self; quantizeStrength.action = #selector(changeQuantizeStrength)
+        quantizeStrength.isContinuous = true
+        quantizeStrength.setAccessibilityLabel("Сила квантования")
+        inspector.addArrangedSubview(row("Quantize strength · 0–100%", quantizeStrength))
         inspector.addArrangedSubview(caption("RATCHET"))
         ratchetCount.addItems(withTitles: ["2", "3", "4", "6", "8", "12", "16", "32"])
         ratchetCount.selectItem(withTitle: "4")
@@ -177,6 +194,8 @@ final class PRProWorkspaceView: NSView {
         inspector.addArrangedSubview(button("Preview Strum", #selector(previewStrumNow)))
         inspector.addArrangedSubview(divider())
         inspector.addArrangedSubview(caption("VELOCITY RAMP"))
+        rampFrom.identifier = NSUserInterfaceItemIdentifier("piano.roll.ramp.from")
+        rampTo.identifier = NSUserInterfaceItemIdentifier("piano.roll.ramp.to")
         rampFrom.target = self; rampFrom.action = #selector(previewRampNow)
         rampTo.target = self; rampTo.action = #selector(previewRampNow)
         let ramp = NSStackView(views: [rampFrom, NSTextField(labelWithString: "→"), rampTo])
@@ -261,7 +280,7 @@ final class PRProWorkspaceView: NSView {
 
     override func layout() {
         super.layout()
-        let toolbarHeight: CGFloat = 40
+        let toolbarHeight: CGFloat = 72
         let statusHeight: CGFloat = 24
         let inspectorWidth: CGFloat = min(250, max(210, bounds.width * 0.21))
         let editorWidth = max(400, bounds.width - inspectorWidth)
@@ -286,7 +305,7 @@ final class PRProWorkspaceView: NSView {
                                     height: actualLaneHeight)
         velocityLane.isHidden = !state.showVelocity
         laneGrip.isHidden = !state.showVelocity
-        inspector.frame = NSRect(x: editorWidth, y: toolbarHeight,
+        inspectorScroll.frame = NSRect(x: editorWidth, y: toolbarHeight,
                                  width: inspectorWidth,
                                  height: max(0, bounds.height - toolbarHeight - statusHeight))
         statusField.frame = NSRect(x: 10, y: bounds.height - statusHeight + 3,
@@ -315,7 +334,9 @@ final class PRProWorkspaceView: NSView {
         scaleLock.state = state.lockScale ? .on : .off
         foldButton.state = state.fold ? .on : .off
         followButton.state = state.followPlayhead ? .on : .off
-        transformApplyButton.isEnabled = state.hasTransformPreview
+        transformApplyButton.isEnabled = state.hasTransformPreview && state.preview != nil
+        quantizeStrength.doubleValue = state.quantizeStrength
+        quantizeStrength.setAccessibilityValue("\(Int(state.quantizeStrength * 100))%")
         transformCancelButton.isEnabled = state.hasTransformPreview
         statusField.stringValue = state.status
         updateInspector()
@@ -324,6 +345,9 @@ final class PRProWorkspaceView: NSView {
     }
 
     private func updateInspector() {
+        // Do not replace in-progress numeric text when a separate view repaints.
+        let fields = [pitchField, startField, lengthField, velocityField, channelField]
+        if fields.contains(where: { $0.currentEditor() != nil }), state.canPerformEdit { return }
         let selected = state.selectedEntities
         selectionLabel.stringValue = selected.isEmpty ? "Нет выделения" : "Нот: \(selected.count)"
         let candidates = state.chordCandidates()
@@ -332,12 +356,12 @@ final class PRProWorkspaceView: NSView {
             [pitchField, startField, lengthField, velocityField, channelField].forEach { $0.stringValue = ""; $0.isEnabled = false }
             return
         }
-        let single = selected.count == 1
+        let single = selected.count == 1 && state.canPerformEdit
         pitchField.isEnabled = single
         startField.isEnabled = single
         lengthField.isEnabled = single
-        velocityField.isEnabled = true
-        channelField.isEnabled = true
+        velocityField.isEnabled = state.canPerformEdit
+        channelField.isEnabled = state.canPerformEdit
         pitchField.stringValue = single ? PRPitch.name(first.note.pitch) : "—"
         startField.stringValue = single ? String(format: "%.4f", map.start(first.note)) : "—"
         lengthField.stringValue = single ? String(format: "%.4f", map.length(first.note)) : "—"
@@ -497,7 +521,13 @@ final class PRProWorkspaceView: NSView {
         state.setChannel(value - 1); focusCanvas()
     }
 
+    @objc private func changeQuantizeStrength() {
+        state.quantizeStrength = quantizeStrength.doubleValue
+        state.setStatus("Сила квантования: \(Int(state.quantizeStrength * 100))% · Q применяет к выделению")
+    }
+
     @objc private func previewRatchetNow() {
+        activeTransform = .ratchet
         guard !state.selection.isEmpty else { state.setStatus("Выберите ноты для Ratchet"); return }
         let count = Int(ratchetCount.titleOfSelectedItem ?? "4") ?? 4
         state.previewRatchet(count: count, gate: ratchetGate.doubleValue)
@@ -505,6 +535,7 @@ final class PRProWorkspaceView: NSView {
     }
 
     @objc private func previewStrumNow() {
+        activeTransform = .strum
         guard !state.selection.isEmpty else { state.setStatus("Выберите аккорд для Strum"); return }
         state.previewStrum(spreadBeats: strumAmount.doubleValue,
                            descending: strumDirection.selectedSegment == 1)
@@ -512,8 +543,10 @@ final class PRProWorkspaceView: NSView {
     }
 
     @objc private func previewRampNow() {
+        activeTransform = .ramp
         guard !state.selection.isEmpty else { state.setStatus("Выберите ноты для Velocity Ramp"); return }
         guard let from = Int(rampFrom.stringValue), let to = Int(rampTo.stringValue) else {
+            state.cancelTransformPreview()
             state.setStatus("Velocity Ramp: значения должны быть 1–127")
             return
         }
@@ -522,6 +555,16 @@ final class PRProWorkspaceView: NSView {
     }
 
     @objc private func applyTransformPreview() {
+        guard state.hasTransformPreview else { return }
+        // NSTextField does not necessarily send an action on focus loss. Re-read
+        // the active panel before Apply so unsubmitted invalid text cannot apply
+        // the previous valid preview.
+        switch activeTransform {
+        case .ratchet: previewRatchetNow()
+        case .strum: previewStrumNow()
+        case .ramp: previewRampNow()
+        case nil: return
+        }
         state.applyTransformPreview()
         focusCanvas()
     }

@@ -22,8 +22,7 @@ extension PRProState {
                                                 at: beat ?? insertionBeat,
                                                 nextID: nextID,
                                                 map: map)
-            selection = result.selection
-            perform { _, _ in result.entities }
+            perform({ _, _ in result.entities }, selection: result.selection)
         } catch { fail(error) }
     }
 
@@ -40,16 +39,14 @@ extension PRProState {
     }
 
     func cutToPasteboard() {
-        guard editable, !selection.isEmpty else { return }
-        let count = selection.count
+        guard canPerformEdit, !selection.isEmpty else { return }
         guard let map = timeMap else { fail(PREditError.unavailable); return }
         do {
             let data = try PRClipboard(entities: entities, selected: selection, map: map).encoded()
             NSPasteboard.general.clearContents()
             guard NSPasteboard.general.setData(data, forType: NSPasteboard.PasteboardType(PRClipboard.typeIdentifier)) else { return }
             deleteSelected()
-            status = "Вырезано нот: \(count)"
-            changed()
+            // The host echo owns success/rejection status; do not overwrite it.
         } catch { fail(error) }
     }
 

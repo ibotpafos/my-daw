@@ -11,6 +11,8 @@
 #include "audio/plugin_parameters.hpp"
 #include "audio/analysis.hpp"
 #include "plugins/plugin_descriptor.hpp"
+// Metadata-only C++ declarations are also needed by the non-Apple bridge.
+#include "platform/macos/vst3_scan_cache.hpp"
 #include "export/dawproject_export.hpp"
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
@@ -19,7 +21,6 @@
 #include "platform/macos/au_scanner.hpp"
 #include "platform/macos/au_scan_cache.hpp"
 #include "platform/macos/vst3_scanner.hpp"
-#include "platform/macos/vst3_scan_cache.hpp"
 #endif
 #include "storage/save_job.hpp"
 #include "storage/project_package.hpp"
@@ -1571,7 +1572,7 @@ int daw_get_installed_vst3(daw_session *s, uint32_t index, daw_vst3_component *o
         *out = {};
         out->struct_size = sizeof(daw_vst3_component);
         out->available = entry.available ? 1 : 0;
-        out->flags = entry.plugin.instrument ? DAW_VST3_FLAG_INSTRUMENT : 0u;
+        out->flags = entry.plugin.instrument ? static_cast<uint32_t>(DAW_VST3_FLAG_INSTRUMENT) : 0u;
         copyText(out->class_id, entry.plugin.classId);
         copyText(out->module_fingerprint, entry.plugin.moduleFingerprint);
         copyText(out->module_path, entry.plugin.modulePath);
@@ -2157,9 +2158,10 @@ int daw_commit_vocal_preparation(daw_session *s, const uint64_t *selected, uint3
 namespace {
 // ABI-level sanity only: shape, ranges and bounds a caller could not possibly
 // mean. Timeline, overlap and capacity rules stay inside the domain's Validate.
-void validateMidiNoteArray(const daw_midi_note *notes, uint32_t count) {
-    if (count > DAW_MIDI_NOTES_PER_CALL)
-        throw daw::Error("MIDI note reads and writes are limited to 8192 notes per call");
+void validateMidiNoteArray(const daw_midi_note *notes, uint32_t count,
+                           uint32_t limit = DAW_MIDI_NOTES_PER_CALL) {
+    if (count > limit)
+        throw daw::Error("MIDI note array exceeds its per-call limit");
     if (count && !notes)
         throw daw::Error("MIDI note array is missing");
     for (uint32_t index = 0; index < count; ++index) {
@@ -2240,7 +2242,7 @@ int daw_quantize_midi_clip(daw_session *s, uint64_t trackID, uint32_t index, dou
 int daw_set_midi_notes(daw_session *s, uint64_t trackID, uint32_t index, const daw_midi_note *notes,
                        uint32_t noteCount, uint64_t rev) {
     return guard(s, [&] {
-        validateMidiNoteArray(notes, noteCount);
+        validateMidiNoteArray(notes, noteCount, DAW_MIDI_NOTES_PER_REPLACEMENT);
         std::vector<daw::MidiNote> converted;
         toDomainNotes(notes, noteCount, converted);
         s->model.setMidiNotes(trackID, index, std::move(converted), rev);
@@ -2430,7 +2432,8 @@ int daw_get_midi_input_device(daw_session *s, uint32_t index, daw_midi_device *o
         out->online = device.online ? 1 : 0;
         copyText(out->name, device.name);
 #else
-    throw daw::Error("MIDI input requires macOS");
+        (void)index;
+        throw daw::Error("MIDI input requires macOS");
 #endif
     });
 }

@@ -1,4 +1,5 @@
 #include "domain/session.hpp"
+#include <algorithm>
 #include <sqlite3.h>
 #include <filesystem>
 #include <memory>

@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$(mktemp -d "${TMPDIR:-/tmp}/my-daw-transforms.XXXXXX")"
 trap 'rm -rf "$BUILD"' EXIT
 CORE_SOURCES=()
-for FILE in Model Timing Edits Transforms Harmony NoteIndex; do
+for FILE in Model Timing Edits Clipboard Transforms Harmony NoteIndex; do
   CORE_SOURCES+=("$ROOT/apps/macos/PianoRoll/PianoRoll$FILE.swift")
 done
 swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
@@ -22,3 +22,8 @@ swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
   "$ROOT/apps/macos/PianoRoll/PianoRollProPreview.swift" \
   "$ROOT/tests/piano_roll/PreviewCoreTests.swift" -o "$BUILD/preview-tests"
 "$BUILD/preview-tests"
+swiftc -swift-version 6 -warnings-as-errors -O "${CORE_SOURCES[@]}" \
+  "$ROOT/apps/macos/PianoRoll/PianoRollProState.swift" \
+  "$ROOT/apps/macos/PianoRoll/PianoRollProPreview.swift" \
+  "$ROOT/tests/piano_roll/TransactionSafetyTests.swift" -o "$BUILD/transaction-tests"
+"$BUILD/transaction-tests"

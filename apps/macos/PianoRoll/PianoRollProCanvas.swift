@@ -11,6 +11,8 @@ final class PRProCanvas: NSView {
     var onPlayToggle: (() -> Void)?
 
     private var dragMode: DragMode = .none
+    private var dragTransaction: UUID?
+    private var dragGeneration: UInt64 = 0
     private var downPoint = NSPoint.zero
     private var handWindowPoint = NSPoint.zero
     private var handOrigin = NSPoint.zero
@@ -151,8 +153,23 @@ final class PRProCanvas: NSView {
         }
     }
 
+    private func beginPointerGesture() -> Bool {
+        guard state.beginGesture() else { return false }
+        dragTransaction = state.gesture?.id
+        return true
+    }
+
+    private func previewPointer(_ candidate: [PRNoteEntity]) {
+        guard state.ownsGesture(dragTransaction) else { return }
+        state.previewGesture(candidate, transaction: dragTransaction)
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        guard !state.isGesturing, !state.awaitingCommit else { return }
+        dragTransaction = nil
+        dragGeneration = state.generation
+        dragMode = .none
         let point = convert(event.locationInWindow, from: nil)
         downPoint = point
         initialSelection = state.selection
@@ -199,15 +216,15 @@ final class PRProCanvas: NSView {
         }
 
         if state.tool == .erase, let item {
-            guard state.beginGesture() else { return }
+            guard beginPointerGesture() else { return }
             dragMode = .erase
             base.removeAll { $0.id == item.id }
-            state.previewGesture(base)
+            previewPointer(base)
             return
         }
 
         if (state.tool == .draw && item == nil) || (event.clickCount == 2 && item == nil) {
-            guard state.beginGesture() else { return }
+            guard beginPointerGesture() else { return }
             dragMode = .draw
             drawID = state.nextID
             drawStartBeat = state.insertionBeat
@@ -222,15 +239,15 @@ final class PRProCanvas: NSView {
                                         pitch: drawPitch, channel: state.defaultChannel,
                                         velocity: state.defaultVelocity)
                 state.selection = [drawID]
-                state.previewGesture(base + [PRNoteEntity(id: drawID, note: note)])
+                previewPointer(base + [PRNoteEntity(id: drawID, note: note)])
             } catch {
-                state.cancelGesture(); state.fail(error); dragMode = .none
+                state.cancelGesture(transaction: dragTransaction); state.fail(error); dragMode = .none
             }
             return
         }
 
         if let item, let rect = noteRect(item) {
-            guard state.beginGesture() else { return }
+            guard beginPointerGesture() else { return }
             if state.tool == .velocity { dragMode = .velocity }
             else if rect.width > 18, point.x <= rect.minX + 5 { dragMode = .resizeStart }
             else if rect.width > 18, point.x >= rect.maxX - 5 { dragMode = .resizeEnd }
@@ -246,6 +263,7 @@ final class PRProCanvas: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard dragGeneration == state.generation else { return }
         let point = convert(event.locationInWindow, from: nil)
         if dragMode == .hand {
             let dx = event.locationInWindow.x - handWindowPoint.x
@@ -266,7 +284,7 @@ final class PRProCanvas: NSView {
             needsDisplay = true
             return
         }
-        guard state.isGesturing, let map = state.timeMap else { return }
+        guard state.ownsGesture(dragTransaction), let map = state.timeMap else { return }
         _ = autoscroll(with: event)
         do {
             switch dragMode {
@@ -307,7 +325,7 @@ final class PRProCanvas: NSView {
                                                  beats: deltaBeat,
                                                  semitones: toPitch - fromPitch,
                                                  map: map)
-                state.previewGesture(candidate)
+                previewPointer(candidate)
 
             case .resizeStart, .resizeEnd:
                 guard let anchor = base.first(where: { $0.id == anchorID }) else { return }
@@ -316,7 +334,7 @@ final class PRProCanvas: NSView {
                 let target = state.grid.snap(rawTarget, origin: map.originBeat,
                                              pointsPerBeat: state.pixelsPerBeat,
                                              bypass: event.modifierFlags.contains(.control))
-                state.previewGesture(try PREdits.resize(base, selected: state.selection,
+                previewPointer(try PREdits.resize(base, selected: state.selection,
                                                         delta: target - edgeBeat,
                                                         edge: dragMode == .resizeStart ? .start : .end,
                                                         map: map))
@@ -324,12 +342,12 @@ final class PRProCanvas: NSView {
             case .velocity:
                 let sensitivity = event.modifierFlags.contains(.shift) ? 0.2 : 1.0
                 let delta = Int(Double(downPoint.y - point.y) * sensitivity)
-                state.previewGesture(PREdits.velocity(base, selected: state.selection, delta: delta))
+                previewPointer(PREdits.velocity(base, selected: state.selection, delta: delta))
 
             case .erase:
                 if let item = hit(point), base.contains(where: { $0.id == item.id }) {
                     base.removeAll { $0.id == item.id }
-                    state.previewGesture(base)
+                    previewPointer(base)
                 }
 
             case .draw:
@@ -342,16 +360,17 @@ final class PRProCanvas: NSView {
                 let note = try map.note(start: drawStartBeat, end: endBeat,
                                         pitch: drawPitch, channel: state.defaultChannel,
                                         velocity: state.defaultVelocity)
-                state.previewGesture(base + [PRNoteEntity(id: drawID, note: note)])
+                previewPointer(base + [PRNoteEntity(id: drawID, note: note)])
                 state.defaultLengthBeats = max(1.0 / 64, endBeat - drawStartBeat)
 
             default: break
             }
-        } catch { state.fail(error) }
+        } catch { state.invalidateGesture(error, transaction: dragTransaction) }
     }
 
     override func mouseUp(with event: NSEvent) {
-        if state.isGesturing { state.finishGesture() }
+        if state.ownsGesture(dragTransaction) { state.finishGesture(transaction: dragTransaction) }
+        dragTransaction = nil
         dragMode = .none
         base = []
         anchorID = nil
@@ -415,7 +434,7 @@ final class PRProCanvas: NSView {
     }
 
     private func physicalKey(_ event: NSEvent) -> String {
-        let map: [UInt16: String] = [0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g",
+        let map: [UInt16: String] = [0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z",
                                      7: "x", 8: "c", 9: "v", 11: "b", 12: "q", 14: "e", 16: "y"]
         return map[event.keyCode] ?? event.charactersIgnoringModifiers?.lowercased() ?? ""
     }
