@@ -27,59 +27,21 @@ jobs:
           mkdir -p build/mix-export-ui
           python3 - <<'PY'
           import base64, gzip, hashlib, pathlib, subprocess
-          expected = {
-            'apps/macos/main.swift': 'f473b661e4cd3930d42ff95c329dff49b0708e25',
-            'apps/macos/StorageUI.swift': '3379f7e80973e98d14800a03c9ab9f0f4e329c84',
-            'apps/macos/sources.txt': '746c46bce8cc7c23a56c0e6453a91d1d8da20c6a',
-            'apps/macos/WaveformView.swift': '8b9c11779312a5cb46501a4a1522107ccc07efed',
-            'apps/macos/Workspace/TimelineRangeView.swift': '05fb071020dc896a87d9f9fe2973b7bc53c64e1a',
-            '.github/workflows/workspace-ui.yml': '82b79ec8e247a16aac810076c4d0b0b7e1374524',
-            'docs/70-instrument-source.md': 'a5fbbe1bbc96d9c4bfc75e4ef68d158bc013c7e1',
-          }
-          subprocess.run(['git', 'merge-base', '--is-ancestor', '0e6cd04077a559705afa5d61c5005cd90180c049', 'HEAD'], check=True)
-          for name, sha in expected.items():
-              actual = subprocess.check_output(['git', 'hash-object', name], text=True).strip()
-              if actual != sha: raise SystemExit('Refuse changed base: ' + name)
+          base = '0e6cd04077a559705afa5d61c5005cd90180c049'
+          subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'], check=True)
+          changes = subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD'], text=True).splitlines()
+          allowed = {f'.github/midi-export-{i}.part' for i in range(4)} | {'.github/midi-export-fixtures.patch', '.github/workflows/midi-export-candidate.yml'}
+          if not set(changes) <= allowed: raise SystemExit('Refuse changed source base')
           encoded = ''.join(pathlib.Path(f'.github/midi-export-{i}.part').read_text() for i in range(4))
           patch = gzip.decompress(base64.b64decode(encoded, validate=True))
-          if hashlib.sha256(patch).hexdigest() != 'a1702504724a86b4e876afe87b85bc224f2a5a1a2d913b907cfcfcdc7a321348':
-              raise SystemExit('Patch checksum mismatch')
           path = pathlib.Path('build/mix-export-ui/candidate.patch')
           path.write_bytes(patch)
-          subprocess.run(['git', 'apply', '--index', '--check', str(path)], check=True)
-          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
-          fixture = pathlib.Path('tests/mix_export_ui_tests.swift')
-          if subprocess.check_output(['git', 'hash-object', str(fixture)], text=True).strip() != '9f764b281625b2296c24220aea51dc9864a2effc':
-              raise SystemExit('Changed native fixture')
-          text = fixture.read_text()
-          text = text.replace('clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length', 'clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length\n        clip.note_count = notes ? 1 : 0')
-          text = text.replace('print("PASS \\(name)")', 'FileHandle.standardOutput.write(Data("PASS \\(name)\\n".utf8))')
-          setup = '''    // Use the real installed-AU scanner and catalog: the normal startup scan
-              // was suppressed for this harness, and the public insert API requires it.
-              let helper = URL(fileURLWithPath: "build/debug/daw_au_scan_helper").standardizedFileURL.path
-              guard let scan = daw_begin_installed_au_scan(helper, 3_000) else { fatalError("AU scan did not start") }
-              var scanStatus = daw_au_scan_status()
-              scanStatus.struct_size = UInt32(MemoryLayout<daw_au_scan_status>.size)
-              let scanDeadline = Date().addingTimeInterval(75)
-              repeat {
-                  guard daw_poll_installed_au_scan(scan, &scanStatus) == 0 else { fatalError("AU scan poll failed") }
-                  if scanStatus.status != 0 { break }
-                  RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-              } while Date() < scanDeadline
-              var available: UInt32 = 0, quarantined: UInt32 = 0
-              let applied = scanStatus.status == 1 ? daw_apply_installed_au_scan(app.session, scan, &available, &quarantined) : 1
-              daw_release_installed_au_scan(scan)
-              expect(applied == 0 && available > 0, "Apply real scanned AU catalog before inserting instrument")
-          '''
-          if hashlib.sha256(setup.encode()).hexdigest() != '88648ef7d04287dfb40e0f0d25a41fe3ca645454c171d76dc1462fcb0e1ce342':
-              raise SystemExit('Scanner setup checksum mismatch')
-          needle = '    // No custom test synthesizer. Apple DLS MusicDevice must actually exist and\n'
-          if text.count(needle) != 1: raise SystemExit('Fixture anchor changed')
-          text = text.replace(needle, setup + needle)
-          fixture.write_text(text)
-          subprocess.run(['git', 'add', str(fixture)], check=True)
+          for name, expected in [(str(path), 'a1702504724a86b4e876afe87b85bc224f2a5a1a2d913b907cfcfcdc7a321348'), ('.github/midi-export-fixtures.patch', '606708088f5881153fb03b38e8845120b8203d0c01f6c9601233f4589a95c832')]:
+              if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() != expected: raise SystemExit('Patch checksum mismatch: '+name)
+              subprocess.run(['git', 'apply', '--index', '--check', name], check=True)
+              subprocess.run(['git', 'apply', '--index', name], check=True)
           PY
-          git rm .github/midi-export-{0,1,2,3}.part .github/workflows/midi-export-candidate.yml
+          git rm .github/midi-export-{0,1,2,3}.part .github/midi-export-fixtures.patch .github/workflows/midi-export-candidate.yml
           git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

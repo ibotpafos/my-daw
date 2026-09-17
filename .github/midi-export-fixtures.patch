@@ -1,0 +1,43 @@
+--- a/tests/mix_export_ui_tests.swift
++++ b/tests/mix_export_ui_tests.swift
+@@ -29,7 +29,7 @@
+             fatalError(name)
+         }
+         checks += 1
+-        print("PASS \(name)")
++        FileHandle.standardOutput.write(Data("PASS \(name)\n".utf8))
+     }
+     _ = NSApplication.shared
+     NSApp.setActivationPolicy(.prohibited)
+@@ -99,6 +99,8 @@
+         var clip = daw_midi_clip()
+         clip.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
+         clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length
++        clip.note_count = notes ? 1 : 0
++        clip.start = notes ? 0 : 48_000 // Do not overlap the original one-second clip.
+         var note = daw_midi_note()
+         note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size)
+         note.version = UInt32(DAW_MIDI_NOTE_VERSION)
+@@ -117,6 +119,22 @@
+     expect(daw_get_track(app.session, 0, &track) == 0, "Read instrument track")
+     let midiTrack = track.id
+     addMIDI(midiTrack)
++    // Use the real installed-AU scanner and catalog: the normal startup scan
++    // was suppressed for this harness, and the public insert API requires it.
++    let helper = URL(fileURLWithPath: "build/debug/daw_au_scan_helper").standardizedFileURL.path
++    guard let scan = daw_begin_installed_au_scan(helper, 3_000) else { fatalError("AU scan did not start") }
++    var scanStatus = daw_au_scan_status()
++    scanStatus.struct_size = UInt32(MemoryLayout<daw_au_scan_status>.size)
++    let scanDeadline = Date().addingTimeInterval(75)
++    repeat {
++        guard daw_poll_installed_au_scan(scan, &scanStatus) == 0 else { fatalError("AU scan poll failed") }
++        if scanStatus.status != 0 { break }
++        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
++    } while Date() < scanDeadline
++    var available: UInt32 = 0, quarantined: UInt32 = 0
++    let applied = scanStatus.status == 1 ? daw_apply_installed_au_scan(app.session, scan, &available, &quarantined) : 1
++    daw_release_installed_au_scan(scan)
++    expect(applied == 0 && available > 0, "Apply real scanned AU catalog before inserting instrument")
+     // No custom test synthesizer. Apple DLS MusicDevice must actually exist and
+     // render; absence is a failure of this named acceptance, not a silent skip.
+     expect(daw_add_insert_au(app.session, Int32(DAW_INSERT_OWNER_TRACK), midiTrack,
