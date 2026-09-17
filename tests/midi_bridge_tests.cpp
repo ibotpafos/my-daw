@@ -20,11 +20,13 @@ int main() { try {
     auto note=[](uint64_t start,uint64_t length,uint8_t pitch,uint8_t channel,uint8_t velocity){ daw_midi_note n{}; n.struct_size=sizeof(n); n.version=DAW_MIDI_NOTE_VERSION; n.start=start; n.length=length; n.pitch=pitch; n.channel=channel; n.velocity=velocity; return n; };
     auto meta=[](uint64_t start,uint64_t length,uint32_t lane,uint32_t note_count){ daw_midi_clip c{}; c.struct_size=sizeof(c); c.version=DAW_MIDI_CLIP_VERSION; c.start=start; c.length=length; c.lane=lane; c.note_count=note_count; return c; };
     auto clipCount=[&]{ uint32_t count=0; CHECK(daw_get_midi_clip_count(s,1,&count)==0); return count; };
+    auto duration=[&]{ daw_transport t{}; t.struct_size=sizeof(t); CHECK(daw_get_transport(s,&t)==0); return t.duration; };
     daw_midi_note read[4]; uint32_t written=0;
+    CHECK(duration()==0);
 
     CHECK(daw_add_track(s,"Midi bridge",revision())==0);
     CHECK(clipCount()==0);
-    daw_midi_note empty; uint32_t emptyWritten=7;
+    uint32_t emptyWritten=7;
     CHECK(daw_get_midi_clip_count(s,999,&emptyWritten)!=0); // absent track
 
     // add three notes (starts are clip-relative)
@@ -32,6 +34,17 @@ int main() { try {
     auto clip=meta(0,48000,7,3);
     CHECK(daw_add_midi_clip(s,1,&clip,notes,3,revision())==0);
     CHECK(clipCount()==1);
+    // Stopped transport must use the same MIDI duration as the renderer.
+    // These calls never open a physical device and run in the no-SDK CI too.
+    CHECK(duration()==48000);
+    const auto beforeNavigation=revision();
+    CHECK(daw_seek_frame(s,137)==0);
+    CHECK(daw_set_loop(s,1,137,48000)==0);
+    CHECK(daw_set_loop(s,1,137,48001)!=0);
+    CHECK(daw_seek_frame(s,48001)!=0);
+    CHECK(revision()==beforeNavigation);
+    CHECK(daw_set_loop(s,0,0,0)==0);
+    CHECK(daw_seek_frame(s,0)==0);
     auto out=meta(0,0,0,0);
     CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0);
     CHECK(out.start==0&&out.length==48000&&out.lane==7&&out.note_count==3);
@@ -54,6 +67,10 @@ int main() { try {
     const uint64_t beforeNoop=revision();
     CHECK(daw_move_midi_clip(s,1,0,10000,revision())==0); // no-op keeps the revision
     CHECK(revision()==beforeNoop);
+    CHECK(duration()==58000);
+    CHECK(daw_seek_frame(s,58000)==0);
+    CHECK(daw_seek_frame(s,58001)!=0);
+    CHECK(daw_seek_frame(s,0)==0);
 
     // split: a note crossing the cut is rejected without mutation
     CHECK(daw_split_midi_clip(s,1,0,10100,revision())!=0);
@@ -61,6 +78,7 @@ int main() { try {
     // split between notes: right side keeps note 1 at relative 0
     CHECK(daw_split_midi_clip(s,1,0,10500,revision())==0);
     CHECK(clipCount()==2);
+    CHECK(duration()==58000);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0);
     CHECK(out.start==10000&&out.length==500&&out.note_count==1&&written==1&&read[0].start==0&&read[0].pitch==60);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,1,&out,0,read,4,&written)==0);
@@ -70,10 +88,14 @@ int main() { try {
     CHECK(daw_trim_midi_clip(s,1,1,10500,100,revision())==0);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,1,&out,0,nullptr,0,&written)==0&&out.note_count==0&&out.length==100);
 
+    CHECK(duration()==10600);
+
     // undo restores the trimmed clip and its note; redo trims again
     CHECK(daw_undo(s,revision())==0);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,1,&out,0,read,4,&written)==0&&out.note_count==1&&out.length==47500&&written==1);
+    CHECK(duration()==58000);
     CHECK(daw_redo(s,revision())==0);
+    CHECK(duration()==10600);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,1,&out,0,nullptr,0,&written)==0&&out.note_count==0);
 
     // remove both
@@ -81,6 +103,10 @@ int main() { try {
     CHECK(clipCount()==1);
     CHECK(daw_remove_midi_clip(s,1,0,revision())==0);
     CHECK(clipCount()==0);
+
+    CHECK(duration()==0);
+    CHECK(daw_seek_frame(s,1)!=0);
+    CHECK(daw_set_loop(s,1,0,1)!=0);
 
     // stale revision fails without mutation
     clip=meta(0,1000,0,0);
@@ -111,6 +137,7 @@ int main() { try {
     clip=meta(0,100,-1,0);
     CHECK(daw_add_midi_clip(s,1,&clip,nullptr,0,revision())!=0);
 
+    std::cout<<"PASS: MIDI-only stopped transport duration, seek/loop bounds, trim/split/move/Undo/Redo"<<std::endl;
     std::cout<<"PASS: MIDI bridge commands/queries (add,set,move,trim,split,remove,paged get,undo/redo,ABI+revision guards)"<<std::endl;
     return 0;
 } catch (const std::exception& error) { std::cerr<<error.what()<<std::endl; return 1; } }

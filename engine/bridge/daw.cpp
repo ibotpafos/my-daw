@@ -156,9 +156,12 @@ template <class Fn> int guard(daw_session *s, Fn fn) noexcept {
 }
 uint64_t duration(daw_session *s) {
     uint64_t frames = 0;
-    for (const auto &t : s->model.state().tracks)
+    for (const auto &t : s->model.state().tracks) {
         for (const auto &region : t.regions)
             frames = std::max(frames, region.start + region.length);
+        for (const auto &clip : t.midiClips)
+            frames = std::max(frames, clip.start + clip.length);
+    }
     return frames;
 }
 void cancelPlaybackPreparation(daw_session *s) noexcept {
