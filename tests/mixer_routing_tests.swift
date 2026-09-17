@@ -15,6 +15,15 @@ struct MixerRoutingTests {
         let window = NSWindow(contentRect: matrix.frame, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = matrix; matrix.strips = fixture
         matrix.layoutSubtreeIfNeeded()
+        // A bus may be both the main output and a send: their accessibility values differ.
+        matrix.routingTable.tableColumns[1].width = 156
+        var renamed = fixture; renamed[2].title = "Vocal Bus Updated"
+        renamed[0].sends.append(MixerSendSummary(destination: "Vocal Bus", busID: 100))
+        matrix.strips = renamed; matrix.layoutSubtreeIfNeeded()
+        precondition(matrix.routingTable.tableColumns[1].width == 156, "Renaming a bus preserves user column width")
+        let mainCell = matrix.routingTable.view(atColumn: 1, row: 0, makeIfNecessary: true) as! MixerActionButton
+        precondition(mainCell.accessibilityValue() as? String == "Connected", "Main route must not announce a send gain")
+        matrix.strips = fixture
         var outputs: [String] = [], sends: [String] = []
         matrix.onOutput = { outputs.append("\($0):\($1)") }
         matrix.onSend = { id, action in

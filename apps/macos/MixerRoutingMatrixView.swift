@@ -144,11 +144,13 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
         synchronizingSelection = true
         defer { synchronizingSelection = false }
         if oldDestinationIDs != destinations.map(\.id) || oldDestinationNames != destinations.map(\.title) {
+            let widths = Dictionary(uniqueKeysWithValues: routingTable.tableColumns.map { ($0.identifier, $0.width) })
             for column in routingTable.tableColumns { routingTable.removeTableColumn(column) }
             for destination in destinations {
                 let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("destination-\(destination.id)"))
                 column.title = destination.title; column.headerToolTip = destination.title
-                column.width = 112; column.minWidth = 88; column.maxWidth = 240
+                column.minWidth = 88; column.maxWidth = 240
+                column.width = widths[column.identifier] ?? 112
                 column.resizingMask = .userResizingMask
                 routingTable.addTableColumn(column)
             }
@@ -207,7 +209,8 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
         button.isEnabled = editingEnabled && reason == nil
         button.contentTintColor = connected ? .systemMint : .secondaryLabelColor
         button.setAccessibilityLabel("\(row.title) → \(destination.title), \(activeMode == .main ? "main output" : "send")")
-        button.setAccessibilityValue(connected ? (send.map { "\($0.preFader ? "Pre-fader" : "Post-fader"), \(MixerScale.label($0.gainDb)) dB" } ?? "Connected") : "Not connected")
+        let sendValue = send.map { "\($0.preFader ? "Pre-fader" : "Post-fader"), \(MixerScale.label($0.gainDb)) dB" } ?? "Not connected"
+        button.setAccessibilityValue(activeMode == .main ? (connected ? "Connected" : "Not connected") : sendValue)
         button.toolTip = reason ?? (activeMode == .main ? "Route \(row.title) to \(destination.title)." : connected ? "Edit send level. Right-click for PRE/POST or Remove." : "Add a post-fader send at −12 dB.")
         button.setAccessibilityHelp(button.toolTip)
         button.wantsLayer = true
