@@ -1,0 +1,38 @@
+name: Apply reviewed PR 8 source edits
+on:
+  push:
+    branches: [feature/command-palette-foundation]
+    paths:
+      - .github/maintenance/reviewed-edits.json
+      - .github/maintenance/apply_reviewed_edits.py
+      - .github/workflows/apply-palette-edits.yml
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/feature/command-palette-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify and apply exact tested source
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          python3 .github/maintenance/apply_reviewed_edits.py
+      - name: Rebuild the offline handbook
+        run: |
+          python3 -m pip install Markdown==3.8.2
+          python3 scripts/build_handbook.py
+          python3 scripts/check_docs.py
+          git add -- docs/index.html
+      - name: Commit only to the feature branch
+        run: |
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(palette): finish 1.74.0 menu integration, history bounds and portable CI'
+          git push origin HEAD:refs/heads/feature/command-palette-foundation
