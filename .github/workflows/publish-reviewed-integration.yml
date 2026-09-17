@@ -2,7 +2,7 @@ name: Publish reviewed integration source
 on:
   push:
     branches: [codex/midi-only-export-ui]
-    paths: [.github/workflows/publish-reviewed-integration.yml]
+    paths: [.github/workflows/publish-reviewed-integration.yml, .github/integration-resolve.py]
 permissions:
   contents: write
 jobs:
