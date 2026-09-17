@@ -8,9 +8,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -20,6 +22,20 @@
 namespace {
 using namespace daw;
 using namespace daw::vst3runtime;
+
+// Darwin may report a page-rounded POSIX shared-memory size after ftruncate.
+// Reuse the bounded padding policy of the existing control mapping for audio
+// mappings too. Subtraction after the lower-bound check cannot overflow.
+constexpr bool validMappingExtent(size_t actual, size_t logical, size_t page) {
+  return page > 0 && actual >= logical && actual - logical < page;
+}
+static_assert(validMappingExtent(12000, 12000, 16384));
+static_assert(validMappingExtent(16384, 12000, 16384));
+static_assert(!validMappingExtent(11999, 12000, 16384));
+static_assert(!validMappingExtent(28384, 12000, 16384));
+static_assert(!validMappingExtent(12000, 12000, 0));
+static_assert(validMappingExtent(std::numeric_limits<size_t>::max(),
+                                std::numeric_limits<size_t>::max() - 1, 4096));
 
 std::string hexDigest(const unsigned char *digest, size_t count) {
   static constexpr char digits[] = "0123456789ABCDEF";
@@ -90,7 +106,7 @@ int runControl(const char *name) {
   const size_t pageBytes = static_cast<size_t>(getpagesize());
   if (mapping->magic != kControlMagic || mapping->version != kControlVersion || mapping->requestStateBytes > kMaximumStateBytes ||
       capacity > static_cast<uint64_t>(kMaximumStateBytes) + kMaximumControlPayloadBytes ||
-      mapBytes < logicalBytes || mapBytes - logicalBytes >= pageBytes) { cleanup(); return 33; }
+      !validMappingExtent(mapBytes, logicalBytes, pageBytes)) { cleanup(); return 33; }
   try {
     const auto operation = static_cast<ControlOperation>(mapping->operation);
     if (operation != ControlOperation::ListParameters && operation != ControlOperation::Snapshot && operation != ControlOperation::SetNormalized)
@@ -123,7 +139,15 @@ int run(const char *name) {
   auto *mapping = static_cast<SharedMapping *>(mmap(nullptr, mapBytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
   if (mapping == MAP_FAILED) { close(fd); return 11; }
   const auto cleanup = [&] { munmap(mapping, mapBytes); close(fd); };
-  if (mapping->magic != kProtocolMagic || mapping->version != kProtocolVersion || mapping->stateBytes > kMaximumStateBytes || mapBytes != mappingBytes(mapping->stateBytes)) { cleanup(); return 12; }
+  const size_t logicalBytes = mappingBytes(mapping->stateBytes);
+  const size_t pageBytes = static_cast<size_t>(getpagesize());
+  if (mapping->magic != kProtocolMagic || mapping->version != kProtocolVersion ||
+      mapping->stateBytes > kMaximumStateBytes ||
+      !validMappingExtent(mapBytes, logicalBytes, pageBytes)) {
+    std::fprintf(stderr, "VST3 runtime mapping rejected: actual=%zu logical=%zu page=%zu\n",
+                 mapBytes, logicalBytes, pageBytes);
+    cleanup(); return 12;
+  }
   PluginInsert insert{};
   try { insert = controlInsert(statePayload(mapping), mapping->stateBytes); }
   catch (...) {
@@ -131,6 +155,10 @@ int run(const char *name) {
   }
   std::unique_ptr<PreparedEffect> effect;
   try { effect = prepareVst3Effect(insert); }
+  catch (const std::exception &error) {
+    std::fprintf(stderr, "VST3 runtime preparation failed: %s\n", error.what());
+    mapping->helperState.store(2, std::memory_order_release); cleanup(); return 13;
+  }
   catch (...) { mapping->helperState.store(2, std::memory_order_release); cleanup(); return 13; }
   mapping->pluginLatencyFrames = effect->latencyFrames();
   mapping->pluginTailFrames = effect->tailFrames();
