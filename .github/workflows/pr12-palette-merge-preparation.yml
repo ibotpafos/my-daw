@@ -1,0 +1,91 @@
+name: Prepare reviewed PR12 palette integration
+on:
+  push:
+    branches: [codex/pr12-palette-merge-preparation]
+permissions:
+  contents: read
+concurrency:
+  group: pr12-palette-merge-preparation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/pr12-palette-merge-preparation'
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      HEAD_PR: f95a8c9b62a91c3ba01eff1892f8c7e2c65f0603
+      MAIN_PR: fdcd21842c017257e1b41ce47eaa7445af590c0d
+      CANDIDATE: codex/pr12-palette-candidate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - name: Resolve only the pinned reviewed trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse origin/main)" = "$MAIN_PR"
+          test "$(git rev-parse origin/codex/midi-only-export-ui)" = "$HEAD_PR"
+          test "$(git rev-parse "$MAIN_PR^{tree}")" = 2ec275feafd9584920a4fa64244436fa09c6a075
+          test "$(git rev-parse "$HEAD_PR^{tree}")" = 05850ed6939f44e6d061b6eb2f0b10aa6753bfac
+          cp scripts/resolve-pr12-palette.py "$RUNNER_TEMP/resolve.py"
+          mkdir -p "$RUNNER_TEMP/parents/main" "$RUNNER_TEMP/parents/pr12" "$RUNNER_TEMP/integration"
+          git archive "$MAIN_PR" | tar -x -C "$RUNNER_TEMP/parents/main"
+          git archive "$HEAD_PR" | tar -x -C "$RUNNER_TEMP/parents/pr12"
+          git checkout --detach "$HEAD_PR"
+          python3 "$RUNNER_TEMP/resolve.py" "$RUNNER_TEMP/parents"
+          test ! -f .github/workflows/pr12-palette-merge-preparation.yml
+          test ! -f scripts/resolve-pr12-palette.py
+          python3 -m venv "$RUNNER_TEMP/docs-venv"
+          "$RUNNER_TEMP/docs-venv/bin/python" -m pip install --disable-pip-version-check -r requirements-docs.txt
+          "$RUNNER_TEMP/docs-venv/bin/python" scripts/build_handbook.py
+          git add docs/index.html
+          git diff --cached --check
+          "$RUNNER_TEMP/docs-venv/bin/python" scripts/check_docs.py --require-schemas
+          python3 -m unittest discover -s tests -p test_project_layout.py -v
+          python3 scripts/e2e_coverage.py --strict
+      - name: Native palette and complete application typecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DAW_PALETTE_EVIDENCE_DIR="$RUNNER_TEMP/integration"
+          bash scripts/test-command-palette.sh 2>&1 | tee "$RUNNER_TEMP/integration/palette.log"
+          bash scripts/typecheck-macos-ui.sh 2>&1 | tee "$RUNNER_TEMP/integration/typecheck.log"
+      - name: Publish candidate only, never main or the pull request branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN_PR"
+          test "$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)" = "$HEAD_PR"
+          test -z "$(git ls-remote origin "refs/heads/$CANDIDATE")"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          TREE=$(git write-tree)
+          COMMIT=$(printf '%s\n' 'merge: preserve Command Palette in integrated workspace and portable resampling' '' 'Resolve main PR8 against the PR1/5/6/7/12 stack. Retain both real parents, the shared Swift manifest, local keyboard ownership and all validation gates. Add native keyboard regression and regenerate handbook.' | git commit-tree "$TREE" -p "$HEAD_PR" -p "$MAIN_PR")
+          git update-ref "refs/heads/$CANDIDATE" "$COMMIT"
+          git checkout "$CANDIDATE"
+          git log -1 --format='%H%n%T%n%P' > "$RUNNER_TEMP/integration/revision.txt"
+          for REF in 6a98b700d4b99bbc5ff465d252ba7612486aae72 1597529bb43637a64f954d35889e541fa44fa683 c637b70d04bd474789ffced564241b82f90b6954 0e6cd04077a559705afa5d61c5005cd90180c049; do
+            if git merge-base --is-ancestor "$REF" "$COMMIT"; then
+              printf '%s ancestor\n' "$REF"
+            else
+              printf '%s not-ancestor\n' "$REF"
+            fi
+          done | tee "$RUNNER_TEMP/integration/ancestry.txt"
+          git diff "$HEAD_PR" HEAD > "$RUNNER_TEMP/integration/change.patch"
+          git archive --format=zip -o "$RUNNER_TEMP/integration/source.zip" HEAD
+          git bundle create "$RUNNER_TEMP/integration/candidate.bundle" "refs/heads/$CANDIDATE"
+          git push origin "$COMMIT:refs/heads/$CANDIDATE"
+      - name: Preserve actual candidate and native evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr12-palette-integration-${{ github.run_id }}
+          path: ${{ runner.temp }}/integration
+          if-no-files-found: error
+          retention-days: 7
