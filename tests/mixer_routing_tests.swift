@@ -135,6 +135,11 @@ struct MixerRoutingTests {
         matrix.strips = fixture
         matrix.focus(rowID: 1, destinationID: 102)
         matrix.needsLayout = true; matrix.layoutSubtreeIfNeeded()
+        let nameCell = matrix.channelTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSTextField
+        precondition(nameCell.stringValue == "Lead Vocal")
+        precondition(matrix.channelTable.frame.width >= 170 && nameCell.frame.width > 100, "Channel names need a nonzero document and cell width")
+        precondition(nameCell.convert(nameCell.bounds, to: matrix.channelTable).intersects(matrix.channelTable.visibleRect), "The channel name must be in the visible document")
+        print("Routing label geometry: table=\(matrix.channelTable.frame), cell=\(nameCell.frame), visible=\(matrix.channelTable.visibleRect)")
         guard let rep = matrix.bitmapImageRepForCachingDisplay(in: matrix.bounds) else { fatalError("Routing bitmap unavailable") }
         matrix.cacheDisplay(in: matrix.bounds, to: rep)
         guard let png = rep.representation(using: .png, properties: [:]) else { fatalError("Routing PNG encoding failed") }

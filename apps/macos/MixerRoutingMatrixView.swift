@@ -189,6 +189,7 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
             label.font = .systemFont(ofSize: 12, weight: row.kind == .bus ? .semibold : .regular)
             label.textColor = row.color ?? DAWDesignTokens.Color.text
             label.lineBreakMode = .byTruncatingTail; label.toolTip = row.title
+            label.frame.size = NSSize(width: max(1, (tableColumn?.width ?? 178) - 8), height: 24)
             label.setAccessibilityLabel("\(row.title), \(row.kind == .bus ? "bus" : "track")")
             return label
         }
@@ -300,6 +301,8 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
         search.frame = NSRect(x: mode.frame.maxX + 10, y: 9, width: max(0, w - mode.frame.maxX - 20), height: 26)
         let namesWidth = min(178, max(70, w * 0.30)), tableHeight = max(0, h - 100)
         channelTable.tableColumns.first?.width = namesWidth
+        // Explicit document width is required for the fixed, non-autoresizing names table.
+        channelTable.setFrameSize(NSSize(width: namesWidth, height: channelTable.frame.height))
         channelScroll.frame = NSRect(x: 0, y: 44, width: namesWidth, height: tableHeight)
         routingScroll.frame = NSRect(x: namesWidth, y: 44, width: max(0, w - namesWidth), height: tableHeight)
         status.frame = NSRect(x: 10, y: max(44, h - 50), width: max(0, w - 20), height: 44)
