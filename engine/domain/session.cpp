@@ -348,6 +348,8 @@ void validate(const State &state) {
                 throw Error("Duplicate send target");
             if (!std::isfinite(send.gain) || send.gain < -120 || send.gain > 24)
                 throw Error("Send gain outside -120…24 dB");
+            if (!std::isfinite(send.pan) || send.pan < -1 || send.pan > 1)
+                throw Error("Send balance outside -1…1");
         }
     }
     for (const auto &bus : state.buses)
@@ -489,6 +491,8 @@ prepareVocalTracks(const State &state, const std::vector<uint64_t> &selectedTrac
     return batch;
 }
 void Session::check(uint64_t expected) const {
+    if (mixerGesture)
+        throw Error("Mixer gesture is active");
     if (gesture || pluginParameterGesture)
         throw Error("Automation gesture is active");
     if (expected != current.revision)
@@ -2414,6 +2418,8 @@ void Session::redo(uint64_t expected) {
     current = std::move(next);
 }
 void Session::replace(State state) {
+    if (mixerGesture)
+        throw Error("Mixer gesture is active");
     if (gesture || pluginParameterGesture)
         throw Error("Automation gesture is active");
     validate(state);

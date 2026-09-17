@@ -58,3 +58,13 @@ apps/macos/PianoRoll/PianoRollProWindow.swift
 apps/macos/PianoRoll/PianoRollProWorkspace.swift
 apps/macos/PianoRoll/PianoRollTiming.swift
 apps/macos/PianoRoll/PianoRollTransforms.swift
+apps/macos/MixerConsoleController.swift
+apps/macos/MixerConsoleState.swift
+apps/macos/MixerControls.swift
+apps/macos/MixerGroupBinding.swift
+apps/macos/MixerLinkedLevels.swift
+apps/macos/MixerModels.swift
+apps/macos/MixerRoutingMatrixView.swift
+apps/macos/MixerRoutingPresenter.swift
+apps/macos/MixerScale.swift
+apps/macos/MixerStripView.swift

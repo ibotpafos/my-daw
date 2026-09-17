@@ -30,6 +30,8 @@ add_library(daw_core STATIC
   engine/audio/recording.cpp
   engine/audio/renderer.cpp
   engine/domain/session.cpp
+  engine/domain/mixer_gesture.cpp
+  engine/domain/send_controls.cpp
   engine/export/dawproject_model.cpp
   engine/export/dawproject_xml.cpp
   engine/export/dawproject_export.cpp

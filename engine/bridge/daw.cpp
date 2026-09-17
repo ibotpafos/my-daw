@@ -189,6 +189,8 @@ void cancelStalePlaybackPreparation(daw_session *s) noexcept {
         invalidatePlaybackPreparation(s);
 }
 void beginPlaybackPreparation(daw_session *s) {
+    if (s->model.mixerGestureActive())
+        throw daw::Error("Finish the mixer gesture before starting playback or recording");
     invalidatePlaybackPreparation(s);
     if (s->selectedFrame >= duration(s))
         s->selectedFrame = 0;
@@ -474,6 +476,8 @@ VocalPlan vocalPlan(daw_session *s, const uint64_t *selected, uint32_t count, co
 }
 void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPath,
                     uint64_t target) {
+    if (s->model.mixerGestureActive())
+        throw daw::Error("Finish the mixer gesture before starting playback or recording");
     if (recordingActive(s))
         throw daw::Error("Recording is already active");
     if (startFrame >= 48000 * 600)
@@ -892,6 +896,75 @@ int daw_rename_track(daw_session *s, uint64_t id, const char *name, uint64_t rev
         cancelStalePlaybackPreparation(s);
     });
 }
+int daw_begin_mixer_gesture(daw_session* s,int32_t target,uint64_t id,uint64_t bus,uint64_t rev) {
+    return guard(s,[&]{
+        if(recordingActive(s))throw daw::Error("Stop recording before editing the mixer");
+        if(target<DAW_MIXER_TRACK_GAIN||target>DAW_MIXER_SEND_PAN)throw daw::Error("Invalid mixer target");
+        s->model.beginMixerGesture(static_cast<daw::MixerEditTarget>(target),id,bus,rev);
+        cancelStalePlaybackPreparation(s);
+    });
+}
+int daw_begin_track_gain_group(daw_session* s,const uint64_t* ids,uint32_t count,uint64_t rev) {
+    return guard(s,[&]{
+        if(recordingActive(s))throw daw::Error("Stop recording before editing the mixer");
+        if(!ids || count<2 || count>256)throw daw::Error("Provide 2..256 track IDs");
+        s->model.beginTrackGainGroup(std::vector<uint64_t>(ids,ids+count),rev);
+        cancelStalePlaybackPreparation(s);
+    });
+}
+int daw_write_mixer_gesture(daw_session* s,double value) {
+    return guard(s,[&]{s->model.writeMixerGesture(value);
+        if(s->output)s->output->renderer.updateMix(s->model.mixerPreview());
+    });
+}
+int daw_end_mixer_gesture(daw_session* s,uint64_t rev) {
+    return guard(s,[&]{s->model.endMixerGesture(rev);cancelStalePlaybackPreparation(s);
+        if(s->output)s->output->renderer.updateMix(s->model.state());
+    });
+}
+void daw_cancel_mixer_gesture(daw_session* s) {
+    if(!s)return;
+    s->model.cancelMixerGesture();
+    if(s->output)s->output->renderer.updateMix(s->model.state());
+}
+int daw_set_solo_exclusive(daw_session* s,uint64_t id,int32_t solo,uint64_t rev){return guard(s,[&]{
+    if(solo!=0&&solo!=1)throw daw::Error("Solo must be 0 or 1");
+    s->model.exclusiveSolo(id,solo!=0,rev);cancelStalePlaybackPreparation(s);
+    if(s->output)s->output->renderer.updateMix(s->model.state());
+});}
+int daw_get_send_controls(daw_session* s,uint64_t trackID,uint64_t busID,daw_send_controls* out) {
+    return guard(s,[&] {
+        if(!out || out->struct_size!=sizeof(daw_send_controls)) throw daw::Error("Send controls ABI mismatch");
+        const auto& tracks=s->model.state().tracks;
+        auto track=std::find_if(tracks.begin(),tracks.end(),[&](const auto& t){return t.id==trackID;});
+        if(track==tracks.end()) throw daw::Error("Track not found");
+        auto send=std::find_if(track->sends.begin(),track->sends.end(),[&](const auto& v){return v.bus==busID;});
+        if(send==track->sends.end()) throw daw::Error("Send not found");
+        *out={sizeof(daw_send_controls),DAW_SEND_CONTROLS_VERSION,send->pan,send->muted?1:0,send->independentPan?1:0};
+    });
+}
+int daw_set_send_muted(daw_session* s,uint64_t track,uint64_t bus,int32_t muted,uint64_t rev) {
+    return guard(s,[&] {
+        if(recordingActive(s)) throw daw::Error("Stop recording before editing sends");
+        if(muted!=0 && muted!=1) throw daw::Error("Send mute must be 0 or 1");
+        const auto before=s->model.state().revision;
+        s->model.setSendMuted(track,bus,muted!=0,rev);
+        if(before==s->model.state().revision)return;
+        cancelStalePlaybackPreparation(s);
+        if(s->output) s->output->renderer.updateMix(s->model.state());
+    });
+}
+int daw_set_send_pan(daw_session* s,uint64_t track,uint64_t bus,double pan,int32_t independent,uint64_t rev) {
+    return guard(s,[&] {
+        if(recordingActive(s)) throw daw::Error("Stop recording before editing sends");
+        if(independent!=0 && independent!=1) throw daw::Error("Independent pan must be 0 or 1");
+        const auto before=s->model.state().revision;
+        s->model.setSendPan(track,bus,pan,independent!=0,rev);
+        if(before==s->model.state().revision)return;
+        cancelStalePlaybackPreparation(s);
+        if(s->output) s->output->renderer.updateMix(s->model.state());
+    });
+}
 int daw_set_gain(daw_session *s, uint64_t id, double gain, uint64_t rev) {
     return guard(s, [&] {
         s->model.gain(id, gain, rev);
@@ -1024,7 +1097,7 @@ int daw_get_bus_count(daw_session *s, uint32_t *count) {
 int daw_delete_bus(daw_session *s, uint64_t id, uint64_t rev) {
     return guard(s, [&] {
         s->model.deleteBus(id, rev);
-        cancelStalePlaybackPreparation(s);
+        resetTransport(s);
     });
 }
 int daw_get_send(daw_session *s, uint64_t trackID, uint32_t index, daw_send *out) {
@@ -1041,15 +1114,17 @@ int daw_get_send(daw_session *s, uint64_t trackID, uint32_t index, daw_send *out
         *out = {sizeof(daw_send), send.bus, send.gain, send.preFader ? 1 : 0};
     });
 }
-int daw_upsert_send(daw_session *s, uint64_t track, uint64_t bus, double gain, int32_t pre,
-                    uint64_t rev) {
-    return guard(s, [&] {
-        if (pre != 0 && pre != 1)
-            throw daw::Error("Send tap must be 0 or 1");
-        s->model.upsertSend(track, bus, gain, pre != 0, rev);
-        resetTransport(s);
-    });
-}
+int daw_upsert_send(daw_session* s,uint64_t track,uint64_t bus,double gain,int32_t pre,uint64_t rev){return guard(s,[&]{
+    if(pre!=0&&pre!=1)throw daw::Error("Send tap must be 0 or 1");
+    bool scalarOnly=false;
+    for(const auto& t:s->model.state().tracks)if(t.id==track)
+        for(const auto& send:t.sends)if(send.bus==bus)scalarOnly=send.preFader==(pre!=0);
+    const auto before=s->model.state().revision;
+    s->model.upsertSend(track,bus,gain,pre!=0,rev);
+    if(before==s->model.state().revision)return;
+    if(scalarOnly){cancelStalePlaybackPreparation(s);if(s->output)s->output->renderer.updateMix(s->model.state());}
+    else resetTransport(s);
+});}
 int daw_remove_send(daw_session *s, uint64_t track, uint64_t bus, uint64_t rev) {
     return guard(s, [&] {
         s->model.removeSend(track, bus, rev);
@@ -3012,6 +3087,8 @@ int daw_save_draft(daw_session *s, const char *path) {
 }
 int daw_open_draft(daw_session *s, const char *path) {
     return guard(s, [&] {
+        if (s->model.mixerGestureActive())
+            throw daw::Error("Finish the mixer gesture before opening a project");
         auto loaded = daw::readDraft(required(path));
         if (s->input) {
             s->input->cancel();
