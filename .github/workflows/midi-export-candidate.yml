@@ -36,7 +36,7 @@ jobs:
           patch = gzip.decompress(base64.b64decode(encoded, validate=True))
           path = pathlib.Path('build/mix-export-ui/candidate.patch')
           path.write_bytes(patch)
-          for name, expected in [(str(path), 'a1702504724a86b4e876afe87b85bc224f2a5a1a2d913b907cfcfcdc7a321348'), ('.github/midi-export-fixtures.patch', '606708088f5881153fb03b38e8845120b8203d0c01f6c9601233f4589a95c832')]:
+          for name, expected in [(str(path), 'a1702504724a86b4e876afe87b85bc224f2a5a1a2d913b907cfcfcdc7a321348'), ('.github/midi-export-fixtures.patch', '705e8f18e4abc7ff0d0478978da30345e1fe899831c29c8d817fa6e05332a470')]:
               if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() != expected: raise SystemExit('Patch checksum mismatch: '+name)
               subprocess.run(['git', 'apply', '--index', '--check', name], check=True)
               subprocess.run(['git', 'apply', '--index', name], check=True)
