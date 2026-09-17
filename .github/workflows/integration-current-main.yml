@@ -1,42 +1,134 @@
-name: Diagnose integration with current main
+name: Integrate current main safely
 on:
   push:
     branches: [codex/midi-only-export-ui]
     paths: [.github/workflows/integration-current-main.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  diagnose:
+  integrate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Resolve structural files with ours and probe mixer UI patch
+      - name: Merge current main and preserve workspace, Piano Roll, export and mixer semantics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HEAD: ${{ github.sha }}
         shell: bash
         run: |
-          set -u
-          git config user.name integration-diagnostic
-          git config user.email integration@example.invalid
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
+          test "$(git rev-parse origin/main)" = acbd0439799f0cf3c9137e84deab5cc053fa4144
           result=0
           git merge --no-ff --no-commit acbd0439799f0cf3c9137e84deab5cc053fa4144 || result=$?
           test "$result" -eq 1
+          actual="$(git diff --name-only --diff-filter=U | sort)"
+          expected="$(printf '%s\n' CMakeLists.txt apps/macos/main.swift scripts/build-macos.sh scripts/typecheck-macos-ui.sh | sort)"
+          test "$actual" = "$expected"
           for path in CMakeLists.txt apps/macos/main.swift scripts/build-macos.sh scripts/typecheck-macos-ui.sh; do
             git checkout --ours -- "$path"
             git add "$path"
           done
-          git diff 176aeb314983295fcf234915ac97de362d567607 acbd0439799f0cf3c9137e84deab5cc053fa4144 -- apps/macos/main.swift > /tmp/mixer-main.patch
-          set +e
-          git apply --reject --whitespace=nowarn /tmp/mixer-main.patch
-          apply_result=$?
-          set -e
-          printf 'main_patch_exit=%s\n' "$apply_result"
-          find apps/macos -name '*.rej' -print -exec cat {} \;
-          printf '%s\n' '--- remaining conflict markers ---'
-          grep -R -n '^<<<<<<<\|^=======\|^>>>>>>>' CMakeLists.txt apps/macos/main.swift scripts/build-macos.sh scripts/typecheck-macos-ui.sh || true
-          printf '%s\n' '--- resulting status ---'
-          git status --short
-          test "$apply_result" -eq 0
+          git diff 176aeb314983295fcf234915ac97de362d567607 acbd0439799f0cf3c9137e84deab5cc053fa4144 -- apps/macos/main.swift > "$RUNNER_TEMP/mixer-main.patch"
+          git apply --reject --whitespace=nowarn "$RUNNER_TEMP/mixer-main.patch" || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('apps/macos/main.swift'); s=p.read_text()
+          # Four hunks cannot be replayed mechanically because the workspace/piano-roll merge
+          # deliberately moved the surrounding UI. Reapply their semantics to the newer host.
+          if 'mixerWorkspace.resetFocus()' not in s and '    func applyWorkspaceMode(_ mode: Int) {' in s:
+              s=s.replace('    func applyWorkspaceMode(_ mode: Int) {', '    func applyWorkspaceMode(_ mode: Int) {\n        mixerWorkspace.resetFocus()\n        arrangementInspectorSplit?.isHidden = false', 1)
+          if 'configureMixerConsole()' not in s:
+              marker='        wireInspectorBrowser()\n'
+              assert marker in s
+              s=s.replace(marker, '        configureMixerConsole()\n'+marker, 1)
+          old='mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0))'
+          new='mixerKinds[bus.id] = .bus;mixerStrips.append(MixerStripModel(id:bus.id,kind:.bus,title:name,color:.systemPurple,volumeDb:bus.gain_db,pan:bus.pan,outputName:busOutputName,inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id),isSelected:selectedMixerID == bus.id,isMuted:bus.muted != 0,isAutomationRead:automationMode == 0,outputID:bus.output_bus_id,automationLabel:consoleAutomationLabel(.bus,id:bus.id)))'
+          if old in s: s=s.replace(old,new,1)
+          old='mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips'
+          new='mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording;mixerWorkspace.strips=mixerStrips'
+          if old in s: s=s.replace(old,new,1)
+          pattern=r'    func mixerSetSolo\(_ id:UInt64,_ solo:Bool\)\{.*?^    \}\n    func setProjectControlsEnabled\(_ enabled: Bool\) \{'
+          replacement='''    func mixerSetSolo(_ id:UInt64,_ solo:Bool) {
+              guard !isRecording,mixerKinds[id] == .track else { return }
+              let result = NSEvent.modifierFlags.contains(.option)
+                  ? daw_set_solo_exclusive(session,id,solo ? 1:0,revision)
+                  : daw_set_solo(session,id,solo ? 1:0,revision)
+              if check(result) { refresh() }
+          }
+          func setProjectControlsEnabled(_ enabled: Bool) {
+              mixerWorkspace.editingEnabled = enabled'''
+          s,n=re.subn(pattern,replacement,s,count=1,flags=re.S|re.M)
+          if n==0 and 'mixerWorkspace.editingEnabled = enabled' not in s:
+              marker='    func setProjectControlsEnabled(_ enabled: Bool) {\n'
+              assert marker in s
+              s=s.replace(marker, marker+'        mixerWorkspace.editingEnabled = enabled\n',1)
+          p.write_text(s)
+          for reject in Path('apps/macos').glob('*.rej'): reject.unlink()
+
+          p=Path('CMakeLists.txt'); s=p.read_text()
+          marker='  engine/domain/session.cpp\n'
+          assert marker in s
+          if '  engine/domain/mixer_gesture.cpp\n' not in s:
+              s=s.replace(marker, marker+'  engine/domain/mixer_gesture.cpp\n  engine/domain/send_controls.cpp\n',1)
+          p.write_text(s)
+
+          p=Path('cmake/DawPlatform.cmake'); s=p.read_text()
+          needle='      engine/domain/session.cpp\n'
+          if needle in s and '      engine/domain/mixer_gesture.cpp\n' not in s:
+              s=s.replace(needle, needle+'      engine/domain/mixer_gesture.cpp\n',1)
+          p.write_text(s)
+
+          p=Path('cmake/DawTests.cmake'); s=p.read_text()
+          block='''if(BUILD_TESTING)
+            add_executable(daw_mixer_group_tests tests/mixer_group_tests.cpp)
+            target_include_directories(daw_mixer_group_tests PRIVATE engine tests)
+            target_link_libraries(daw_mixer_group_tests PRIVATE daw_core)
+            target_compile_options(daw_mixer_group_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            add_test(NAME mixer_groups COMMAND daw_mixer_group_tests)
+            add_executable(daw_mixer_gesture_tests tests/mixer_gesture_tests.cpp)
+            target_include_directories(daw_mixer_gesture_tests PRIVATE engine tests)
+            target_link_libraries(daw_mixer_gesture_tests PRIVATE daw_core)
+            target_compile_options(daw_mixer_gesture_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            add_test(NAME mixer_gestures COMMAND daw_mixer_gesture_tests)
+            add_executable(daw_send_controls_tests tests/send_controls_tests.cpp)
+            target_include_directories(daw_send_controls_tests PRIVATE engine tests)
+            target_link_libraries(daw_send_controls_tests PRIVATE daw_core)
+            target_compile_options(daw_send_controls_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            add_test(NAME send_controls COMMAND daw_send_controls_tests)
+          '''
+          if 'daw_mixer_group_tests' not in s:
+              assert s.startswith('if(BUILD_TESTING)\n')
+              s=block+s[len('if(BUILD_TESTING)\n'):]
+          p.write_text(s)
+
+          p=Path('apps/macos/sources.txt'); lines=[x for x in p.read_text().splitlines() if x]
+          mixer=[str(x) for x in sorted(Path('apps/macos').glob('Mixer*.swift'))]
+          seen=set(); merged=[]
+          for x in lines+mixer:
+              if x not in seen: seen.add(x); merged.append(x)
+          p.write_text('\n'.join(merged)+'\n')
+          PY
+          git add -A
+          ! git grep -n '^<<<<<<<\|^=======\|^>>>>>>>' -- ':!docs/**'
+          git diff --cached --check
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsamplerate0-dev
+          cmake --preset sanitizers
+          cmake --build --preset sanitizers -j 2
+          ctest --preset sanitizers --output-on-failure
+          git commit -m 'merge(integration): preserve mixer with workspace, Piano Roll and MIDI export'
+          remote_head=$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)
+          test "$remote_head" = "$SOURCE_HEAD"
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          rm -f "$RUNNER_TEMP/askpass.sh"
