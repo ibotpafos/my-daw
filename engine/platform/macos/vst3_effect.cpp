@@ -294,13 +294,14 @@ public:
       std::fill_n(right, frames, 0.0f);
     }
     const auto result = processor()->process(data);
-    if (result == kResultOk || result == kResultTrue) {
-      if (outputs.silenceFlags & 1U)
-        std::fill_n(left, frames, 0.0f);
-      if (outputs.silenceFlags & 2U)
-        std::fill_n(right, frames, 0.0f);
+    // Silence flags are optional optimization hints, not a replacement for
+    // the valid sample buffers required by VST3. In particular, the pinned
+    // mda synth can retain a silent flag from an earlier internal 16-sample
+    // slice even when a later slice contains a note. Do not erase that audio.
+    // Source buffers were initialized above; downstream inserts receive the
+    // actual samples with no silence optimization, as on the effect path.
+    if (result == kResultOk || result == kResultTrue)
       return true;
-    }
     std::copy_n(inputLeft.data(), frames, left);
     std::copy_n(inputRight.data(), frames, right);
     return false;
