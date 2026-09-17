@@ -24,7 +24,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          test "$(git rev-parse HEAD^)" = 4b91b93a10bb7108dac2d600e4c8f305c1dfaed3
+          test "$(git rev-parse HEAD^)" = fc6c71ba2096b9c61fc071c31613528493a3816d
           test "$(git rev-parse origin/main)" = fdcd21842c017257e1b41ce47eaa7445af590c0d
           result=0
           git merge --no-ff --no-commit fdcd21842c017257e1b41ce47eaa7445af590c0d || result=$?
@@ -40,8 +40,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
-          # Keep the new palette window and restore the existing focused-editor
-          # keyboard boundary, without replacing the workspace by the old host.
+          # Combine the palette window with the existing focused-editor boundary.
           p=Path('apps/macos/DAWWindow.swift')
           s=subprocess.check_output(['git','show','fdcd21842c017257e1b41ce47eaa7445af590c0d:apps/macos/DAWWindow.swift'],text=True)
           s=s.replace('    var onPlayStop:', '    var onFocusedKeyDown: ((NSEvent) -> Bool)?\n    var shouldHandleClipDelete: (() -> Bool)?\n    var onPlayStop:',1)
@@ -52,16 +51,11 @@ jobs:
           p=Path('apps/macos/main.swift');s=p.read_text()
           marker='        let edit = NSMenuItem(); edit.title = "Текст"; let submenu = NSMenu(title: "Текст")\n'
           assert s.count(marker)==1
-          s=s.replace(marker,'''        if let viewMenu = main.items.last?.submenu {
-                      viewMenu.insertItem(.separator(), at: 0)
-                      viewMenu.insertItem(DAWWindow.makeCommandPaletteMenuItem(), at: 0)
-                  }
-          '''.replace('                      ','            ').replace('                  }','        }').replace('\n          ','\n')+marker)
-          p.write_text(s)
+          menu='\n'.join(['        if let viewMenu = main.items.last?.submenu {','            viewMenu.insertItem(.separator(), at: 0)','            viewMenu.insertItem(DAWWindow.makeCommandPaletteMenuItem(), at: 0)','        }',''])
+          p.write_text(s.replace(marker,menu+marker,1))
           p=Path('apps/macos/sources.txt');s=p.read_text()
           p.write_text(s+'apps/macos/CommandPaletteSearch.swift\napps/macos/CommandPalette.swift\n')
-          # New libsamplerate adapter makes successful conversion mandatory on
-          # Linux too. Keep the extra cancellation/frame checks from main.
+          # The portable adapter requires successful conversion on Linux too.
           p=Path('tests/import_jobs.cpp');s=p.read_text()
           marker='    daw::cancelImport(*projectRate);\n'
           assert s.count(marker)==1
@@ -70,32 +64,30 @@ jobs:
           p=Path('tests/macos_command_palette_appkit_tests.swift');s=p.read_text()
           marker='        expect(host.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: host)), "main window shortcut opens palette")\n'
           assert s.count(marker)==1
-          block='''        // Regression for the joined workspace: ordinary editor shortcuts and
-                  // Delete ownership must survive integrating the palette window boundary.
-                  var editorDeletes = 0, clipDeletes = 0, focusedShortcuts = 0
-                  host.onDeleteSelectedClip = { clipDeletes += 1 }
-                  host.shouldHandleClipDelete = { false }
-                  host.onFocusedKeyDown = { event in
-                      if event.keyCode == 51 && event.modifierFlags.isEmpty { editorDeletes += 1; return true }
-                      if event.keyCode == 14 && event.modifierFlags.contains(.command) { focusedShortcuts += 1; return true }
-                      return false
-                  }
-                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
-                  expect(editorDeletes == 1 && clipDeletes == 0, "focused editor owns Delete without deleting a clip")
-                  expect(host.performKeyEquivalent(with: key(code: 14, characters: "e", flags: .command, window: host)), "focused editor key equivalent is preserved")
-                  expect(focusedShortcuts == 1, "focused key handler runs once")
-                  host.onFocusedKeyDown = nil
-                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
-                  expect(clipDeletes == 0, "clip-delete guard still prevents a stale global deletion")
-                  host.shouldHandleClipDelete = { true }
-                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
-                  expect(clipDeletes == 1, "global clip deletion remains available when explicitly owned")
-                  var interceptedPalette = 0
-                  host.onFocusedKeyDown = { _ in interceptedPalette += 1; return true }
-          '''
-          block=block.splitlines(keepends=True)
-          block=''.join(line[10:] if i>0 and line.startswith('          ') else line for i,line in enumerate(block))
-          s=s.replace(marker,block+marker+'        expect(interceptedPalette == 0, "palette shortcut precedes the focused editor key handler")\n        host.onFocusedKeyDown = nil\n')
+          block='\n'.join([
+              '        // Regression for the joined workspace: ordinary editor shortcuts and',
+              '        // Delete ownership must survive integrating the palette window boundary.',
+              '        var editorDeletes = 0, clipDeletes = 0, focusedShortcuts = 0',
+              '        host.onDeleteSelectedClip = { clipDeletes += 1 }',
+              '        host.shouldHandleClipDelete = { false }',
+              '        host.onFocusedKeyDown = { event in',
+              '            if event.keyCode == 51 && event.modifierFlags.isEmpty { editorDeletes += 1; return true }',
+              '            if event.keyCode == 14 && event.modifierFlags.contains(.command) { focusedShortcuts += 1; return true }',
+              '            return false',
+              '        }',
+              '        host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))',
+              '        expect(editorDeletes == 1 && clipDeletes == 0, "focused editor owns Delete without deleting a clip")',
+              '        expect(host.performKeyEquivalent(with: key(code: 14, characters: "e", flags: .command, window: host)), "focused editor key equivalent is preserved")',
+              '        expect(focusedShortcuts == 1, "focused key handler runs once")',
+              '        host.onFocusedKeyDown = nil',
+              '        host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))',
+              '        expect(clipDeletes == 0, "clip-delete guard still prevents a stale global deletion")',
+              '        host.shouldHandleClipDelete = { true }',
+              '        host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))',
+              '        expect(clipDeletes == 1, "global clip deletion remains available when explicitly owned")',
+              '        var interceptedPalette = 0',
+              '        host.onFocusedKeyDown = { _ in interceptedPalette += 1; return true }',''])
+          s=s.replace(marker,block+marker+'        expect(interceptedPalette == 0, "palette shortcut precedes the focused editor key handler")\n        host.onFocusedKeyDown = nil\n',1)
           p.write_text(s)
           p=Path('docs/89-main-integration.md');s=p.read_text()
           s=s.replace('Отдельная Command Palette (#8) этим срезом не включена.','Перед финальным merge main снова продвинулся до `fdcd218` (Command Palette #8,\nверсия 1.74.0). Палитра сохранена: Cmd-K, меню, история и native тесты входят\nв совместную сборку. Из исходной ветки палитры не перенесены устаревшие\nожидания отказа Linux-ресемплинга: теперь обе платформы обязаны успешно\nконвертировать WAV/AIFF через уже подключённые native/libsamplerate адаптеры.')
