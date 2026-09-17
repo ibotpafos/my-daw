@@ -29,11 +29,18 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     private let libraryPane = NSView(), inspectorPane = NSView()
     private let arrangementPane = NSView(), dockPane = NSView()
     private var applying = false
+    private(set) var dockFocused = false
     private let defaults: UserDefaults
     private(set) var preference: WorkspaceLayout
     var onChange: ((WorkspaceLayout) -> Void)?
     var geometry: WorkspaceLayout.Geometry {
-        preference.geometry(width: bounds.width, height: bounds.height, divider: columns.dividerThickness)
+        if dockFocused {
+            return WorkspaceLayout.Geometry(library: 0, center: bounds.width, inspector: 0,
+                arrangement: 0, dock: bounds.height, gap: 0)
+        }
+        var adapted = preference
+        if adapted.dockTab == .mixer { adapted.dockHeight = max(adapted.dockHeight, 400) }
+        return adapted.geometry(width: bounds.width, height: bounds.height, divider: columns.dividerThickness)
     }
     override var isFlipped: Bool { true }
 
@@ -60,17 +67,25 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     override func layout() { super.layout(); applyGeometry() }
+    func setDockFocus(_ focused: Bool) {
+        guard dockFocused != focused else { return }
+        dockFocused = focused
+        applyGeometry(); onChange?(preference)
+    }
     func toggle(_ pane: WorkspaceLayout.Pane) {
+        dockFocused = false
         preference.toggle(pane); commitPreference()
     }
     func show(_ pane: WorkspaceLayout.Pane) {
+        dockFocused = false
         switch pane { case .library: preference.libraryVisible = true; case .inspector: preference.inspectorVisible = true; case .dock: preference.dockVisible = true }
         commitPreference()
     }
     func selectDock(_ tab: WorkspaceDockTab) {
+        if tab != .mixer { dockFocused = false }
         preference.dockTab = tab; preference.dockVisible = true; commitPreference()
     }
-    func resetLayout() { preference = WorkspaceLayout(); commitPreference() }
+    func resetLayout() { dockFocused = false; preference = WorkspaceLayout(); commitPreference() }
     private func commitPreference() {
         preference.save(to: defaults); applyGeometry(); onChange?(preference)
     }
@@ -100,6 +115,7 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
         libraryPane.isHidden = g.library == 0
         inspectorPane.isHidden = g.inspector == 0
         dockPane.isHidden = g.dock == 0
+        arrangementPane.isHidden = g.arrangement == 0
         columns.frame = bounds
         layoutColumns(g)
         layoutCenter(g)
@@ -115,7 +131,7 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     }
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
     func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
-        if splitView === center { return dockPane.isHidden }
+        if splitView === center { return dockPane.isHidden || arrangementPane.isHidden }
         return dividerIndex == 0 ? libraryPane.isHidden : inspectorPane.isHidden
     }
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat, ofSubviewAt index: Int) -> CGFloat {
@@ -128,7 +144,7 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
         return max(center.frame.minX + 520, splitView.bounds.width - 240)
     }
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard !applying, bounds.width > 0, let split = notification.object as? NSSplitView else { return }
+        guard !applying, !dockFocused, bounds.width > 0, let split = notification.object as? NSSplitView else { return }
         if split === center, !dockPane.isHidden { preference.dockHeight = dockPane.frame.height }
         if split === columns {
             if !libraryPane.isHidden { preference.libraryWidth = libraryPane.frame.width }

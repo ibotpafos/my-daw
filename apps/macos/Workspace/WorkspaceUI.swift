@@ -110,6 +110,7 @@ extension DraftApp {
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
             self.workspaceDock?.select(preference.dockTab)
+            if self.workspace?.dockFocused != true { self.mixerWorkspace.resetFocus() }
             self.window.contentView?.layoutSubtreeIfNeeded()
             self.fitTrackHeaderWidth(); self.fitTimelineViewport(); self.updateWorkspaceChrome()
         }
@@ -134,6 +135,8 @@ extension DraftApp {
     func applyWorkspaceMode(_ mode: Int) {
         // A workspace preset changes presentation only, never starts recording,
         // rewrites project data or rebuilds the audio graph.
+        workspace?.setDockFocus(false)
+        mixerWorkspace.resetFocus()
         workspace?.selectDock(mode >= 2 ? .mixer : .devices)
         if mode == 1 || mode == 3 { workspace?.show(.inspector) }
         if mode == 3 { selectedMixerID = 0; updateMixerInspector(0) }
@@ -160,7 +163,7 @@ extension DraftApp {
     }
     var shouldHandleWorkspaceClipDelete: Bool {
         guard let view = window.firstResponder as? NSView else { return true }
-        return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor) && !view.isDescendant(of: channelRack)
+        return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor) && !view.isDescendant(of: channelRack) && !view.isDescendant(of: mixerWorkspace)
     }
 
     func refreshWorkspaceSelection() {
@@ -254,5 +257,6 @@ extension DraftApp {
         }
         inspectorBrowser.editingEnabled = !isRecording && !midiTakeArmed
         libraryBrowser.mutationEnabled = !isRecording && !midiTakeArmed
+        mixerWorkspace.editingEnabled = !isRecording && !midiTakeArmed
     }
 }

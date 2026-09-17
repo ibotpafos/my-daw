@@ -143,7 +143,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let automationArmPopup = NSPopUpButton()
     var automationMode: Int32 = 0 // 0 Read, 1 Touch, 2 Latch
     var automationArm: (target: Int32, id: UInt64)?
-    var consoleGesture: (automation: Bool, revision: UInt64)?
+    var consoleGesture: (automation: Bool, revision: UInt64)? {
+        didSet { updateMixExportAvailability() }
+    }
     var automationGesture: (target: Int32, id: UInt64)?
     var automationTargets: [(target: Int32, id: UInt64, title: String)] = []
     var rangeStart: UInt64?
@@ -1177,7 +1179,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id,title:name);group.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             consoleRows.addArrangedSubview(group);group.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
-        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording;mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
+        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording && !midiTakeArmed;mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
         updateMixExportAvailability()
         dawprojectButton.isEnabled = !exportBusy && !isRecording
@@ -1391,16 +1393,16 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerSetVolume(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};let target:Int32;let targetID:UInt64;switch kind{case .track:target=automationTrackVolume;targetID=id;case .bus:target=automationBusGain;targetID=id;case .master:target=automationMasterGain;targetID=0};if automationWrites(target:target,id:targetID){_ = writeAutomation(target:target,id:targetID,value:value);return};let result:Int32;switch kind{case .track:result=daw_set_gain(session,id,value,revision);case .bus:result=daw_set_bus_gain(session,id,value,revision);case .master:result=daw_set_master_gain(session,value,revision)};if check(result){syncRevision()}}
     func mixerEndVolume(){if automationGesture != nil{endAutomationGesture()}else{refresh()}}
     func mixerSetPan(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_pan(session,id,value,revision)){syncRevision()};case .bus:if check(daw_set_bus_pan(session,id,value,revision)){syncRevision()};case .master:return}}
-    func mixerSetMute(_ id:UInt64,_ muted:Bool){guard let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
+    func mixerSetMute(_ id:UInt64,_ muted:Bool){guard !isRecording, !midiTakeArmed, consoleGesture == nil, let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
     func mixerSetSolo(_ id:UInt64,_ solo:Bool) {
-    guard !isRecording,mixerKinds[id] == .track else { return }
-    let result = NSEvent.modifierFlags.contains(.option)
-        ? daw_set_solo_exclusive(session,id,solo ? 1:0,revision)
-        : daw_set_solo(session,id,solo ? 1:0,revision)
-    if check(result) { refresh() }
-}
-func setProjectControlsEnabled(_ enabled: Bool) {
-    mixerWorkspace.editingEnabled = enabled
+        guard !isRecording, !midiTakeArmed, consoleGesture == nil, mixerKinds[id] == .track else { return }
+        let result = NSEvent.modifierFlags.contains(.option)
+            ? daw_set_solo_exclusive(session,id,solo ? 1:0,revision)
+            : daw_set_solo(session,id,solo ? 1:0,revision)
+        if check(result) { refresh() }
+    }
+    func setProjectControlsEnabled(_ enabled: Bool) {
+        mixerWorkspace.editingEnabled = enabled
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
             if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== exportButton { button.isEnabled = enabled }

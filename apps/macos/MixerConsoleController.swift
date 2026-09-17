@@ -10,7 +10,7 @@ extension DraftApp {
         return automationMode == automationTouch ? "Touch · armed" : "Latch · armed"
     }
     private var consoleRoutingEditable: Bool {
-        !isRecording && consoleGesture == nil && automationGesture == nil && pluginParameterGesture == nil
+        !isRecording && !midiTakeArmed && consoleGesture == nil && automationGesture == nil && pluginParameterGesture == nil
     }
     func configureMixerConsole() {
         let groups = MixerGroupBinding(
@@ -43,7 +43,7 @@ extension DraftApp {
         mixerWorkspace.onSendPan = { [weak self] _,_,value in self?.consoleWrite(value) }
         mixerWorkspace.onSendPanEnd = { [weak self] _,_,_ in self?.consoleEnd() }
         mixerWorkspace.onPan = { [weak self] id, value in
-            guard let self, !isRecording else { return }
+            guard let self, consoleRoutingEditable else { return }
             mixerSetPan(id,value); refresh()
         }
         mixerWorkspace.onOutput = { [weak self] id, bus in self?.consoleRoute(id,to:bus) }
@@ -59,19 +59,18 @@ extension DraftApp {
             return (snapshot.can_undo != 0,snapshot.can_redo != 0)
         }
         mixerWorkspace.onClearSolo = { [weak self] in
-            guard let self, !isRecording else { return }
+            guard let self, consoleRoutingEditable else { return }
             if check(daw_set_solo_exclusive(session,0,0,revision)) { refresh() }
         }
         mixerWorkspace.onRename = { [weak self] id,name in
-            guard let self, !isRecording, let kind=mixerKinds[id],kind != .master else { return }
+            guard let self, consoleRoutingEditable, let kind=mixerKinds[id],kind != .master else { return }
             let result = kind == .track ? daw_rename_track(session,id,name,revision) : daw_rename_bus(session,id,name,revision)
             if check(result) { refresh() }
         }
         mixerWorkspace.onResetPeaks = { [weak self] in self?.meterHolds.removeAll() }
         mixerWorkspace.onFocus = { [weak self] focused in
             guard let self else { return }
-            arrangementInspectorSplit?.isHidden = focused
-            arrangementConsoleSplit?.adjustSubviews()
+            workspace?.setDockFocus(focused)
             window.contentView?.layoutSubtreeIfNeeded()
         }
         installMixerConsoleMenu()
@@ -115,7 +114,7 @@ extension DraftApp {
     @objc private func mixerShowAllChannels(){mixerWorkspace.consoleState.showAll();mixerWorkspace.needsLayout=true}
 
     func consoleBegin(_ id: UInt64, send: UInt64?, pan: Bool = false) {
-        guard !isRecording, consoleGesture == nil, let kind = mixerKinds[id] else { return }
+        guard consoleRoutingEditable, let kind = mixerKinds[id] else { return }
         if send == nil {
             let target: Int32 = kind == .track ? automationTrackVolume : kind == .bus ? automationBusGain : automationMasterGain
             if automationWrites(target:target,id:id) {
@@ -130,7 +129,7 @@ extension DraftApp {
         }
     }
     func consoleWrite(_ value: Double) {
-        guard let gesture = consoleGesture, !isRecording else { return }
+        guard let gesture = consoleGesture, !isRecording, !midiTakeArmed else { return }
         if gesture.automation {
             if let target = automationGesture { _ = writeAutomation(target:target.target,id:target.id,value:value) }
         } else if !check(daw_write_mixer_gesture(session,value)) {
@@ -140,6 +139,11 @@ extension DraftApp {
     func consoleEnd() {
         guard let gesture = consoleGesture else { refresh(); return }
         consoleGesture = nil
+        guard !isRecording, !midiTakeArmed else {
+            if gesture.automation { daw_cancel_automation_gesture(session); automationGesture = nil }
+            else { daw_cancel_mixer_gesture(session) }
+            refresh(); return
+        }
         if gesture.automation { endAutomationGesture() }
         else {
             if !check(daw_end_mixer_gesture(session,gesture.revision)) { daw_cancel_mixer_gesture(session) }
@@ -157,7 +161,7 @@ extension DraftApp {
         _ = check(result); refresh(); pollTransport();MixerRoutingPresenter.shared.reload()
     }
     private func consoleInsert(_ id: UInt64, _ action: MixerInsertAction) {
-        guard !isRecording, let owner = consoleOwner(id) else { return }
+        guard consoleRoutingEditable, let owner = consoleOwner(id) else { return }
         switch action {
         case .add:
             let title = mixerWorkspace.strips.first { $0.id == id }?.title ?? "Channel"

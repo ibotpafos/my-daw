@@ -277,6 +277,8 @@ func runWorkspaceIntegrationTests() {
         controller.isRecording = false; controller.refreshDeviceRack()
     } else { fatalError("Required system AU effect missing; not a passing skip") }
     assertions += runSignalChainTests(controller)
+    controller.window.setContentSize(NSSize(width: 1536, height: 1000))
+    assertions += runWorkspaceMixerTests(controller)
     browser.audioItems.removeAll(where: { $0.id == audio.id || $0.id == missing.id })
     controller.currentURL = temporary.appendingPathComponent("Midnight Feelings.mydawdraft")
     controller.updateWorkspaceChrome(); workspace.resetLayout()
