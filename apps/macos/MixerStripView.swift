@@ -3,6 +3,14 @@ import AppKit
 @MainActor
 final class MixerStripView: NSView, NSTextFieldDelegate {
     private(set) var model: MixerStripModel
+    var isGroupSelected = false { didSet { if oldValue != isGroupSelected { updateSelectionBorder() } } }
+    private func updateSelectionBorder() {
+        let selected = model.isSelected || isGroupSelected
+        layer?.borderWidth = selected ? 1.5 : 0.5
+        layer?.borderColor = (selected ? model.color ?? DAWDesignTokens.Color.accent : DAWDesignTokens.Color.border.withAlphaComponent(0.6)).cgColor
+        setAccessibilityHelp(isGroupSelected ? "Selected for linked static levels. Command-click toggles, Shift-click selects a range." : "Command-click to select multiple track faders.")
+        needsDisplay = true
+    }
     weak var workspace: MixerWorkspaceView?
     let fader = MixerFaderView(frame: .zero)
     let meter = MixerMeterView(frame: .zero)
@@ -63,7 +71,8 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         }
         title.isBordered = false; title.alignment = .center
         footer.isBordered = false; footer.alignment = .center
-        title.invoke = { [weak self] in self?.select() }; footer.invoke = { [weak self] in self?.select() }
+        title.invokeWithModifiers = { [weak self] in self?.select(modifiers:$0) }
+        footer.invokeWithModifiers = title.invokeWithModifiers
         title.contextMenu = { [weak self] in self?.channelMenu() ?? NSMenu() }
         footer.contextMenu = title.contextMenu
         mute.setButtonType(.toggle); solo.setButtonType(.toggle); arm.setButtonType(.toggle)
@@ -81,12 +90,17 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         fader.onBegin = { [weak self] in self?.beginGain() }
         fader.onChange = { [weak self] in self?.changeGain($0) }
         fader.onEnd = { [weak self] in self?.endGain($0) }
+        fader.onCancel = { [weak self] in
+            guard let self else { return }
+            if sendTarget != nil { workspace?.onVolumeGestureCancel?() }
+            else { workspace?.linkedLevels.cancel() }
+        }
         apply(model)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     override var isFlipped: Bool { true }
-    private func select() { workspace?.onSelect?(model.id) }
-    override func mouseDown(with event: NSEvent) { select() }
+    private func select(modifiers: NSEvent.ModifierFlags = []) { workspace?.linkedLevels.select(model.id,modifiers:modifiers) }
+    override func mouseDown(with event: NSEvent) { select(modifiers:event.modifierFlags) }
     func apply(_ next: MixerStripModel) {
         let old = model; model = next
         let tint = model.color ?? DAWDesignTokens.Color.accent
@@ -115,8 +129,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         for (button, name) in [(solo,"Solo"),(arm,"Record arm")] { button.setAccessibilityLabel("\(name) \(model.title)") }
         route.setAccessibilityLabel("Output of \(model.title)")
         layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
-        layer?.borderWidth = model.isSelected ? 1.5 : 0.5
-        layer?.borderColor = (model.isSelected ? tint : DAWDesignTokens.Color.border.withAlphaComponent(0.6)).cgColor
+        updateSelectionBorder()
         needsLayout = true; needsDisplay = true
     }
     func updateMeter(_ snapshot: MixerMeterSnapshot) {
@@ -165,17 +178,18 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     private func beginGain() {
         guard fader.isEnabled else { return }
         if let bus = sendTarget { workspace?.onSendGainBegin?(model.id,bus) }
-        else { workspace?.onVolumeGestureBegin?(model.id) }
+        else { workspace?.linkedLevels.begin(model.id) }
     }
     private func changeGain(_ value: Double) {
         gainField.stringValue = MixerScale.label(value)
-        workspace?.previewLevel(model.id,send:sendTarget,value:value,source:self)
-        if let bus = sendTarget { workspace?.onSendGain?(model.id,bus,value) }
-        else { workspace?.onVolume?(model.id,value) }
+        if let bus = sendTarget {
+            workspace?.previewLevel(model.id,send:sendTarget,value:value,source:self)
+            workspace?.onSendGain?(model.id,bus,value)
+        } else { workspace?.linkedLevels.change(model.id,value:value,source:self) }
     }
     private func endGain(_ value: Double) {
         if let bus = sendTarget { workspace?.onSendGainEnd?(model.id,bus,value) }
-        else { workspace?.onVolumeGestureEnd?(model.id,value) }
+        else { workspace?.linkedLevels.end(model.id,value:value) }
     }
     func controlTextDidBeginEditing(_ obj: Notification) { editingGain = true }
     func controlTextDidEndEditing(_ obj: Notification) { editingGain = false; commitGain() }

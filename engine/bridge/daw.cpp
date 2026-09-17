@@ -471,6 +471,14 @@ int daw_begin_mixer_gesture(daw_session* s,int32_t target,uint64_t id,uint64_t b
         cancelStalePlaybackPreparation(s);
     });
 }
+int daw_begin_track_gain_group(daw_session* s,const uint64_t* ids,uint32_t count,uint64_t rev) {
+    return guard(s,[&]{
+        if(recordingActive(s))throw daw::Error("Stop recording before editing the mixer");
+        if(!ids || count<2 || count>256)throw daw::Error("Provide 2..256 track IDs");
+        s->model.beginTrackGainGroup(std::vector<uint64_t>(ids,ids+count),rev);
+        cancelStalePlaybackPreparation(s);
+    });
+}
 int daw_write_mixer_gesture(daw_session* s,double value) {
     return guard(s,[&]{s->model.writeMixerGesture(value);
         if(s->output)s->output->renderer.updateMix(s->model.mixerPreview());

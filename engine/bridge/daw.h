@@ -319,6 +319,12 @@ int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expec
 enum { DAW_MIXER_TRACK_GAIN=1, DAW_MIXER_TRACK_PAN=2, DAW_MIXER_BUS_GAIN=3,
        DAW_MIXER_MASTER_GAIN=4, DAW_MIXER_BUS_PAN=5, DAW_MIXER_SEND_GAIN=6, DAW_MIXER_SEND_PAN=7 };
 int daw_begin_mixer_gesture(daw_session*,int32_t target,uint64_t id,uint64_t send_bus_id,uint64_t expected_revision);
+/* Linked static track faders: 2..256 unique existing IDs, no volume automation.
+ * The input array is copied; no pointer is retained. Master and buses reject.
+ * After this begin, daw_write_mixer_gesture takes a dB DELTA from gesture start
+ * (not an incremental delta or an absolute level). One common clamp preserves
+ * relative gains. Use existing end/cancel; no project format change. */
+int daw_begin_track_gain_group(daw_session*,const uint64_t* track_ids,uint32_t count,uint64_t expected_revision);
 int daw_write_mixer_gesture(daw_session*,double value);
 int daw_end_mixer_gesture(daw_session*,uint64_t expected_revision);
 void daw_cancel_mixer_gesture(daw_session*);

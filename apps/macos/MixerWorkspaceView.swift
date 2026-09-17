@@ -85,6 +85,9 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     var onVolumeGestureBegin: ((UInt64) -> Void)?
     var onVolume: ((UInt64,Double) -> Void)?
     var onVolumeGestureEnd: ((UInt64,Double) -> Void)?
+    var onVolumeGestureCancel: (() -> Void)?
+    lazy var linkedLevels = MixerLinkedLevels(workspace: self)
+    var presentedStripViews: [MixerStripView] { Array(stripViews.values) + [inspector].compactMap { $0 } }
     var onPan: ((UInt64,Double) -> Void)?
     var onDeleteBus: ((UInt64) -> Void)?
     var onOutput: ((UInt64,UInt64) -> Void)?
@@ -108,6 +111,8 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         didSet {
             for view in stripViews.values { view.updateFaderMode(); view.updateDestinations() }
             inspector?.updateFaderMode(); updateHistoryButtons()
+            if !editingEnabled { linkedLevels.cancel() }
+            linkedLevels.refreshPresentation()
         }
     }
     private(set) var sendTargetID: UInt64?
@@ -152,6 +157,7 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self,selector:#selector(scrollBoundsChanged),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
         for view in [caption,filter,search,density,sendTarget,undoButton,redoButton,visibilityButton,zonesButton,overviewButton,reset,addBus,inspect,focus,meterBridge,scroll,inspectorCaption,empty] { addSubview(view) }
+        addSubview(linkedLevels.bar)
         caption.font = .monospacedSystemFont(ofSize:11,weight:.semibold)
         inspectorCaption.font = .monospacedSystemFont(ofSize:10,weight:.medium)
         inspectorCaption.textColor = DAWDesignTokens.Color.secondaryText
@@ -281,12 +287,14 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     }
 
     func setSendTarget(_ id: UInt64?) {
+        guard !linkedLevels.isEditing else { return }
         sendTargetID = strips.contains { $0.kind == .bus && $0.id == id } ? id : nil
         sendTarget.select(sendTarget.itemArray.first { ($0.representedObject as? NSNumber)?.uint64Value == sendTargetID } ?? sendTarget.item(at:0))
         for view in stripViews.values { view.updateFaderMode() }
         inspector?.updateFaderMode()
         caption.stringValue = sendTargetID == nil ? "CONSOLE" : "SEND MIX"
         caption.textColor = sendTargetID == nil ? .labelColor : .systemMint
+        linkedLevels.refreshPresentation()
     }
 
     func previewLevel(_ id:UInt64,send:UInt64?,value:Double,source:MixerStripView) {
@@ -315,7 +323,7 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     }
 
     private func selectAndReveal(_ id: UInt64) {
-        onSelect?(id)
+        linkedLevels.select(id)
         revealChannel(id)
     }
 
@@ -328,6 +336,7 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     }
 
     private func reconcile() {
+        linkedLevels.synchronize(strips)
         let valid = Set(strips.filter{$0.kind != .master}.map(\.id))
         consoleState.cleanup(validIDs:valid)
         let allValid=Set(strips.map(\.id))
@@ -360,6 +369,7 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
             inspector?.removeFromSuperview();inspector=nil;inspectorCaption.stringValue="SELECTED CHANNEL"
         }
         meterBridge.snapshots=latestMeters
+        linkedLevels.refreshPresentation()
         updateHistoryButtons();needsLayout=true
     }
 
@@ -402,10 +412,14 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     override func layout() {
         super.layout()
         let w=bounds.width,h=bounds.height
-        let top=layoutToolbar(width:w),bottom:CGFloat=5
+        let toolbarBottom=layoutToolbar(width:w),bottom:CGFloat=5
         consoleState.density=MixerConsoleState.Density(rawValue:density.indexOfSelectedItem) ?? .regular
         consoleState.filter=MixerConsoleState.Filter(rawValue:filter.selectedSegment) ?? .all
         consoleState.search=search.stringValue
+        let visibleTracks = (consoleState.pinned(strips,in:.left) + consoleState.visible(strips) + consoleState.pinned(strips,in:.right)).filter { $0.kind == .track }.map(\.id)
+        linkedLevels.prune(visibleIDs:visibleTracks)
+        linkedLevels.layoutBar(width:w,top:toolbarBottom)
+        let top=toolbarBottom+linkedLevels.barHeight
         let stripWidth=consoleState.density.width;lastStripWidth=stripWidth
         let bridgeHeight:CGFloat=overviewVisible && h-top >= 280 ? 44:0
         meterBridge.isHidden=bridgeHeight==0

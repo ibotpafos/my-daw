@@ -199,6 +199,10 @@ struct MixerUITests {
         precondition(mixer.stripViews[1]!.isHidden)
         try MixerRoutingTests.run()
         try MixerSendTests.run()
+        try MixerLinkedLevelsTests.run()
+#if MIXER_GROUP_ABI
+        try MixerLinkedLevelsTests.runBridge()
+#endif
         print("Mixer AppKit tests PASS: scale, routing matrix, search, visibility, zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }

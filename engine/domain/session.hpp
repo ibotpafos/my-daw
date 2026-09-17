@@ -182,6 +182,10 @@ public:
     // A scalar control gesture previews privately and commits one Undo entry.
     void exclusiveSolo(uint64_t id,bool solo,uint64_t expected);
     void beginMixerGesture(MixerEditTarget,uint64_t id,uint64_t busID,uint64_t expected);
+    // One private preview and one Undo for 2..256 unique static track faders.
+    // writeMixerGesture receives an absolute dB delta from the captured group,
+    // clamped as a whole so pairwise differences survive both travel limits.
+    void beginTrackGainGroup(const std::vector<uint64_t>& trackIDs, uint64_t expected);
     void writeMixerGesture(double value);
     void endMixerGesture(uint64_t expected);
     void cancelMixerGesture() noexcept;
@@ -303,7 +307,15 @@ private:
     std::vector<State> past, future;
     struct AutomationGesture { AutomationTarget target; uint64_t targetID; AutomationWriteMode mode; uint64_t baseRevision; State working; bool hasWritten=false; uint64_t lastFrame=0; double lastValue=0; };
     struct PluginParameterAutomationGesture { PluginOwner owner; uint64_t ownerID; uint64_t pluginID; uint32_t parameterID; std::string name; AutomationWriteMode mode; uint64_t baseRevision; State working; bool hasWritten=false; bool changed=false; uint64_t lastFrame=0; double lastValue=0; };
-    struct MixerGesture { MixerEditTarget target; uint64_t targetID,sendBusID,baseRevision; State working; double initialValue; };
+    struct MixerGroupMember { size_t trackIndex; double initialGain; };
+    struct MixerGesture {
+        MixerEditTarget target;
+        uint64_t targetID, sendBusID, baseRevision;
+        State working;
+        double initialValue;
+        std::vector<MixerGroupMember> group = {};
+        double minimumDelta = 0, maximumDelta = 0, delta = 0;
+    };
     std::optional<MixerGesture> mixerGesture;
     std::optional<AutomationGesture> gesture;
     std::optional<PluginParameterAutomationGesture> pluginParameterGesture;

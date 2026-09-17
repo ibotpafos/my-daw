@@ -13,6 +13,26 @@ extension DraftApp {
         !isRecording && consoleGesture == nil && automationGesture == nil && pluginParameterGesture == nil
     }
     func configureMixerConsole() {
+        let groups = MixerGroupBinding(
+            session: { [weak self] in self?.session },
+            revision: { [weak self] in self?.revision ?? 0 },
+            mayBegin: { [weak self] ids in
+                guard let self, consoleRoutingEditable else { return false }
+                guard !ids.contains(where: { automationWrites(target: automationTrackVolume,id:$0) }) else {
+                    storageMessage("Отключи запись автоматизации для связанного изменения статических уровней."); return false
+                }
+                return true
+            },
+            started: { [weak self] revision in self?.consoleGesture = (false,revision) },
+            finished: { [weak self] in self?.consoleGesture = nil; self?.refresh() },
+            reportError: { [weak self] in _ = self?.check($0) })
+        groups.bind(to:mixerWorkspace.linkedLevels)
+        mixerWorkspace.onVolumeGestureCancel = { [weak self] in
+            guard let self, let gesture=consoleGesture else { return }
+            if gesture.automation { daw_cancel_automation_gesture(session); automationGesture=nil }
+            else { daw_cancel_mixer_gesture(session) }
+            consoleGesture=nil; refresh()
+        }
         mixerWorkspace.onVolumeGestureBegin = { [weak self] in self?.consoleBegin($0, send: nil) }
         mixerWorkspace.onVolume = { [weak self] _, value in self?.consoleWrite(value) }
         mixerWorkspace.onVolumeGestureEnd = { [weak self] _, _ in self?.consoleEnd() }

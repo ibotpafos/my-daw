@@ -60,8 +60,45 @@ void Session::beginMixerGesture(MixerEditTarget target, uint64_t id, uint64_t bu
     const auto initial = mixerValue(working, target, id, busID);
     mixerGesture = MixerGesture{target, id, busID, expected, std::move(working), initial};
 }
+void Session::beginTrackGainGroup(const std::vector<uint64_t>& ids, uint64_t expected) {
+    check(expected);
+    if (ids.size() < 2 || ids.size() > 256)
+        throw Error("Select between 2 and 256 track faders");
+    MixerGesture preview{MixerEditTarget::TrackGain, 0, 0, expected, current, 0};
+    preview.group.reserve(ids.size());
+    preview.minimumDelta = -144;
+    preview.maximumDelta = 144;
+    for (const auto id : ids) {
+        const auto track = std::find_if(current.tracks.begin(), current.tracks.end(),
+                                       [id](const auto& t) { return t.id == id; });
+        if (track == current.tracks.end()) throw Error("Group member is not an existing track");
+        const auto index = static_cast<size_t>(track - current.tracks.begin());
+        if (std::any_of(preview.group.begin(), preview.group.end(),
+                        [index](const auto& member) { return member.trackIndex == index; }))
+            throw Error("Group selection contains a duplicate track");
+        // A static gain cannot override a playback automation lane. Refuse the
+        // entire edit rather than moving only some members or erasing automation.
+        if (!track->volumeAutomation.empty())
+            throw Error("Linked static levels require tracks without volume automation");
+        preview.group.push_back({index, track->gain});
+        preview.minimumDelta = std::max(preview.minimumDelta, -120 - track->gain);
+        preview.maximumDelta = std::min(preview.maximumDelta, 24 - track->gain);
+    }
+    // Publish only after all IDs, automation lanes and allocations have succeeded.
+    mixerGesture = std::move(preview);
+}
 void Session::writeMixerGesture(double value) {
     if (!mixerGesture) throw Error("No active mixer gesture");
+    if (!mixerGesture->group.empty()) {
+        if (!std::isfinite(value)) throw Error("Group gain delta must be finite");
+        auto& g = *mixerGesture;
+        const auto delta = std::clamp(value, g.minimumDelta, g.maximumDelta);
+        for (const auto& member : g.group)
+            g.working.tracks[member.trackIndex].gain =
+                std::clamp(member.initialGain + delta, -120.0, 24.0);
+        g.delta = delta;
+        return;
+    }
     const bool pan = mixerGesture->target == MixerEditTarget::TrackPan || mixerGesture->target == MixerEditTarget::BusPan || mixerGesture->target == MixerEditTarget::SendPan;
     if (!std::isfinite(value) || value < (pan ? -1.0 : -120.0) || value > (pan ? 1.0 : 24.0))
         throw Error(pan ? "Balance must be between -1 and +1" : "Gain must be between -120 and +24 dB");
@@ -74,7 +111,9 @@ void Session::endMixerGesture(uint64_t expected) {
     auto& g = *mixerGesture;
     if (expected != g.baseRevision || current.revision != g.baseRevision)
         throw Error("Revision conflict: refresh the project");
-    const bool changed = mixerValue(g.working, g.target, g.targetID, g.sendBusID) != g.initialValue;
+    const bool changed = g.group.empty()
+        ? mixerValue(g.working, g.target, g.targetID, g.sendBusID) != g.initialValue
+        : g.delta != 0;
     // Keep the preview cancelable if validation/history allocation throws.
     if (changed) commit(g.working);
     mixerGesture.reset();

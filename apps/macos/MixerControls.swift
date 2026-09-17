@@ -4,6 +4,13 @@ import AppKit
 final class MixerActionButton: NSButton {
     var invoke: (() -> Void)?
     var contextMenu: (() -> NSMenu)?
+    var invokeWithModifiers: ((NSEvent.ModifierFlags) -> Void)?
+    private var clickModifiers: NSEvent.ModifierFlags = []
+    override func mouseDown(with event: NSEvent) {
+        clickModifiers = event.modifierFlags
+        defer { clickModifiers = [] }
+        super.mouseDown(with: event)
+    }
     init(_ title: String, action: (() -> Void)? = nil) {
         super.init(frame: .zero)
         self.title = title; invoke = action
@@ -13,7 +20,9 @@ final class MixerActionButton: NSButton {
         lineBreakMode = .byTruncatingTail
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    @objc private func fire() { invoke?() }
+    @objc private func fire() {
+        if let invokeWithModifiers { invokeWithModifiers(clickModifiers) } else { invoke?() }
+    }
     override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() ?? super.menu(for: event) }
 }
 @MainActor
@@ -91,6 +100,14 @@ private final class MixerFaderCell: NSSliderCell {
 }
 @MainActor
 final class MixerFaderView: NSSlider {
+    var onCancel: (() -> Void)?
+    private var canceled = false
+    private var trackingStart: Double = 0
+    func displayPreview(_ value: Double) { doubleValue = MixerScale.position(value) }
+    override func cancelOperation(_ sender: Any?) {
+        guard tracking else { super.cancelOperation(sender); return }
+        canceled = true; displayPreview(trackingStart); onCancel?()
+    }
     var onBegin: (() -> Void)?
     var onChange: ((Double) -> Void)?
     var onEnd: ((Double) -> Void)?
@@ -108,14 +125,17 @@ final class MixerFaderView: NSSlider {
         setAccessibilityHelp("Up/Down: 0.5 dB. Shift: 0.1 dB. Double-click: unity. Option: fine drag.")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    @objc private func changed() { onChange?(valueDb) }
+    @objc private func changed() { if !canceled { onChange?(valueDb) } }
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
         window?.makeFirstResponder(self)
         if event.clickCount == 2 { commit(0); return }
+        canceled = false; trackingStart = valueDb
         tracking = true; onBegin?()
         super.mouseDown(with: event)
-        tracking = false; onEnd?(valueDb)
+        tracking = false
+        if canceled { displayPreview(trackingStart) } else { onEnd?(valueDb) }
+        canceled = false
     }
     func commit(_ value: Double) {
         guard isEnabled, value.isFinite else { return }

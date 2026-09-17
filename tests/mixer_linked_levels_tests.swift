@@ -1,0 +1,175 @@
+import AppKit
+
+@MainActor
+struct MixerLinkedLevelsTests {
+    static func run() throws {
+        let mixer = MixerWorkspaceView(frame: NSRect(x:0,y:0,width:1450,height:900))
+        let window = NSWindow(contentRect: mixer.frame, styleMask: [.titled,.resizable], backing:.buffered, defer:false)
+        window.contentView = mixer
+        var models = (1...8).map { MixerStripModel(id:UInt64($0),kind:.track,title:"Vocal \($0)",color:.systemTeal,volumeDb:Double($0) * -3,isSelected:$0 == 1) }
+        models += [MixerStripModel(id:100,kind:.bus,title:"Vocal Reverb",color:.systemPurple), MixerStripModel(id:0,kind:.master,title:"Master")]
+        models[0].sends = [MixerSendSummary(destination:"Vocal Reverb",busID:100)]
+        mixer.strips = models; mixer.layoutSubtreeIfNeeded()
+        mixer.onSelect = { id in
+            for i in models.indices { models[i].isSelected = models[i].id == id }
+            mixer.strips = models; mixer.layoutSubtreeIfNeeded()
+        }
+        let selection = mixer.linkedLevels
+        precondition(selection.selectedIDs == [1])
+        // Native strip event path carries modifiers rather than sampling global key state.
+        func click(_ id: UInt64, _ modifiers: NSEvent.ModifierFlags) {
+            let event = NSEvent.mouseEvent(with:.leftMouseDown,location:.zero,modifierFlags:modifiers,timestamp:0,
+                windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)!
+            mixer.stripViews[id]!.mouseDown(with:event)
+        }
+        click(3,[.command]); precondition(selection.selectedIDs == [1,3])
+        click(6,[.shift]); precondition(selection.selectedIDs == [3,4,5,6])
+        click(1,[.command,.shift]); precondition(selection.selectedIDs == [1,2,3,4,5,6])
+        click(2,[.command]); precondition(!selection.selectedIDs.contains(2))
+        let header = mixer.stripViews[1]!.subviews.compactMap { $0 as? MixerActionButton }.first { $0.title == "Vocal 1" }!
+        header.performClick(nil); precondition(selection.selectedIDs == [1])
+        click(3,[.command]); precondition(selection.barHeight == 32)
+        precondition(mixer.stripViews[1]!.isGroupSelected && mixer.stripViews[3]!.isGroupSelected)
+        precondition(!mixer.stripViews[100]!.isGroupSelected && !mixer.stripViews[0]!.isGroupSelected)
+        var begins = [[UInt64]](), deltas = [Double](), ends=0, cancels=0, singles=0
+        var pending: [UInt64:Double] = [:]
+        selection.onBegin = { ids in
+            begins.append(ids); pending = Dictionary(uniqueKeysWithValues:models.filter { ids.contains($0.id) }.map { ($0.id,$0.volumeDb) }); return true
+        }
+        selection.onDelta = { delta in deltas.append(delta); return true }
+        selection.onEnd = {
+            ends += 1
+            let delta = deltas.last ?? 0
+            for i in models.indices { if let gain=pending[models[i].id] { models[i].volumeDb=gain+delta } }
+            mixer.strips=models
+        }
+        selection.onCancel = { cancels += 1 }
+        mixer.onVolume = { _,_ in singles += 1 }
+        let fader = mixer.stripViews[1]!.fader
+        fader.onBegin?(); fader.onChange?(-6)
+        precondition(selection.isEditing && begins == [[1,3]] && deltas == [-3] && singles == 0)
+        precondition(abs(mixer.stripViews[3]!.fader.valueDb + 12) < 0.00001)
+        precondition(mixer.stripViews[3]!.model.volumeDb == -9, "Group preview is not the domain/UI snapshot")
+        // A refresh while dragging must not snap peer faders back to committed levels.
+        mixer.strips=models
+        precondition(abs(mixer.stripViews[3]!.fader.valueDb + 12) < 0.00001)
+        click(5,[]); selection.setLinked(false); mixer.setSendTarget(100)
+        precondition(selection.selectedIDs == [1,3] && selection.linkEnabled && mixer.sendTargetID == nil)
+        fader.onEnd?(-6)
+        precondition(ends == 1 && !selection.isEditing && models[0].volumeDb == -6 && models[2].volumeDb == -12)
+        fader.onBegin?(); fader.onChange?(-10); selection.cancel()
+        precondition(cancels == 1 && abs(fader.valueDb + 6) < 0.00001 && models[2].volumeDb == -12)
+        selection.onBegin = { _ in false }
+        fader.commit(-20)
+        precondition(singles == 0 && ends == 1 && abs(fader.valueDb + 6) < 0.00001, "Rejected group must not fall back to moving one member")
+        selection.setLinked(false); fader.commit(-8); precondition(singles == 1)
+        selection.setLinked(true)
+        var sendWrites=0; mixer.onSendGain = { _,_,_ in sendWrites += 1 }
+        mixer.setSendTarget(100); mixer.stripViews[1]!.fader.commit(-18)
+        precondition(sendWrites == 1 && begins.count == 2 && singles == 1 && !selection.linkButton.isEnabled)
+        mixer.setSendTarget(nil)
+        click(100,[]); precondition(selection.selectedIDs.isEmpty)
+        click(1,[]); click(3,[.command]);
+        mixer.search.stringValue="Vocal 1";mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+        precondition(selection.selectedIDs == [1], "Filtered-out tracks must not change through an invisible selection")
+        mixer.search.stringValue="";mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+        click(3,[.command]);
+        models.removeAll { $0.id == 3 }; mixer.strips=models
+        precondition(!selection.selectedIDs.contains(3))
+        click(5,[.command]); mixer.consoleState.setHidden(true,id:5);mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+        precondition(!selection.selectedIDs.contains(5))
+        // Geometry and common limiting, including reversing without cumulative drift.
+        var plan = MixerLinkedLevels.Plan(sourceID:1,models:[.init(id:1,kind:.track,title:"A",volumeDb:20),.init(id:2,kind:.track,title:"B",volumeDb:-119)])!
+        precondition(plan.update(sourceValue:1000) && plan.levels[1] == 24 && plan.levels[2] == -115)
+        precondition(plan.update(sourceValue:-1000) && plan.levels[1] == 19 && plan.levels[2] == -120)
+        for _ in 0..<1000 { precondition(plan.update(sourceValue:20.25)) }
+        precondition(plan.levels[1] == 20.25 && plan.levels[2] == -118.75)
+        precondition(!plan.update(sourceValue:.nan))
+        mixer.consoleState.showAll();mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+        click(1,[]);click(6,[.shift]);
+        for size in [NSSize(width:640,height:340),NSSize(width:1024,height:580),NSSize(width:1450,height:900)] {
+            mixer.setFrameSize(size);mixer.needsLayout=true;mixer.layoutSubtreeIfNeeded()
+            precondition(selection.bar.frame.maxX <= mixer.bounds.maxX && !selection.bar.isHidden)
+            for view in mixer.stripViews.values where !view.isHidden {
+                let top = view.convert(view.bounds,to:mixer).minY
+                precondition(top >= selection.bar.frame.maxY)
+            }
+        }
+        mixer.updateMeters([1:.init(leftPeak:0.5,rightPeak:0.45),2:.init(leftPeak:0.35,rightPeak:0.3)])
+        guard let rep = mixer.bitmapImageRepForCachingDisplay(in:mixer.bounds) else { fatalError("Group fixture bitmap") }
+        mixer.cacheDisplay(in:mixer.bounds,to:rep)
+        guard let png=rep.representation(using:.png,properties:[:]) else { fatalError("Group fixture PNG") }
+        try png.write(to:URL(fileURLWithPath:"build/mixer-group-ui.png"))
+        print("Linked levels UI PASS: modifiers, visible range, separate selection, frozen relative previews, refresh, reject/cancel, individual sends/Master, common clamp and resize")
+    }
+
+#if MIXER_GROUP_ABI
+    static func runBridge() throws {
+        guard let session=daw_create() else { fatalError("Session creation") }
+        defer { daw_destroy(session) }
+        func snapshot() -> daw_snapshot {
+            var s=daw_snapshot();s.struct_size=UInt32(MemoryLayout<daw_snapshot>.size)
+            precondition(daw_get_snapshot(session,&s) == 0);return s
+        }
+        for name in ["Lead","Double","Music"] { precondition(daw_add_track(session,name,snapshot().revision) == 0) }
+        func track(_ index: UInt32) -> daw_track {
+            var t=daw_track();t.struct_size=UInt32(MemoryLayout<daw_track>.size)
+            precondition(daw_get_track(session,index,&t) == 0);return t
+        }
+        let a=track(0).id, b=track(1).id
+        precondition(daw_set_gain(session,a,-6,snapshot().revision) == 0)
+        precondition(daw_set_gain(session,b,-12,snapshot().revision) == 0)
+        let mixer=MixerWorkspaceView(frame:NSRect(x:0,y:0,width:1024,height:700))
+        let window=NSWindow(contentRect:mixer.frame,styleMask:[.titled],backing:.buffered,defer:false)
+        window.contentView=mixer
+        func near(_ a: Double, _ b: Double) -> Bool { abs(a-b) < 0.000001 }
+        var primary=a, revision=snapshot().revision, busy=false, allowed=true, errors=0, commits=0
+        func refresh() {
+            revision=snapshot().revision
+            mixer.strips=(0..<3).map { index in
+                let t=track(UInt32(index))
+                return MixerStripModel(id:t.id,kind:.track,title:"Track \(index)",volumeDb:t.gain_db,isSelected:t.id == primary)
+            } + [MixerStripModel(id:0,kind:.master,title:"Master")]
+            mixer.layoutSubtreeIfNeeded()
+        }
+        refresh()
+        mixer.onSelect={primary=$0;refresh()}
+        let binding=MixerGroupBinding(session:{session},revision:{revision},mayBegin:{_ in allowed && !busy},
+            started:{_ in busy=true},finished:{busy=false;commits+=1;refresh()},reportError:{_ in errors+=1})
+        binding.bind(to:mixer.linkedLevels)
+        mixer.linkedLevels.select(a);mixer.linkedLevels.select(b,modifiers:[.command])
+        let fader=mixer.stripViews[a]!.fader
+        let r=revision
+        fader.onBegin?()
+        for _ in 0..<100 { fader.onChange?(-9) }
+        precondition(busy && snapshot().revision == r && near(track(0).gain_db,-6) && near(track(1).gain_db,-12))
+        precondition(abs(mixer.stripViews[b]!.fader.valueDb + 15) < 0.000001)
+        fader.onEnd?(-9)
+        precondition(!busy && revision == r+1 && near(track(0).gain_db,-9) && near(track(1).gain_db,-15) && commits == 1)
+        precondition(daw_undo(session,revision) == 0);refresh()
+        precondition(near(track(0).gain_db,-6) && near(track(1).gain_db,-12))
+        // One actual keyboard action makes one group history entry.
+        let key=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,
+            context:nil,characters:"",charactersIgnoringModifiers:"",isARepeat:false,keyCode:126)!
+        fader.keyDown(with:key)
+        precondition(near(track(0).gain_db,-5.5) && near(track(1).gain_db,-11.5))
+        let beforeCancel=revision
+        fader.onBegin?();fader.onChange?(-20);mixer.linkedLevels.cancel()
+        precondition(revision == beforeCancel && near(track(0).gain_db,-5.5) && near(track(1).gain_db,-11.5) && !busy)
+        precondition(daw_set_gain(session,b,22,revision) == 0);refresh()
+        fader.commit(0) // Only +2 dB of collective headroom remains.
+        precondition(near(track(0).gain_db,-3.5) && near(track(1).gain_db,24))
+        precondition(abs(fader.valueDb + 3.5) < 0.000001)
+        let limitRevision=revision
+        fader.commit(0);precondition(revision == limitRevision, "At group ceiling, a second push is a no-op")
+        precondition(daw_upsert_track_volume_automation_point(session,b,0,20,revision) == 0);refresh()
+        let automatedRevision=revision
+        fader.commit(-10)
+        precondition(errors == 1 && revision == automatedRevision && near(track(0).gain_db,-3.5) && !busy)
+        precondition(daw_remove_track_volume_automation_point(session,b,0,revision) == 0);refresh()
+        allowed=false;let lockedRevision=revision;fader.commit(-10)
+        precondition(revision == lockedRevision && !busy)
+        print("Linked levels real C ABI PASS: Swift binding + native controls → Session preview → one Undo, keyboard group commit, cancel, common limit, automated/locked rejection")
+    }
+#endif
+}
