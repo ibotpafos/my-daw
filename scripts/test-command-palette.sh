@@ -39,7 +39,7 @@ PY
   touch "$WORK/appkit.log" "$WORK/appkit.err"
   OPEN_STATUS=0
   /usr/bin/open -n -W --stdout "$WORK/appkit.log" --stderr "$WORK/appkit.err" \
-    "$APP" --args "$WORK/appkit-result" || OPEN_STATUS=$?
+    "$APP" --args "$WORK/appkit-result" "${DAW_PALETTE_EVIDENCE_DIR:-}" || OPEN_STATUS=$?
   cat "$WORK/appkit.log" "$WORK/appkit.err"
   # open's exit status is NOT the child's test status. A success marker written
   # only after every assertion/cleanup is mandatory; crashes/timeouts fail.

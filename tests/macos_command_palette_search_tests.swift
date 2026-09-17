@@ -88,6 +88,17 @@ struct CommandPaletteSearchTests {
         let oversized = try envelope(entries: (0..<200).map { ["id": "\($0)", "count": 1] })
         expect(DAWCommandUsageHistory(encoded: oversized).entries.count == 100, "restore enforces capacity")
 
+        var escaped = DAWCommandUsageHistory()
+        for i in 0..<100 {
+            escaped.recordInvocation(id: String(repeating: "\u{0001}", count: 2000) + "-\(i)")
+        }
+        expect((escaped.encoded()?.count ?? Int.max) <= DAWCommandUsageHistory.maximumEncodedBytes,
+               "JSON-escaped IDs obey encoded size budget")
+        expect(!escaped.entries.isEmpty && escaped.entries.count < 100,
+               "encoded budget evicts oldest entries without losing everything")
+        expect(DAWCommandUsageHistory(encoded: escaped.encoded()) == escaped,
+               "worst-case escaped history survives a restart")
+
         let suite = "my-daw.palette-tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }

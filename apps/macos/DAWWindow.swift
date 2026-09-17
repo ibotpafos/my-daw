@@ -30,8 +30,7 @@ final class DAWWindow: NSWindow {
                 return super.performKeyEquivalent(with: event)
             }
             if !event.isARepeat {
-                if commandPalette == nil { commandPalette = DAWCommandPaletteController() }
-                commandPalette?.toggle(from: self)
+                showCommandPalette(nil)
             }
             return true
         }
@@ -39,6 +38,26 @@ final class DAWWindow: NSWindow {
         if super.performKeyEquivalent(with: event) { return true }
         if handleTrackDeleteCommand(event) { return true }
         return handleZoomCommand(event)
+    }
+
+    /// A visible menu entry and the keyboard shortcut share one action. The nil
+    /// target deliberately follows AppKit to the active document window.
+    static func makeCommandPaletteMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Палитра команд…",
+                              action: #selector(showCommandPalette(_:)), keyEquivalent: "k")
+        item.identifier = NSUserInterfaceItemIdentifier("mydaw.commandPalette")
+        item.keyEquivalentModifierMask = [.command]
+        item.toolTip = "Найти действие по названию, открыть недавние и частые команды"
+        return item
+    }
+
+    @objc func showCommandPalette(_ sender: Any?) {
+        // Menu routing can reach this action even during text composition.
+        for responder in [firstResponder, NSApp.keyWindow?.firstResponder] {
+            if let input = responder as? NSTextInputClient, input.hasMarkedText() { return }
+        }
+        if commandPalette == nil { commandPalette = DAWCommandPaletteController() }
+        commandPalette?.toggle(from: self)
     }
 
     override func close() {

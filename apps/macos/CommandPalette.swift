@@ -366,6 +366,7 @@ final class DAWCommandPaletteController: NSObject, NSTableViewDataSource, NSTabl
                 guard !title.isEmpty else { continue }
                 if let submenu = item.submenu { walk(submenu, parents: parents + [title]); continue }
                 guard let action = item.action,
+                      action != #selector(DAWWindow.showCommandPalette(_:)),
                       let target = NSApp.target(forAction: action, to: item.target, from: item) else { continue }
                 let baseID = DAWCommandIdentity.make(identifier: item.identifier?.rawValue,
                     parents: parents, title: title, selector: NSStringFromSelector(action), tag: item.tag)

@@ -2,6 +2,7 @@
 #include "domain/session.hpp"
 #include "jobs/limiter.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -70,14 +71,12 @@ static std::vector<unsigned char> makeAiff(uint32_t rate, uint16_t channels, uin
         if (kind == Kind::Float) {
             uint32_t u; std::memcpy(&u, &v, 4); putBE(b, d, u, 4); d += 4;
         } else {
-            int32_t iv;
-            if (bits == 16) iv = static_cast<int32_t>(std::lround(v * 32767.0f));
-            else if (bits == 24) iv = static_cast<int32_t>(std::lround(v * 8388607.0f));
-            else iv = static_cast<int32_t>(std::lround(v * 2147483647.0f));
-            const int32_t lim = static_cast<int32_t>(1) << (bits - 1);
-            if (iv > lim - 1) iv = lim - 1;
-            if (iv < -lim) iv = -lim;
-            putBE(b, d, static_cast<uint32_t>(static_cast<uint32_t>(iv)), width); d += width;
+            // A 32-bit signed 1 << 31 followed by +/- overflow made the fixture
+            // itself undefined under UBSan. Calculate signed limits in 64 bits.
+            const int64_t magnitude = int64_t{1} << (bits - 1);
+            const auto iv = std::clamp<int64_t>(std::llround(double(v) * double(magnitude - 1)),
+                                                -magnitude, magnitude - 1);
+            putBE(b, d, static_cast<uint32_t>(iv), width); d += width;
         }
     }
     return b;
@@ -98,6 +97,19 @@ int main() { try {
         auto job = daw::startAiffImport(path.string());
         for (int i = 0; i < 2000 && job->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Running; ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifndef __APPLE__
+        if (rate != 48000) {
+            // All input format combinations still run: the non-Apple adapter
+            // must reject conversion explicitly, never return mislabelled PCM.
+            CHECK(job->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Failed);
+            CHECK(daw::importError(*job) == "Sample-rate conversion is available on macOS only");
+            CHECK(!daw::importClip(*job) && !daw::markImportApplied(*job));
+            for (int i = 0; i < 2000 && daw::backgroundJobsInFlight() != baseline; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(daw::backgroundJobsInFlight() == baseline);
+            return;
+        }
+#endif
         CHECK(job->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Ready);
         CHECK(job->sourceSampleRate.load(std::memory_order_acquire) == rate);
         CHECK(job->sourceChannels.load(std::memory_order_acquire) == channels);
@@ -142,6 +154,6 @@ int main() { try {
         rejects([&] { (void)daw::readAiff(path.string()); });
     }
 
-    std::cout << "PASS: AIFF/AIFC import (16/24/32-bit int, 32-bit float; mono/stereo; 44.1/48/96 kHz) decodes, resamples to 48 kHz, no NaN, mono->stereo correct" << std::endl;
+    std::cout << "PASS: AIFF/AIFC import formats, channels, canonical PCM and platform-specific conversion contract" << std::endl;
     return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << std::endl; return 1; } }

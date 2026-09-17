@@ -50,7 +50,9 @@ void upsertAutomation(std::vector<AutomationPoint>& points,uint64_t frame,double
 }
 bool removeAutomation(std::vector<AutomationPoint>& points,uint64_t frame){
     auto point=std::lower_bound(points.begin(),points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
-    if(point==points.end()||point->frame!=frame)return false;points.erase(point);return true;
+    if(point==points.end()||point->frame!=frame)return false;
+    points.erase(point);
+    return true;
 }
 std::vector<AutomationPoint>& automationLane(State& state,AutomationTarget target,uint64_t targetID){
     switch(target){
@@ -374,7 +376,9 @@ void Session::upsertTrackVolumeAutomation(uint64_t trackID,uint64_t frame,double
 void Session::removeTrackVolumeAutomation(uint64_t trackID,uint64_t frame,uint64_t expected){
     check(expected);State next=current;auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==next.tracks.end())throw Error("Track not found");
     auto point=std::lower_bound(track->volumeAutomation.begin(),track->volumeAutomation.end(),frame,[](const auto& item,uint64_t value){return item.frame<value;});
-    if(point==track->volumeAutomation.end()||point->frame!=frame)throw Error("Automation point not found");track->volumeAutomation.erase(point);commit(std::move(next));
+    if(point==track->volumeAutomation.end()||point->frame!=frame)throw Error("Automation point not found");
+    track->volumeAutomation.erase(point);
+    commit(std::move(next));
 }
 void Session::upsertTrackPanAutomation(uint64_t trackID,uint64_t frame,double pan,uint64_t expected){
     check(expected);State next=current;auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==next.tracks.end())throw Error("Track not found");
@@ -382,7 +386,8 @@ void Session::upsertTrackPanAutomation(uint64_t trackID,uint64_t frame,double pa
 }
 void Session::removeTrackPanAutomation(uint64_t trackID,uint64_t frame,uint64_t expected){
     check(expected);State next=current;auto track=std::find_if(next.tracks.begin(),next.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==next.tracks.end())throw Error("Track not found");
-    if(!removeAutomation(track->panAutomation,frame))throw Error("Automation point not found");commit(std::move(next));
+    if(!removeAutomation(track->panAutomation,frame))throw Error("Automation point not found");
+    commit(std::move(next));
 }
 void Session::upsertBusGainAutomation(uint64_t busID,uint64_t frame,double gainDb,uint64_t expected){
     check(expected);State next=current;auto bus=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& item){return item.id==busID;});if(bus==next.buses.end())throw Error("Bus not found");
@@ -390,7 +395,8 @@ void Session::upsertBusGainAutomation(uint64_t busID,uint64_t frame,double gainD
 }
 void Session::removeBusGainAutomation(uint64_t busID,uint64_t frame,uint64_t expected){
     check(expected);State next=current;auto bus=std::find_if(next.buses.begin(),next.buses.end(),[&](const auto& item){return item.id==busID;});if(bus==next.buses.end())throw Error("Bus not found");
-    if(!removeAutomation(bus->gainAutomation,frame))throw Error("Automation point not found");commit(std::move(next));
+    if(!removeAutomation(bus->gainAutomation,frame))throw Error("Automation point not found");
+    commit(std::move(next));
 }
 void Session::upsertMasterGainAutomation(uint64_t frame,double gainDb,uint64_t expected){
     check(expected);State next=current;const auto before=next.masterGainAutomation;upsertAutomation(next.masterGainAutomation,frame,gainDb);if(next.masterGainAutomation==before)return;commit(std::move(next));
@@ -456,7 +462,10 @@ void Session::updateMasterInsertState(uint64_t id,std::vector<uint8_t> state,uin
     // State updates cannot change the persisted plug-in format.  AU state is
     // left byte-for-byte opaque while VST3 is always a complete MDVS envelope.
     if(isVst3PluginInsert(*it)){std::string envelopeError;if(!decodeVst3StateEnvelope(state,&envelopeError))throw Error("Invalid VST3 state envelope: "+envelopeError);}else if(state.size()>=4&&state[0]=='M'&&state[1]=='D'&&state[2]=='V'&&state[3]=='S')throw Error("Audio Unit state cannot be replaced with a VST3 envelope");
-    if(it->state==state&&it->latencyFrames==latencyFrames)return;it->state=std::move(state);it->latencyFrames=latencyFrames;commit(std::move(next));
+    if(it->state==state&&it->latencyFrames==latencyFrames)return;
+    it->state=std::move(state);
+    it->latencyFrames=latencyFrames;
+    commit(std::move(next));
 }
 namespace {
 std::vector<PluginInsert>& trackInserts(State& state,uint64_t trackID){auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==state.tracks.end())throw Error("Track not found");return track->inserts;}
@@ -488,7 +497,9 @@ void Session::upsertPluginParameterAutomation(PluginOwner owner,uint64_t ownerID
     auto point=std::lower_bound(lane->points.begin(),lane->points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});
     if(point!=lane->points.end()&&point->frame==frame){if(point->normalizedValue!=normalizedValue){point->normalizedValue=normalizedValue;changed=true;}}
     else {if(lane->points.size()>=kMaxPluginParameterAutomationPoints)throw Error("Plug-in parameter automation lane supports at most 2048 points");lane->points.insert(point,{frame,normalizedValue});changed=true;}
-    if(!changed)return;validate(next);commit(std::move(next));
+    if(!changed)return;
+    validate(next);
+    commit(std::move(next));
 }
 void Session::removePluginParameterAutomation(PluginOwner owner,uint64_t ownerID,uint64_t pluginID,uint32_t parameterID,uint64_t frame,uint64_t expected){
     check(expected);State next=current;auto& plugin=ownerPlugin(next,owner,ownerID,pluginID);auto lane=std::find_if(plugin.parameterAutomation.begin(),plugin.parameterAutomation.end(),[&](const auto& item){return item.parameterID==parameterID;});if(lane==plugin.parameterAutomation.end())throw Error("Plug-in parameter automation lane not found");auto point=std::lower_bound(lane->points.begin(),lane->points.end(),frame,[](const auto& item,uint64_t target){return item.frame<target;});if(point==lane->points.end()||point->frame!=frame)throw Error("Plug-in parameter automation point not found");lane->points.erase(point);if(lane->points.empty())plugin.parameterAutomation.erase(lane);commit(std::move(next));
@@ -499,8 +510,10 @@ void Session::beginPluginParameterAutomationGesture(PluginOwner owner,uint64_t o
     pluginParameterGesture=PluginParameterAutomationGesture{owner,ownerID,pluginID,parameterID,name,mode,current.revision,std::move(working)};
 }
 void Session::writePluginParameterAutomationGesture(uint64_t frame,double normalizedValue){
-    if(!pluginParameterGesture)throw Error("No active plug-in parameter automation gesture");auto& gesture=*pluginParameterGesture;
-    if(frame>48000*600||!std::isfinite(normalizedValue)||normalizedValue<0||normalizedValue>1)throw Error("Invalid plug-in parameter automation point");if(gesture.hasWritten&&frame<gesture.lastFrame)throw Error("Plug-in parameter automation gesture frames must be ordered");
+    if(!pluginParameterGesture)throw Error("No active plug-in parameter automation gesture");
+    auto& gesture=*pluginParameterGesture;
+    if(frame>48000*600||!std::isfinite(normalizedValue)||normalizedValue<0||normalizedValue>1)throw Error("Invalid plug-in parameter automation point");
+    if(gesture.hasWritten&&frame<gesture.lastFrame)throw Error("Plug-in parameter automation gesture frames must be ordered");
     State next=gesture.working;auto& plugin=ownerPlugin(next,gesture.owner,gesture.ownerID,gesture.pluginID);auto lane=std::find_if(plugin.parameterAutomation.begin(),plugin.parameterAutomation.end(),[&](const auto& item){return item.parameterID==gesture.parameterID;});bool changed=false;
     if(lane==plugin.parameterAutomation.end()){if(plugin.parameterAutomation.size()>=kMaxPluginParameterAutomationLanes)throw Error("Plug-in supports at most 128 parameter automation lanes");plugin.parameterAutomation.push_back({gesture.parameterID,gesture.name,{}});lane=std::prev(plugin.parameterAutomation.end());changed=true;}
     else if(!gesture.name.empty()&&lane->name!=gesture.name){lane->name=gesture.name;changed=true;}
@@ -510,10 +523,15 @@ void Session::writePluginParameterAutomationGesture(uint64_t frame,double normal
     if(changed){validate(next);gesture.working=std::move(next);gesture.changed=true;}gesture.hasWritten=true;gesture.lastFrame=frame;gesture.lastValue=normalizedValue;
 }
 void Session::endPluginParameterAutomationGesture(uint64_t endFrame,uint64_t expected){
-    if(!pluginParameterGesture)throw Error("No active plug-in parameter automation gesture");if(expected!=pluginParameterGesture->baseRevision||current.revision!=pluginParameterGesture->baseRevision)throw Error("Revision conflict: refresh the project");if(endFrame>48000*600)throw Error("Automation point exceeds timeline limit");if(pluginParameterGesture->hasWritten&&endFrame<pluginParameterGesture->lastFrame)throw Error("Automation gesture end precedes its final sample");
+    if(!pluginParameterGesture)throw Error("No active plug-in parameter automation gesture");
+    if(expected!=pluginParameterGesture->baseRevision||current.revision!=pluginParameterGesture->baseRevision)throw Error("Revision conflict: refresh the project");
+    if(endFrame>48000*600)throw Error("Automation point exceeds timeline limit");
+    if(pluginParameterGesture->hasWritten&&endFrame<pluginParameterGesture->lastFrame)throw Error("Automation gesture end precedes its final sample");
     auto finished=std::move(*pluginParameterGesture);pluginParameterGesture.reset();if(!finished.hasWritten)return;
     if(finished.mode==AutomationWriteMode::Latch&&endFrame>finished.lastFrame){auto& plugin=ownerPlugin(finished.working,finished.owner,finished.ownerID,finished.pluginID);auto lane=std::find_if(plugin.parameterAutomation.begin(),plugin.parameterAutomation.end(),[&](const auto& item){return item.parameterID==finished.parameterID;});if(lane==plugin.parameterAutomation.end())throw Error("Plug-in parameter automation lane not found");auto point=std::lower_bound(lane->points.begin(),lane->points.end(),endFrame,[](const auto& item,uint64_t target){return item.frame<target;});if(point==lane->points.end()||point->frame!=endFrame){if(lane->points.size()>=kMaxPluginParameterAutomationPoints)throw Error("Plug-in parameter automation lane supports at most 2048 points");lane->points.insert(point,{endFrame,finished.lastValue});finished.changed=true;}else if(point->normalizedValue!=finished.lastValue){point->normalizedValue=finished.lastValue;finished.changed=true;}}
-    if(!finished.changed)return;validate(finished.working);commit(std::move(finished.working));
+    if(!finished.changed)return;
+    validate(finished.working);
+    commit(std::move(finished.working));
 }
 void Session::cancelPluginParameterAutomationGesture() noexcept{pluginParameterGesture.reset();}
 bool Session::pluginParameterAutomationGestureActive() const noexcept{return pluginParameterGesture.has_value();}
@@ -836,7 +854,9 @@ void Session::addTake(uint64_t id,const std::string& name,std::shared_ptr<const 
 void Session::addTakes(uint64_t id,std::vector<Take> additions,uint64_t expected){check(expected);if(additions.empty())throw Error("No takes to add");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");if(additions.size()>15-it->takes.size())throw Error("Track supports at most 16 takes");for(auto& take:additions){validateName(take.name);if(!take.audio)throw Error("Missing take audio");it->takes.push_back(std::move(take));}commit(std::move(next));}
 void Session::compRange(uint64_t id,uint32_t takeIndex,uint64_t start,uint64_t length,uint64_t expected){
     check(expected);if(!length||start>48000*600||length>48000*600-start)throw Error("Invalid comp range");State next=current;auto it=std::find_if(next.tracks.begin(),next.tracks.end(),[id](const auto& t){return t.id==id;});if(it==next.tracks.end()||!it->audio)throw Error("Audio track not found");
-    if(takeIndex>it->takes.size())throw Error("Take index out of range");const auto source=takeIndex==0?it->audio:it->takes[takeIndex-1].audio;const auto takeStart=takeIndex==0?it->baseStart:it->takes[takeIndex-1].start;
+    if(takeIndex>it->takes.size())throw Error("Take index out of range");
+    const auto source=takeIndex==0?it->audio:it->takes[takeIndex-1].audio;
+    const auto takeStart=takeIndex==0?it->baseStart:it->takes[takeIndex-1].start;
     if(!source||start<takeStart||start-takeStart>=source->frames()||length>source->frames()-(start-takeStart))throw Error("Comp range is outside the selected take");
     for(size_t i=1;i<it->regions.size();++i)if(it->regions[i].start<it->regions[i-1].start+it->regions[i-1].length)throw Error("Remove active crossfades before changing the comp");
     const auto end=start+length;std::vector<Region> regions;regions.reserve(it->regions.size()+2);

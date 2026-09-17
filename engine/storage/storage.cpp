@@ -1,5 +1,6 @@
 #include "domain/session.hpp"
 #include <sqlite3.h>
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <cerrno>
@@ -125,7 +126,9 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
         writePlugins(3,0,state.masterInserts);
         auto parameterAutomationRow=prepare(db.get(),"INSERT INTO plugin_parameter_automation VALUES(?,?,?,?,?,?,?)");
         const auto writeParameterAutomation=[&](const std::vector<PluginInsert>& inserts){for(const auto& plugin:inserts)for(size_t lanePosition=0;lanePosition<plugin.parameterAutomation.size();++lanePosition){const auto& lane=plugin.parameterAutomation[lanePosition];for(size_t pointPosition=0;pointPosition<lane.points.size();++pointPosition){const auto& point=lane.points[pointPosition];sqlite3_reset(parameterAutomationRow.get());sqlite3_clear_bindings(parameterAutomationRow.get());sqlite3_bind_int64(parameterAutomationRow.get(),1,static_cast<int64_t>(plugin.id));sqlite3_bind_int64(parameterAutomationRow.get(),2,lane.parameterID);sqlite3_bind_int64(parameterAutomationRow.get(),3,static_cast<int64_t>(lanePosition));sqlite3_bind_int64(parameterAutomationRow.get(),4,static_cast<int64_t>(pointPosition));sqlite3_bind_int64(parameterAutomationRow.get(),5,static_cast<int64_t>(point.frame));sqlite3_bind_double(parameterAutomationRow.get(),6,point.normalizedValue);sqlite3_bind_text(parameterAutomationRow.get(),7,lane.name.data(),static_cast<int>(lane.name.size()),SQLITE_TRANSIENT);done(parameterAutomationRow.get());}}};
-        for(const auto& track:state.tracks)writeParameterAutomation(track.inserts);for(const auto& bus:state.buses)writeParameterAutomation(bus.inserts);writeParameterAutomation(state.masterInserts);
+        for(const auto& track:state.tracks)writeParameterAutomation(track.inserts);
+        for(const auto& bus:state.buses)writeParameterAutomation(bus.inserts);
+        writeParameterAutomation(state.masterInserts);
         auto midiClipRow=prepare(db.get(),"INSERT INTO midi_clips VALUES(?,?,?,?,?,?)");
         auto midiNoteRow=prepare(db.get(),"INSERT INTO midi_notes VALUES(?,?,?,?,?,?,?,?)");
         for(const auto& track:state.tracks)for(size_t position=0;position<track.midiClips.size();++position){const auto& clip=track.midiClips[position];sqlite3_reset(midiClipRow.get());sqlite3_clear_bindings(midiClipRow.get());sqlite3_bind_int64(midiClipRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(midiClipRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(midiClipRow.get(),3,static_cast<int64_t>(clip.start));sqlite3_bind_int64(midiClipRow.get(),4,static_cast<int64_t>(clip.length));sqlite3_bind_int64(midiClipRow.get(),5,clip.track);sqlite3_bind_int64(midiClipRow.get(),6,static_cast<int64_t>(clip.color));done(midiClipRow.get());for(size_t notePosition=0;notePosition<clip.notes.size();++notePosition){const auto& note=clip.notes[notePosition];sqlite3_reset(midiNoteRow.get());sqlite3_clear_bindings(midiNoteRow.get());sqlite3_bind_int64(midiNoteRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(midiNoteRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(midiNoteRow.get(),3,static_cast<int64_t>(notePosition));sqlite3_bind_int64(midiNoteRow.get(),4,static_cast<int64_t>(note.start));sqlite3_bind_int64(midiNoteRow.get(),5,static_cast<int64_t>(note.length));sqlite3_bind_int64(midiNoteRow.get(),6,note.pitch);sqlite3_bind_int64(midiNoteRow.get(),7,note.channel);sqlite3_bind_int64(midiNoteRow.get(),8,note.velocity);done(midiNoteRow.get());}}

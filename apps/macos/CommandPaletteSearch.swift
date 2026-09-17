@@ -56,6 +56,7 @@ struct DAWCommandUsageHistory: Equatable, Sendable {
             entries.append(Entry(id: entry.id, count: min(entry.count, Self.maximumCount)))
             if entries.count == Self.capacity { break }
         }
+        enforceEncodedBudget()
     }
 
     mutating func recordInvocation(id: String) {
@@ -64,6 +65,17 @@ struct DAWCommandUsageHistory: Equatable, Sendable {
         entries.removeAll { $0.id == id }
         entries.insert(Entry(id: id, count: min(previous + 1, Self.maximumCount)), at: 0)
         if entries.count > Self.capacity { entries.removeLast(entries.count - Self.capacity) }
+        enforceEncodedBudget()
+    }
+
+    /// JSON escaping can expand a bounded UTF-8 ID. Keep our own output within
+    /// the decoder's byte budget too, or a valid history disappears on restart.
+    private mutating func enforceEncodedBudget() {
+        while !entries.isEmpty {
+            guard let data = encoded() else { entries.removeAll(); return }
+            guard data.count > Self.maximumEncodedBytes else { return }
+            entries.removeLast()
+        }
     }
 
     func encoded() -> Data? {

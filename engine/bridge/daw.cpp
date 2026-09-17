@@ -12,6 +12,8 @@
 #include "audio/analysis.hpp"
 #include "plugins/plugin_descriptor.hpp"
 #include "export/dawproject_export.hpp"
+// The catalog value types are platform-independent; only scanning needs macOS.
+#include "platform/macos/vst3_scan_cache.hpp"
 #ifdef __APPLE__
 #include <AudioToolbox/AudioToolbox.h>
 #include <mach/mach_time.h>
@@ -19,7 +21,6 @@
 #include "platform/macos/au_scanner.hpp"
 #include "platform/macos/au_scan_cache.hpp"
 #include "platform/macos/vst3_scanner.hpp"
-#include "platform/macos/vst3_scan_cache.hpp"
 #endif
 #include "storage/save_job.hpp"
 #include "storage/project_package.hpp"
@@ -235,7 +236,12 @@ void resetTransport(daw_session* s) {
     if(s->loopEnabled&&s->loopEnd>frames){s->loopEnabled=false;s->loopStart=0;s->loopEnd=0;}
 }
 void rebuildOutputAfterAutomationCommit(daw_session* s){
-    if(!s->output)return;const bool resume=s->output->renderer.playing.load();const auto audible=s->output->renderer.audiblePositionFrames();s->output->stop();s->output.reset();s->selectedFrame=std::min(audible,duration(s));
+    if(!s->output)return;
+    const bool resume=s->output->renderer.playing.load();
+    const auto audible=s->output->renderer.audiblePositionFrames();
+    s->output->stop();
+    s->output.reset();
+    s->selectedFrame=std::min(audible,duration(s));
     if(resume){if(s->loopEnabled&&s->selectedFrame>=s->loopEnd)s->selectedFrame=s->loopStart;beginPlaybackPreparation(s);}
 }
 const char* required(const char* s) { if (!s) throw daw::Error("Missing text argument"); return s; }
@@ -277,13 +283,24 @@ struct VocalPlan { std::vector<uint64_t> ids;std::vector<daw::TrackAnalysis> ana
 double amplitudeDb(double value){return value>0?std::max(-120.0,20.0*std::log10(value)):-120.0;}
 VocalPlan vocalPlan(daw_session* s,const uint64_t* selected,uint32_t count,const char* base,double targetRms,double peakCeiling,double doubleOffset,uint64_t revision){if(!selected||count==0||count>32)throw daw::Error("Vocal workflow requires 1–32 selected tracks");if(!std::isfinite(targetRms)||targetRms < -60||targetRms > -6||!std::isfinite(peakCeiling)||peakCeiling < -18||peakCeiling > 0||!std::isfinite(doubleOffset)||doubleOffset < -24||doubleOffset > 0)throw daw::Error("Vocal workflow targets are outside their ranges");VocalPlan plan;plan.ids.assign(selected,selected+count);std::vector<daw::VocalGainSuggestion> suggestions;plan.analyses.reserve(count);suggestions.reserve(count);for(uint32_t index=0;index<count;++index){const auto analysis=daw::analyzeTrack(s->model.state(),selected[index]);plan.analyses.push_back(analysis);const auto peak=amplitudeDb(std::max(analysis.peakLeft,analysis.peakRight));const auto rms=amplitudeDb(std::sqrt((double(analysis.rmsLeft)*analysis.rmsLeft+double(analysis.rmsRight)*analysis.rmsRight)*0.5));const auto roleOffset=index==0?0.0:doubleOffset;const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==selected[index];});double proposed=analysis.analyzedFrames==0?track->gain:std::min(targetRms+roleOffset-rms,peakCeiling-peak);suggestions.push_back({selected[index],std::clamp(proposed,-120.0,24.0)});}plan.operations=daw::prepareVocalTracks(s->model.state(),plan.ids,required(base),suggestions);plan.preview=s->model.previewWorkflow(plan.operations,revision);return plan;}
 void startRecording(daw_session* s,uint64_t startFrame,const char* recoveryPath,uint64_t target){
-    if(recordingActive(s))throw daw::Error("Recording is already active");if(startFrame>=48000*600)throw daw::Error("Recording position must be before the 10 minute timeline limit");
+    if(recordingActive(s))throw daw::Error("Recording is already active");
+    if(startFrame>=48000*600)throw daw::Error("Recording position must be before the 10 minute timeline limit");
     invalidatePlaybackPreparation(s);
     size_t audioTracks=0,audioAssets=0,audioBytes=0;const daw::Track* targetTrack=nullptr;for(const auto& track:s->model.state().tracks)if(track.audio){++audioTracks;++audioAssets;audioBytes+=track.audio->samples().size()*sizeof(float);for(const auto& take:track.takes){++audioAssets;audioBytes+=take.audio->samples().size()*sizeof(float);}if(track.id==target)targetTrack=&track;}
     if(target){if(!targetTrack)throw daw::Error("Take target track not found");if(targetTrack->takes.size()>=15)throw daw::Error("Track supports at most 16 takes");}else{if(s->model.state().tracks.size()>=256)throw daw::Error("Draft supports at most 256 tracks");if(audioTracks>=8)throw daw::Error("Prototype supports at most 8 audio tracks");}
-    if(audioAssets>=32)throw daw::Error("Prototype supports at most 32 takes");constexpr size_t byteLimit=64*1024*1024;if(audioBytes>=byteLimit)throw daw::Error("No project capacity remains for recording");auto memoryFrames=(byteLimit-audioBytes)/(2*sizeof(float));auto timelineFrames=48000*600-startFrame;auto capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),timelineFrames});
+    if(audioAssets>=32)throw daw::Error("Prototype supports at most 32 takes");
+    constexpr size_t byteLimit=64*1024*1024;
+    if(audioBytes>=byteLimit)throw daw::Error("No project capacity remains for recording");
+    auto memoryFrames=(byteLimit-audioBytes)/(2*sizeof(float));
+    auto timelineFrames=48000*600-startFrame;
+    auto capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),timelineFrames});
     const bool loopRecording=target&&s->loopEnabled;if(loopRecording){if(startFrame!=s->loopStart)throw daw::Error("Loop recording must start at the loop boundary");const auto loopFrames=s->loopEnd-s->loopStart;const auto takeSlots=std::min<size_t>(15-targetTrack->takes.size(),32-audioAssets);capacity=std::min<uint64_t>({48000*60,static_cast<uint64_t>(memoryFrames),loopFrames*takeSlots});}
-    if(!capacity)throw daw::Error("No project capacity remains for recording");if(s->output){s->output->stop();s->output.reset();}auto path=std::string(required(recoveryPath));if(path.empty())throw daw::Error("Missing recording recovery path");
+    if(!capacity)throw daw::Error("No project capacity remains for recording");
+    if(s->output){s->output->stop();
+    s->output.reset();
+    }
+    auto path=std::string(required(recoveryPath));
+    if(path.empty())throw daw::Error("Missing recording recovery path");
     if(loopRecording){auto duplex=daw::makeDuplex(s->model.state(),capacity,path,startFrame,s->loopStart,s->loopEnd,s->recordPrerollFrames,s->recordMonitor);duplex->renderer.setMetronome(s->metronomeEnabled);duplex->start();s->duplex=std::move(duplex);}else{auto input=daw::makeInput(capacity,path,startFrame);input->start();s->input=std::move(input);}
     s->recordStart=startFrame;s->recordTarget=target;s->selectedFrame=startFrame;s->recordLastCallbacks=0;s->lastCallbacks=0;s->recordProgress=std::chrono::steady_clock::now();s->lastProgress=s->recordProgress;
 }
@@ -439,7 +456,17 @@ bool insertAvailable(const daw_session* s,const daw::PluginInsert& plugin){
     return daw::audioUnitAvailable({plugin.type,plugin.subtype,plugin.manufacturer,plugin.name});
 }
 void writePlugin(daw_session* s,const daw::PluginInsert& plugin,daw_plugin* out){
-    if(!out||out->struct_size!=sizeof(daw_plugin))throw daw::Error("Plugin ABI mismatch");*out={};out->struct_size=sizeof(daw_plugin);out->id=plugin.id;out->type=plugin.type;out->subtype=plugin.subtype;out->manufacturer=plugin.manufacturer;out->bypassed=plugin.bypassed;out->latency_frames=plugin.latencyFrames;out->available=insertAvailable(s,plugin)?1:0;copyText(out->name,plugin.name);
+    if(!out||out->struct_size!=sizeof(daw_plugin))throw daw::Error("Plugin ABI mismatch");
+    *out={};
+    out->struct_size=sizeof(daw_plugin);
+    out->id=plugin.id;
+    out->type=plugin.type;
+    out->subtype=plugin.subtype;
+    out->manufacturer=plugin.manufacturer;
+    out->bypassed=plugin.bypassed;
+    out->latency_frames=plugin.latencyFrames;
+    out->available=insertAvailable(s,plugin)?1:0;
+    copyText(out->name,plugin.name);
 }
 }
 extern "C" {
@@ -486,12 +513,17 @@ int daw_get_send(daw_session* s,uint64_t trackID,uint32_t index,daw_send* out){r
 int daw_upsert_send(daw_session* s,uint64_t track,uint64_t bus,double gain,int32_t pre,uint64_t rev){return guard(s,[&]{if(pre!=0&&pre!=1)throw daw::Error("Send tap must be 0 or 1");s->model.upsertSend(track,bus,gain,pre!=0,rev);resetTransport(s);});}
 int daw_remove_send(daw_session* s,uint64_t track,uint64_t bus,uint64_t rev){return guard(s,[&]{s->model.removeSend(track,bus,rev);resetTransport(s);});}
 int daw_get_track_volume_automation_count(daw_session* s,uint64_t trackID,uint32_t* count){return guard(s,[&]{
-    if(!count)throw daw::Error("Missing automation point count");const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});
-    if(track==s->model.state().tracks.end())throw daw::Error("Track not found");*count=static_cast<uint32_t>(track->volumeAutomation.size());
+    if(!count)throw daw::Error("Missing automation point count");
+    const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});
+    if(track==s->model.state().tracks.end())throw daw::Error("Track not found");
+    *count=static_cast<uint32_t>(track->volumeAutomation.size());
 });}
 int daw_get_track_volume_automation_point(daw_session* s,uint64_t trackID,uint32_t index,daw_automation_point* out){return guard(s,[&]{
-    if(!out||out->struct_size!=sizeof(daw_automation_point))throw daw::Error("Automation point ABI mismatch");const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});
-    if(track==s->model.state().tracks.end()||index>=track->volumeAutomation.size())throw daw::Error("Automation point index out of range");const auto& point=track->volumeAutomation[index];*out={sizeof(daw_automation_point),point.frame,point.gainDb};
+    if(!out||out->struct_size!=sizeof(daw_automation_point))throw daw::Error("Automation point ABI mismatch");
+    const auto track=std::find_if(s->model.state().tracks.begin(),s->model.state().tracks.end(),[&](const auto& item){return item.id==trackID;});
+    if(track==s->model.state().tracks.end()||index>=track->volumeAutomation.size())throw daw::Error("Automation point index out of range");
+    const auto& point=track->volumeAutomation[index];
+    *out={sizeof(daw_automation_point),point.frame,point.gainDb};
 });}
 int daw_upsert_track_volume_automation_point(daw_session* s,uint64_t trackID,uint64_t frame,double gain,uint64_t rev){return guard(s,[&]{s->model.upsertTrackVolumeAutomation(trackID,frame,gain,rev);cancelStalePlaybackPreparation(s);});}
 int daw_remove_track_volume_automation_point(daw_session* s,uint64_t trackID,uint64_t frame,uint64_t rev){return guard(s,[&]{s->model.removeTrackVolumeAutomation(trackID,frame,rev);cancelStalePlaybackPreparation(s);});}
@@ -515,10 +547,20 @@ int daw_begin_insert_parameter_automation_gesture(daw_session* s,int32_t owner,u
     validateInsertOwner(owner,ownerID);if(s->pluginParameterGesture)throw daw::Error("Plug-in parameter automation gesture is already active");(void)insertFor(s->model.state(),owner,ownerID,insertID);const auto parameterName=name?std::string(name):std::string{};s->model.beginPluginParameterAutomationGesture(pluginOwner(owner),ownerID,insertID,parameterID,parameterName,automationMode(mode),rev);s->pluginParameterGesture={insertID,parameterID};
 });}
 int daw_write_insert_parameter_automation_gesture(daw_session* s,uint64_t frame,double normalized){return guard(s,[&]{
-    if(!s->pluginParameterGesture)throw daw::Error("No plug-in parameter automation gesture is active");if(!std::isfinite(normalized)||normalized<0||normalized>1)throw daw::Error("Plug-in automation value must be normalized 0…1");s->model.writePluginParameterAutomationGesture(frame,normalized);if(s->output){const auto live=*s->pluginParameterGesture;if(!s->output->renderer.updatePluginParameterTouch(live.pluginID,live.parameterID,static_cast<float>(normalized)))s->output->renderer.beginPluginParameterTouch(live.pluginID,live.parameterID,static_cast<float>(normalized));}
+    if(!s->pluginParameterGesture)throw daw::Error("No plug-in parameter automation gesture is active");
+    if(!std::isfinite(normalized)||normalized<0||normalized>1)throw daw::Error("Plug-in automation value must be normalized 0…1");
+    s->model.writePluginParameterAutomationGesture(frame,normalized);
+    if(s->output){const auto live=*s->pluginParameterGesture;
+    if(!s->output->renderer.updatePluginParameterTouch(live.pluginID,live.parameterID,static_cast<float>(normalized)))s->output->renderer.beginPluginParameterTouch(live.pluginID,live.parameterID,static_cast<float>(normalized));
+    }
 });}
 int daw_end_insert_parameter_automation_gesture(daw_session* s,uint64_t endFrame,uint64_t rev){return guard(s,[&]{
-    if(!s->pluginParameterGesture)throw daw::Error("No plug-in parameter automation gesture is active");const auto live=*s->pluginParameterGesture;s->model.endPluginParameterAutomationGesture(endFrame,rev);if(s->output)s->output->renderer.endPluginParameterTouch(live.pluginID,live.parameterID);s->pluginParameterGesture.reset();rebuildOutputAfterAutomationCommit(s);
+    if(!s->pluginParameterGesture)throw daw::Error("No plug-in parameter automation gesture is active");
+    const auto live=*s->pluginParameterGesture;
+    s->model.endPluginParameterAutomationGesture(endFrame,rev);
+    if(s->output)s->output->renderer.endPluginParameterTouch(live.pluginID,live.parameterID);
+    s->pluginParameterGesture.reset();
+    rebuildOutputAfterAutomationCommit(s);
 });}
 void daw_cancel_insert_parameter_automation_gesture(daw_session* s){if(!s)return;s->model.cancelPluginParameterAutomationGesture();if(s->output)s->output->renderer.cancelPluginParameterTouch();s->pluginParameterGesture.reset();}
 int daw_scan_supported_au(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing Audio Unit count");s->auCatalog=daw::supportedAudioUnits();*count=static_cast<uint32_t>(s->auCatalog.size());});}
@@ -597,7 +639,7 @@ int daw_load_installed_vst3_scan_cache(daw_session* s,const char* helperPath,con
 });}
 void daw_release_installed_vst3_scan(daw_vst3_scan_job* job){delete job;}
 int daw_get_installed_vst3_count(daw_session* s,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing VST3 catalog count");*count=static_cast<uint32_t>(s->vst3Catalog.size());});}
-int daw_get_installed_vst3(daw_session* s,uint32_t index,daw_vst3_component* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_vst3_component))throw daw::Error("VST3 catalog ABI mismatch");if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& entry=s->vst3Catalog[index];*out={};out->struct_size=sizeof(daw_vst3_component);out->available=entry.available?1:0;out->flags=entry.plugin.instrument?DAW_VST3_FLAG_INSTRUMENT:0u;copyText(out->class_id,entry.plugin.classId);copyText(out->module_fingerprint,entry.plugin.moduleFingerprint);copyText(out->module_path,entry.plugin.modulePath);copyText(out->name,entry.plugin.name);copyText(out->vendor,entry.plugin.vendor);copyText(out->version,entry.plugin.version);copyText(out->quarantine_reason,entry.quarantineReason);});}
+int daw_get_installed_vst3(daw_session* s,uint32_t index,daw_vst3_component* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_vst3_component))throw daw::Error("VST3 catalog ABI mismatch");if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& entry=s->vst3Catalog[index];*out={};out->struct_size=sizeof(daw_vst3_component);out->available=entry.available?1:0;out->flags=entry.plugin.instrument?static_cast<uint32_t>(DAW_VST3_FLAG_INSTRUMENT):0u;copyText(out->class_id,entry.plugin.classId);copyText(out->module_fingerprint,entry.plugin.moduleFingerprint);copyText(out->module_path,entry.plugin.modulePath);copyText(out->name,entry.plugin.name);copyText(out->vendor,entry.plugin.vendor);copyText(out->version,entry.plugin.version);copyText(out->quarantine_reason,entry.quarantineReason);});}
 int daw_add_master_vst3(daw_session* s,uint32_t index,uint64_t rev){return guard(s,[&]{if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& item=s->vst3Catalog[index];if(!item.available)throw daw::Error("Selected VST3 is quarantined or unavailable");const auto classID=daw::parseTextualVst3Fuid(item.plugin.classId);if(!classID)throw daw::Error("VST3 catalog FUID is invalid");daw::Vst3StateEnvelope envelope;envelope.descriptor.format=daw::PluginFormat::VST3;envelope.descriptor.vst3ClassFuid=*classID;envelope.descriptor.modulePath=item.plugin.modulePath;envelope.descriptor.vendor=item.plugin.vendor;envelope.descriptor.version=item.plugin.version;envelope.descriptor.fingerprint=item.plugin.moduleFingerprint;daw::PluginInsert insert{0,0,0,0,item.plugin.name,false,0,daw::encodeVst3StateEnvelope(envelope),{}};const auto snapshot=daw::snapshotVst3Effect(insert);insert.latencyFrames=snapshot.latencyFrames;insert.state=snapshot.state;s->model.addMasterInsert(std::move(insert),rev);resetTransport(s);});}
 int daw_get_supported_au(daw_session* s,uint32_t index,daw_au_component* out){return guard(s,[&]{if(!out||out->struct_size!=sizeof(daw_au_component))throw daw::Error("Audio Unit catalog ABI mismatch");if(index>=s->auCatalog.size())throw daw::Error("Audio Unit catalog index out of range");const auto& item=s->auCatalog[index];*out={};out->struct_size=sizeof(daw_au_component);out->type=item.type;out->subtype=item.subtype;out->manufacturer=item.manufacturer;std::memcpy(out->name,item.name.data(),item.name.size());});}
 int daw_add_master_au(daw_session* s,uint32_t type,uint32_t subtype,uint32_t manufacturer,uint64_t rev){return guard(s,[&]{const auto found=std::find_if(s->auCatalog.begin(),s->auCatalog.end(),[&](const auto& item){return item.type==type&&item.subtype==subtype&&item.manufacturer==manufacturer;});if(found==s->auCatalog.end())throw daw::Error("Scan and choose a supported Apple Audio Unit");auto snapshot=daw::snapshotAudioUnit(*found);s->model.addMasterInsert({0,type,subtype,manufacturer,std::move(snapshot.name),false,snapshot.latencyFrames,std::move(snapshot.state),{}},rev);resetTransport(s);});}
@@ -610,7 +652,11 @@ int daw_move_master_insert(daw_session* s,uint64_t id,uint32_t index,uint64_t re
 int daw_remove_master_insert(daw_session* s,uint64_t id,uint64_t rev){return guard(s,[&]{s->model.removeMasterInsert(id,rev);resetTransport(s);});}
 int daw_add_insert_vst3(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t index,uint64_t rev){return guard(s,[&]{
     validateInsertOwner(owner,ownerID);
-    if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");const auto& item=s->vst3Catalog[index];if(!item.available)throw daw::Error("Selected VST3 is quarantined or unavailable");const auto classID=daw::parseTextualVst3Fuid(item.plugin.classId);if(!classID)throw daw::Error("VST3 catalog FUID is invalid");
+    if(index>=s->vst3Catalog.size())throw daw::Error("VST3 catalog index out of range");
+    const auto& item=s->vst3Catalog[index];
+    if(!item.available)throw daw::Error("Selected VST3 is quarantined or unavailable");
+    const auto classID=daw::parseTextualVst3Fuid(item.plugin.classId);
+    if(!classID)throw daw::Error("VST3 catalog FUID is invalid");
     daw::Vst3StateEnvelope envelope;envelope.descriptor.format=daw::PluginFormat::VST3;envelope.descriptor.vst3ClassFuid=*classID;envelope.descriptor.modulePath=item.plugin.modulePath;envelope.descriptor.vendor=item.plugin.vendor;envelope.descriptor.version=item.plugin.version;envelope.descriptor.fingerprint=item.plugin.moduleFingerprint;
     daw::PluginInsert insert{0,0,0,0,item.plugin.name,false,0,daw::encodeVst3StateEnvelope(envelope),{}};const auto snapshot=daw::snapshotVst3Effect(insert);insert.latencyFrames=snapshot.latencyFrames;insert.state=snapshot.state;
     switch(owner){case DAW_INSERT_OWNER_MASTER:if(ownerID)throw daw::Error("Master insert owner ID must be zero");s->model.addMasterInsert(std::move(insert),rev);break;case DAW_INSERT_OWNER_TRACK:s->model.addTrackInsert(ownerID,std::move(insert),rev);break;case DAW_INSERT_OWNER_BUS:s->model.addBusInsert(ownerID,std::move(insert),rev);break;default:throw daw::Error("Unsupported insert owner");}resetTransport(s);
@@ -621,7 +667,8 @@ int daw_add_insert_au(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t typ
     switch(owner){case DAW_INSERT_OWNER_MASTER:if(ownerID)throw daw::Error("Master insert owner ID must be zero");s->model.addMasterInsert(std::move(insert),rev);break;case DAW_INSERT_OWNER_TRACK:s->model.addTrackInsert(ownerID,std::move(insert),rev);break;case DAW_INSERT_OWNER_BUS:s->model.addBusInsert(ownerID,std::move(insert),rev);break;default:throw daw::Error("Unsupported insert owner");}resetTransport(s);
 });}
 int daw_get_insert_count(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t* count){return guard(s,[&]{
-    if(!count)throw daw::Error("Missing insert count");*count=static_cast<uint32_t>(insertsFor(s->model.state(),owner,ownerID).size());
+    if(!count)throw daw::Error("Missing insert count");
+    *count=static_cast<uint32_t>(insertsFor(s->model.state(),owner,ownerID).size());
 });}
 int daw_get_insert(daw_session* s,int32_t owner,uint64_t ownerID,uint32_t index,daw_plugin* out){return guard(s,[&]{const auto& inserts=insertsFor(s->model.state(),owner,ownerID);if(index>=inserts.size())throw daw::Error("Insert index out of range");writePlugin(s,inserts[index],out);});}
 int daw_get_insert_hosting_status(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,daw_insert_hosting_status* out){return guard(s,[&]{writeInsertHostingStatus(insertFor(s->model.state(),owner,ownerID,insertID),out);});}
@@ -640,7 +687,10 @@ int daw_set_insert_hosting_mode(daw_session* s,int32_t owner,uint64_t ownerID,ui
 });}
 int daw_get_insert_parameter_count(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t* count){return guard(s,[&]{if(!count)throw daw::Error("Missing parameter count");const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);if(daw::isVst3PluginInsert(insert))*count=static_cast<uint32_t>(vst3EditorParameters(s,insert).size());else{requireParameterEditor(insert);*count=static_cast<uint32_t>(daw::audioUnitParameters(insert).size());}});}
 int daw_get_insert_parameter(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t index,daw_au_parameter* out){return guard(s,[&]{
-    if(!out||out->struct_size!=sizeof(daw_au_parameter))throw daw::Error("Plug-in parameter ABI mismatch");const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);*out={};out->struct_size=sizeof(daw_au_parameter);
+    if(!out||out->struct_size!=sizeof(daw_au_parameter))throw daw::Error("Plug-in parameter ABI mismatch");
+    const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);
+    *out={};
+    out->struct_size=sizeof(daw_au_parameter);
     if(daw::isVst3PluginInsert(insert)){const auto& parameters=vst3EditorParameters(s,insert);if(index>=parameters.size())throw daw::Error("VST3 parameter index out of range");writeVst3Parameter(parameters[index],out);
     }else{requireParameterEditor(insert);const auto parameters=daw::audioUnitParameters(insert);if(index>=parameters.size())throw daw::Error("Audio Unit parameter index out of range");const auto& parameter=parameters[index];out->id=parameter.id;out->minimum=parameter.minimum;out->maximum=parameter.maximum;out->value=parameter.value;out->normalized_value=parameter.normalizedValue;out->writable=parameter.writable;out->logarithmic=parameter.logarithmic;out->indexed=parameter.indexed;copyText(out->name,parameter.name);}
 });}
@@ -655,10 +705,18 @@ int daw_set_insert_bypass(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t
 int daw_move_insert(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t index,uint64_t rev){return guard(s,[&]{validateInsertOwner(owner,ownerID);switch(owner){case DAW_INSERT_OWNER_MASTER:s->model.moveMasterInsert(insertID,index,rev);break;case DAW_INSERT_OWNER_TRACK:s->model.moveTrackInsert(ownerID,insertID,index,rev);break;case DAW_INSERT_OWNER_BUS:s->model.moveBusInsert(ownerID,insertID,index,rev);break;default:throw daw::Error("Unsupported insert owner");}resetTransport(s);});}
 int daw_remove_insert(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint64_t rev){return guard(s,[&]{validateInsertOwner(owner,ownerID);switch(owner){case DAW_INSERT_OWNER_MASTER:s->model.removeMasterInsert(insertID,rev);break;case DAW_INSERT_OWNER_TRACK:s->model.removeTrackInsert(ownerID,insertID,rev);break;case DAW_INSERT_OWNER_BUS:s->model.removeBusInsert(ownerID,insertID,rev);break;default:throw daw::Error("Unsupported insert owner");}resetTransport(s);});}
 int daw_get_insert_parameter_automation_count(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t parameterID,uint32_t* count){return guard(s,[&]{
-    if(!count)throw daw::Error("Missing plug-in automation point count");const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);const auto lane=std::find_if(insert.parameterAutomation.begin(),insert.parameterAutomation.end(),[&](const auto& item){return item.parameterID==parameterID;});*count=lane==insert.parameterAutomation.end()?0:static_cast<uint32_t>(lane->points.size());
+    if(!count)throw daw::Error("Missing plug-in automation point count");
+    const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);
+    const auto lane=std::find_if(insert.parameterAutomation.begin(),insert.parameterAutomation.end(),[&](const auto& item){return item.parameterID==parameterID;});
+    *count=lane==insert.parameterAutomation.end()?0:static_cast<uint32_t>(lane->points.size());
 });}
 int daw_get_insert_parameter_automation_point(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t parameterID,uint32_t index,daw_plugin_parameter_automation_point* out){return guard(s,[&]{
-    if(!out||out->struct_size!=sizeof(daw_plugin_parameter_automation_point))throw daw::Error("Plug-in automation point ABI mismatch");const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);const auto lane=std::find_if(insert.parameterAutomation.begin(),insert.parameterAutomation.end(),[&](const auto& item){return item.parameterID==parameterID;});if(lane==insert.parameterAutomation.end()||index>=lane->points.size())throw daw::Error("Plug-in automation point index out of range");const auto& point=lane->points[index];*out={sizeof(daw_plugin_parameter_automation_point),point.frame,point.normalizedValue};
+    if(!out||out->struct_size!=sizeof(daw_plugin_parameter_automation_point))throw daw::Error("Plug-in automation point ABI mismatch");
+    const auto& insert=insertFor(s->model.state(),owner,ownerID,insertID);
+    const auto lane=std::find_if(insert.parameterAutomation.begin(),insert.parameterAutomation.end(),[&](const auto& item){return item.parameterID==parameterID;});
+    if(lane==insert.parameterAutomation.end()||index>=lane->points.size())throw daw::Error("Plug-in automation point index out of range");
+    const auto& point=lane->points[index];
+    *out={sizeof(daw_plugin_parameter_automation_point),point.frame,point.normalizedValue};
 });}
 int daw_upsert_insert_parameter_automation_point(daw_session* s,int32_t owner,uint64_t ownerID,uint64_t insertID,uint32_t parameterID,const char* name,uint64_t frame,double normalized,uint64_t rev){return guard(s,[&]{
     validateInsertOwner(owner,ownerID);if(!std::isfinite(normalized)||normalized<0||normalized>1)throw daw::Error("Plug-in automation value must be normalized 0…1");const auto parameterName=name?std::string(name):std::string{};s->model.upsertPluginParameterAutomation(pluginOwner(owner),ownerID,insertID,parameterID,parameterName,frame,normalized,rev);resetTransport(s);
@@ -810,6 +868,7 @@ int daw_get_midi_input_device(daw_session* s,uint32_t index,daw_midi_device* out
     *out={};out->struct_size=sizeof(daw_midi_device);out->version=DAW_MIDI_DEVICE_VERSION;
     out->uniqueID=device.uniqueID;out->online=device.online?1:0;copyText(out->name,device.name);
 #else
+    (void)index; // The non-Apple device list is empty.
     throw daw::Error("MIDI input requires macOS");
 #endif
 });}
@@ -1059,7 +1118,8 @@ int daw_extract_package(daw_session* s,const char* zipPath,const char* targetDra
     if(!daw::extractProjectPackage(required(zipPath),required(targetDraftPath),error))throw daw::Error(error);
 });}
 int daw_poll_export(daw_export_job* job,daw_export_status* out) {
-    if(!job||!out||out->struct_size!=sizeof(daw_export_status))return 1;auto& result=*job->result;
+    if(!job||!out||out->struct_size!=sizeof(daw_export_status))return 1;
+    auto& result=*job->result;
     out->status=result.status.load(std::memory_order_acquire);out->revision=result.revision;out->rendered_frames=result.renderedFrames.load(std::memory_order_acquire);out->total_frames=result.totalFrames;
     std::memset(out->error,0,sizeof(out->error));if(out->status==2)std::memcpy(out->error,result.error,sizeof(out->error));return 0;
 }

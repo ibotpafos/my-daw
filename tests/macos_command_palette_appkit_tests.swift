@@ -30,7 +30,7 @@ struct CommandPaletteAppKitTests {
         DispatchQueue.global().asyncAfter(deadline: .now() + 120) { exit(124) }
         DispatchQueue.main.async {
             runTests()
-            guard CommandLine.arguments.count == 2 else { fatalError("missing result path") }
+            guard (2...3).contains(CommandLine.arguments.count) else { fatalError("missing result path") }
             do {
                 try Data("PASS\n".utf8).write(to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)
             } catch { fatalError("cannot write test result: \(error)") }
@@ -68,6 +68,9 @@ struct CommandPaletteAppKitTests {
         beta.tag = 2 // nil target: must resolve against the host view, not search.
         menu.addItem(alpha)
         menu.addItem(beta)
+        let paletteItem = DAWWindow.makeCommandPaletteMenuItem()
+        menu.addItem(paletteItem)
+        expect(paletteItem.target == nil && paletteItem.keyEquivalent == "k", "visible palette item uses the document responder chain")
         host.makeKeyAndOrderFront(nil)
         host.makeMain()
         NSApp.activate()
@@ -110,6 +113,9 @@ struct CommandPaletteAppKitTests {
         let (_, search, table, _) = openPalette()
         expect(table.numberOfRows == 2, "explicit and nil-target menu commands are indexed: rows=\(table.numberOfRows), alpha=\(alpha.isEnabled), beta=\(beta.isEnabled)")
         expect(usage.history.entries.isEmpty, "opening palette does not record usage")
+        if let panel = host.childWindows?.first {
+            inspectLayoutAndCapture(panel)
+        }
         expect(boundKey(search, #selector(NSResponder.moveDown(_:))), "field-editor down handled")
         expect(table.selectedRow == 1, "field-editor down selects next result")
         expect(boundKey(search, #selector(NSResponder.moveUp(_:))) && table.selectedRow == 0, "field-editor up")
@@ -182,11 +188,52 @@ struct CommandPaletteAppKitTests {
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: lostFocusPanel))
         expect(!controller.isVisible && host.childWindows?.isEmpty != false, "focus loss detaches the panel")
         expect(!DAWCommandPaletteKey.isToggle(key(code: 40, characters: "k", flags: [.command, .shift], window: host)), "other shortcuts are not captured")
+        host.makeKeyAndOrderFront(nil)
+        host.makeFirstResponder(target)
+        drain()
+        expect(NSApp.sendAction(paletteItem.action!, to: nil, from: paletteItem), "visible menu action resolves through document window")
+        expect(host.childWindows?.count == 1, "visible menu action opens palette")
+        if let menuPanel = host.childWindows?.first {
+            expect(menuPanel.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: menuPanel)), "keyboard closes menu-opened palette")
+        }
+        let marked = PaletteMarkedTextView(frame: .zero)
+        target.addSubview(marked)
+        host.makeFirstResponder(marked)
+        host.showCommandPalette(paletteItem)
+        expect(host.childWindows?.isEmpty != false, "menu action cannot interrupt marked text")
+        host.makeFirstResponder(target)
+        marked.removeFromSuperview()
         expect(host.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: host)), "main window shortcut opens palette")
         expect(host.childWindows?.count == 1, "one attached palette window")
         host.close()
         expect(host.childWindows?.isEmpty != false, "closing host removes owned palette")
         print("command palette AppKit: \(checks) checks passed")
+    }
+
+    private static func inspectLayoutAndCapture(_ panel: NSWindow) {
+        guard let view = panel.contentView else { fatalError("missing palette view") }
+        view.layoutSubtreeIfNeeded()
+        expect(!view.hasAmbiguousLayout, "palette root has unambiguous layout")
+        for control in view.subviews {
+            expect(!control.hasAmbiguousLayout && control.frame.width > 0 && control.frame.height > 0,
+                   "palette controls have resolved nonempty geometry")
+            expect(view.bounds.insetBy(dx: -1, dy: -1).contains(control.frame),
+                   "palette controls are contained in the panel")
+        }
+        guard CommandLine.arguments.count == 3, !CommandLine.arguments[2].isEmpty else { return }
+        let output = CommandLine.arguments[2]
+        do {
+            let directory = URL(fileURLWithPath: output, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            guard let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                fatalError("cannot create palette snapshot")
+            }
+            view.cacheDisplay(in: view.bounds, to: image)
+            guard let png = image.representation(using: .png, properties: [:]) else {
+                fatalError("cannot encode palette snapshot")
+            }
+            try png.write(to: directory.appendingPathComponent("command-palette.png"))
+        } catch { fatalError("cannot capture native palette: \(error)") }
     }
 
     private static func key(code: UInt16, characters: String, flags: NSEvent.ModifierFlags,
