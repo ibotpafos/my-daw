@@ -1,0 +1,349 @@
+diff --git a/.github/workflows/piano-roll-appkit.yml b/.github/workflows/piano-roll-appkit.yml
+index a9ea2a8..c1e99c5 100644
+--- a/.github/workflows/piano-roll-appkit.yml
++++ b/.github/workflows/piano-roll-appkit.yml
+@@ -1,5 +1,7 @@
+ name: Piano roll AppKit
+ on:
++  push:
++    branches: [main]
+   pull_request:
+     paths:
+       - 'apps/macos/**'
+@@ -21,7 +23,7 @@ jobs:
+     env:
+       PR_QA_DIR: ${{ github.workspace }}/build/qa-ui
+     steps:
+-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+         with:
+           persist-credentials: false
+       - name: Archive exact tested source for reproduction
+@@ -30,7 +32,7 @@ jobs:
+           git archive --format=zip --output=build/qa-source/source.zip HEAD
+           git rev-parse HEAD > build/qa-source/commit.txt
+           shasum -a 256 build/qa-source/source.zip > build/qa-source/SHA256SUMS
+-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+         with:
+           name: piano-roll-tested-source-${{ github.run_id }}
+           path: build/qa-source/
+@@ -42,7 +44,7 @@ jobs:
+         run: bash scripts/test-piano-roll-appkit.sh
+       - name: Preserve native UI screenshots
+         if: always()
+-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+         with:
+           name: piano-roll-ui-${{ github.run_id }}
+           path: build/qa-ui/
+@@ -54,7 +56,7 @@ jobs:
+     env:
+       CMAKE_BUILD_PARALLEL_LEVEL: 3
+     steps:
+-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+         with:
+           persist-credentials: false
+       - name: Build and verify native arm64 application
+@@ -73,7 +75,7 @@ jobs:
+           bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-app/midi-bridge-tests.log
+       - name: Preserve build evidence
+         if: always()
+-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+         with:
+           name: piano-roll-app-${{ github.run_id }}
+           path: build/qa-app/
+diff --git a/.github/workflows/piano-roll-transforms.yml b/.github/workflows/piano-roll-transforms.yml
+index e5f1d04..7992790 100644
+--- a/.github/workflows/piano-roll-transforms.yml
++++ b/.github/workflows/piano-roll-transforms.yml
+@@ -1,5 +1,7 @@
+ name: Piano roll transform core
+ on:
++  push:
++    branches: [main]
+   pull_request:
+     paths:
+       - 'apps/macos/PianoRoll/**'
+@@ -17,7 +19,7 @@ jobs:
+     runs-on: macos-15
+     timeout-minutes: 10
+     steps:
+-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+       - name: Swift compiler
+         run: swiftc --version
+       - name: Test MIDI note transforms on macOS
+diff --git a/.github/workflows/workspace-ui.yml b/.github/workflows/workspace-ui.yml
+index 22ba52e..c5955fb 100644
+--- a/.github/workflows/workspace-ui.yml
++++ b/.github/workflows/workspace-ui.yml
+@@ -1,5 +1,7 @@
+ name: Native workspace UI
+ on:
++  push:
++    branches: [main]
+   pull_request:
+   workflow_dispatch:
+ permissions:
+diff --git a/apps/macos/MixExportUI.swift b/apps/macos/MixExportUI.swift
+index b5721e1..c3b6281 100644
+--- a/apps/macos/MixExportUI.swift
++++ b/apps/macos/MixExportUI.swift
+@@ -71,6 +71,7 @@ extension DraftApp {
+             dialogOpen: mixExportDialogToken != nil && mixExportDialogToken != token,
+             recording: isRecording, midiCapture: midiTakeArmed,
+             gesture: automationGesture != nil || pluginParameterGesture != nil
++                || inspectorBrowser.midiEditor.hasUncommittedEdit
+                 || timelineRuler.cycleRange.isGesturing || waveforms.contains { $0.isGesturing },
+             start: rangeStart, end: rangeEnd)
+         guard let session else { policy.available = false; return policy }
+diff --git a/apps/macos/PianoRollView.swift b/apps/macos/PianoRollView.swift
+index a7bcb34..dd7c8a2 100644
+--- a/apps/macos/PianoRollView.swift
++++ b/apps/macos/PianoRollView.swift
+@@ -105,6 +105,13 @@ final class PianoRollEditorView: NSView {
+     var onPlayToggle: (() -> Void)?
+ 
+     private let state = PRProState()
++    /// Project-level operations must not silently ignore an uncommitted note preview.
++    var hasUncommittedEdit: Bool { state.isGesturing || state.awaitingCommit }
++    var onEditStateChange: (() -> Void)?
++#if DAW_MIX_EXPORT_TESTS
++    // Observe the same state used by the production view; no second test model.
++    var integrationEditState: PRProState { state }
++#endif
+     private lazy var preview = PRMiniPreviewView(state: state)
+     private let clipPopup = NSPopUpButton()
+     private let gridPopup = NSPopUpButton()
+@@ -234,6 +241,7 @@ final class PianoRollEditorView: NSView {
+ 
+     private func refreshFromState() {
+         applyEnabled()
++        onEditStateChange?()
+         statusLabel.stringValue = state.status
+         preview.needsDisplay = true
+         windowController?.workspace.refreshFromState()
+diff --git a/apps/macos/Workspace/LibraryFolderIntegration.swift b/apps/macos/Workspace/LibraryFolderIntegration.swift
+index dc5c08e..7ed6640 100644
+--- a/apps/macos/Workspace/LibraryFolderIntegration.swift
++++ b/apps/macos/Workspace/LibraryFolderIntegration.swift
+@@ -16,7 +16,7 @@ extension DraftApp {
+             })
+             self.libraryBrowser.audioItems = items
+         }
+-#if !DAW_WORKSPACE_TESTS
++#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
+         folder.restore()
+ #endif
+     }
+diff --git a/apps/macos/main.swift b/apps/macos/main.swift
+index 93929f8..9c56436 100644
+--- a/apps/macos/main.swift
++++ b/apps/macos/main.swift
+@@ -889,6 +889,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
+         inspectorBrowser.onMidiInputSelect = { [weak self] id in self?.selectMidiInput(id) }
+         inspectorBrowser.onMidiRecordToggle = { [weak self] in self?.toggleMidiRecording() }
+         inspectorBrowser.onMidiCommitRequest = { [weak self] request in self?.commitMidiEdit(request) }
++        inspectorBrowser.midiEditor.onEditStateChange = { [weak self] in self?.updateMixExportAvailability() }
+         inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }
+         inspectorBrowser.onMidiAddNote = { [weak self] in
+             guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex, !self.isRecording else { return }
+diff --git a/docs/89-main-integration.md b/docs/89-main-integration.md
+new file mode 100644
+index 0000000..85b75a4
+--- /dev/null
++++ b/docs/89-main-integration.md
+@@ -0,0 +1,57 @@
++# Интеграция workspace, Piano Roll и MIDI-инструментов
++
++Этот срез объединяет ранее раздельно проверенные ветки в одном приложении:
++main с Piano Roll (#4), инфраструктуру/AU (#1), VST3 SDK (#5), workspace и
++фоновую библиотеку (#6), VST3-инструменты (#7), MIDI-only WAV action (#11).
++Общий интеграционный PR — #12. Отдельные ветки Mixer Console (#3) и Command
++Palette (#8) в этот срез не включены и не подменяются старой реализацией.
++
++## Согласованные границы
++
++- Сохранены **все** исходники Piano Roll и его тесты. Тот же экземпляр
++  `PianoRollEditorView` находится в нижнем dock; его кнопка открывает отдельное
++  окно редактора. Inspector передаёт context, metadata и notes атомарно через
++  `apply(model:)`, а запись — через revision-bound `PRCommitRequest`.
++- MIDI replacement принимает до 65536 нот, страницы чтения/add/append — 8192;
++  правила общего бюджета проекта и negative fixtures не ослаблены.
++- После New/Open/recovery обновляются существующие идентификаторы документа
++  и для Piano Roll, и для экспорта. Совпадение номера сохранённой revision
++  не разрешает устаревшему callback менять повторно открытый документ.
++- WAV export запрещён при незавершённом жесте/transform preview Piano Roll и
++  ожидающем подтверждения commit. Открытие диалога не применяет preview и не
++  экспортирует молча старые ноты. Кнопка/меню обновляются после изменения
++  состояния редактора, а прямой selector повторно проверяет состояние.
++- Сохранены MIDI duration/seek/loop, реальный VST3 instrument/event input,
++  POSIX page-padding validation и не-Apple libsamplerate integration.
++- Build, SDK typecheck и интеграционные UI harness используют один явный
++  Swift manifest и один `DAWBridge.h`. Обе независимые Piano Roll проверки
++  остаются обязательными рядом с workspace/export, core и VST3 workflows.
++- Фоновое чтение выбранной папки и bookmark restoration не обращаются к
++  сессии из worker. Тестовый экспорт отключает автоматическое восстановление
++  папки, как уже отключает startup recovery/scans/timers; явные folder tests
++  продолжают проверять настоящую файловую систему и контроллер.
++
++## Проверка совместного результата
++
++`test-mix-export-ui.sh` дополнен сценарием **реальный docked Piano Roll →
++preview/pending guard → commit/Undo → equal-revision reopen → AU/WAV action**.
++Тест задерживает только callback подтверждения, чтобы проверить pending state;
++успешная запись отдельно использует производственный C ABI. Ответы пользователя
++на export-диалоги по-прежнему подставлены; сам AU/renderer/job/WAV не подменён.
++
++Команды: `scripts/build-macos.sh`, `scripts/test-workspace-ui.sh`,
++`scripts/test-mix-export-ui.sh`, `scripts/typecheck-macos-ui.sh`,
++`scripts/test-piano-roll-appkit.sh`, `scripts/test-piano-roll-bridge.sh`,
++`scripts/test-piano-roll-transforms.sh`; CTest debug/sanitizers и SDK workflow.
++Результаты конкретного commit, source archives и downloadable .app фиксируются
++в PR #12. Наличие проверки в workflow не считается её успешным выполнением.
++
++## Не является релизной приёмкой
++
++Сборка development/ad-hoc, без нотарификации. Физические MIDI/audio устройства,
++пользовательские плагины, реальные диалоги, VoiceOver и длительные сессии остаются
++ручными проверками (Piano Roll QA #10 не закрывается). Сохранённые параметры и
++изменение цикла всё ещё останавливают playback по прежним контрактам. MPE/CC,
++звучащая экранная клавиатура, новый live automation path не реализованы этим
++merge. Подробности: [Piano Roll](piano-roll-validation.md),
++[экспорт](88-midi-only-export-ui.md), [папки библиотеки](reference-library-folders.md).
+diff --git a/engine/bridge/daw.cpp b/engine/bridge/daw.cpp
+index c6ea12f..0cb9439 100644
+--- a/engine/bridge/daw.cpp
++++ b/engine/bridge/daw.cpp
+@@ -20,6 +20,7 @@
+ #include "platform/macos/au_scanner.hpp"
+ #include "platform/macos/au_scan_cache.hpp"
+ #include "platform/macos/vst3_scanner.hpp"
++#include "platform/macos/vst3_scan_cache.hpp"
+ #endif
+ #include "storage/save_job.hpp"
+ #include "storage/project_package.hpp"
+@@ -2161,7 +2162,7 @@ namespace {
+ // ABI-level sanity only: shape, ranges and bounds a caller could not possibly
+ // mean. Timeline, overlap and capacity rules stay inside the domain's Validate.
+ void validateMidiNoteArray(const daw_midi_note *notes, uint32_t count,
+-                           uint32_t limit = DAW_MIDI_NOTES_PER_CALL) {
++                          uint32_t limit = DAW_MIDI_NOTES_PER_CALL) {
+     if (count > limit)
+         throw daw::Error("MIDI note array exceeds its per-call limit");
+     if (count && !notes)
+diff --git a/engine/storage/storage.cpp b/engine/storage/storage.cpp
+index f066ad2..b0c4cbf 100644
+--- a/engine/storage/storage.cpp
++++ b/engine/storage/storage.cpp
+@@ -1,5 +1,4 @@
+ #include "domain/session.hpp"
+-#include <algorithm>
+ #include <sqlite3.h>
+ #include <algorithm>
+ #include <filesystem>
+diff --git a/scripts/test-piano-roll-bridge.sh b/scripts/test-piano-roll-bridge.sh
+index 45a2ab6..ea469b3 100644
+--- a/scripts/test-piano-roll-bridge.sh
++++ b/scripts/test-piano-roll-bridge.sh
+@@ -18,7 +18,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
+   LINK+=("$CORE/libdaw_au_scanner.a" -Xlinker -lc++ -framework Foundation
+     -framework AudioToolbox -framework CoreAudio -framework CoreMIDI -framework AVFoundation)
+ else
+-  LINK+=(-Xlinker -lstdc++ -Xlinker -lpthread -Xlinker -lm)
++  LINK+=(-Xlinker -lstdc++ -Xlinker -lpthread -Xlinker -lm -Xlinker -lsamplerate)
+ fi
+ swiftc -swift-version 6 -warnings-as-errors -O -import-objc-header engine/bridge/daw.h \
+   "${SOURCES[@]}" tests/piano_roll/BridgeIntegrationTests.swift "${LINK[@]}" -o "$BUILD/bridge-tests"
+diff --git a/tests/mix_export_ui_tests.swift b/tests/mix_export_ui_tests.swift
+index 784c874..b20ae01 100644
+--- a/tests/mix_export_ui_tests.swift
++++ b/tests/mix_export_ui_tests.swift
+@@ -152,6 +152,64 @@ func runMixExportIntegrationTests() {
+     expect(!app.hasAudio && app.hasMidiContent, "Fixture has MIDI and no WAV source")
+     expect(app.exportButton.isEnabled && app.validateMenuItem(menu), "MIDI-only button and menu are enabled")
+     expect(app.exportButton.toolTip?.contains("инструмента") == true, "MIDI-only tooltip does not promise sound")
++    app.selectedMixerID = midiTrack
++    app.updateMixerInspector(midiTrack)
++    let editor = app.inspectorBrowser.midiEditor
++    let piano = editor.integrationEditState
++    expect(piano.context?.documentID == app.midiDocumentID && piano.timeMap != nil,
++           "Docked Piano Roll receives the real document binding and tempo map")
++    let originalNotes = piano.entities.map(\.note)
++    let originalRevision = revision()
++    let beforePreviewPrompts = answers.prompts.count
++    piano.selectAll()
++    piano.previewVelocityRamp(from: 70, to: 70)
++    expect(piano.isTransformPreview && editor.hasUncommittedEdit,
++           "Actual Piano Roll transform has an uncommitted preview")
++    expect(!app.exportButton.isEnabled && !app.validateMenuItem(menu),
++           "Preview change immediately disables WAV button and menu")
++    app.exportMix()
++    expect(answers.prompts.count == beforePreviewPrompts && app.exportJob == nil && piano.isTransformPreview,
++           "Direct WAV action cannot finish or silently ignore Piano Roll preview")
++    expect(revision() == originalRevision, "Preview and rejected export do not modify project")
++    piano.cancelTransformPreview()
++    expect(!editor.hasUncommittedEdit && app.exportButton.isEnabled,
++           "Cancel restores export without changing note data")
++    expect(piano.entities.map(\.note) == originalNotes, "Cancelled preview retains original notes")
++
++    // A missing host echo is not accepted as a committed edit.
++    let commitCallback = editor.onCommitRequest
++    var delayedRequest: PRCommitRequest?
++    editor.onCommitRequest = { delayedRequest = $0 }
++    piano.selectAll(); piano.previewVelocityRamp(from: 71, to: 71); piano.applyTransformPreview()
++    expect(piano.awaitingCommit && delayedRequest != nil, "Production editor waits for authoritative host echo")
++    app.exportMix()
++    expect(!app.exportButton.isEnabled && app.exportJob == nil && piano.awaitingCommit,
++           "Pending Piano Roll commit also blocks export")
++    expect(answers.prompts.count == beforePreviewPrompts && revision() == originalRevision,
++           "Pending commit cannot export or consume a revision")
++    editor.onCommitRequest = commitCallback
++    app.loadMidiInspector(midiTrack) // Echo the unchanged snapshot, rejecting the pending write.
++    expect(!piano.awaitingCommit && piano.entities.map(\.note) == originalNotes && app.exportButton.isEnabled,
++           "Rejected pending edit receives one atomic authoritative snapshot")
++
++    // The same inspector callback now performs an actual revision-bound C ABI write.
++    piano.selectAll(); piano.previewVelocityRamp(from: 72, to: 72); piano.applyTransformPreview()
++    expect(revision() == originalRevision + 1 && !piano.awaitingCommit && piano.entities.first?.note.velocity == 72,
++           "Docked Piano Roll commit reaches real C ABI with exactly one revision")
++    app.undo()
++    expect(piano.entities.map(\.note) == originalNotes && app.exportButton.isEnabled,
++           "Project Undo restores the editor and export availability")
++    let identityDraft = directory.appendingPathComponent("piano-identity.mydawdraft")
++    expect(daw_save_draft(app.session, identityDraft.path) == 0, "Save integration identity fixture")
++    let oldPianoID = app.midiDocumentID, oldExportID = app.mixExportDocumentID
++    let beforeReopenRevision = revision()
++    app.openDraftFile(identityDraft)
++    expect(revision() == beforeReopenRevision && app.midiDocumentID != oldPianoID && app.mixExportDocumentID != oldExportID,
++           "Equal-revision reopen invalidates both Piano Roll and export document tokens")
++    if let delayedRequest { app.commitMidiEdit(delayedRequest) }
++    expect(revision() == beforeReopenRevision && piano.entities.map(\.note) == originalNotes,
++           "Late Piano Roll callback cannot edit a reopened document")
++
+     let midiWav = choose("midi-only.wav")
+     let beforeExport = revision()
+     app.exportButton.performClick(nil)
+diff --git a/tests/workspace_ui_tests.swift b/tests/workspace_ui_tests.swift
+index 1062680..0ed1454 100644
+--- a/tests/workspace_ui_tests.swift
++++ b/tests/workspace_ui_tests.swift
+@@ -13,12 +13,15 @@ func runWorkspaceIntegrationTests() {
+     let app = NSApplication.shared
+     app.setActivationPolicy(.prohibited)
+     let controller = DraftApp()
++    let previousDelegate = app.delegate
++    app.delegate = controller
+     controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+     guard let session = controller.session, let root = controller.window.contentView,
+           let workspace = controller.workspace, let dock = controller.workspaceDock else { fatalError("Missing actual workspace") }
+     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("mydaw-workspace-\(UUID().uuidString)", isDirectory: true)
+     do { try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true) } catch { fatalError("Temporary fixtures: \(error)") }
+     defer {
++        app.delegate = previousDelegate
+         NotificationCenter.default.removeObserver(controller)
+         controller.window.orderOut(nil); controller.window.delegate = nil
+         daw_destroy(session); controller.session = nil

@@ -1,0 +1,62 @@
+name: Publish reviewed integration source
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+    paths: [.github/workflows/publish-reviewed-integration.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproduce reviewed merge and verify exact tree before source-only publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cp .github/integration-resolve.py "$RUNNER_TEMP/resolve.py"
+          cp .github/integration-followup.patch "$RUNNER_TEMP/followup.patch"
+          test "$(git hash-object "$RUNNER_TEMP/followup.patch")" = d9b468f33a26725d0f5e2b5cc1c931781fe7672f
+          git update-ref refs/remotes/source/main 176aeb314983295fcf234915ac97de362d567607
+          git merge --no-ff c637b70d04bd474789ffced564241b82f90b6954 -m 'merge(workspace): preserve background folder catalog and bookmarks'
+          result=0
+          git merge --no-ff --no-commit source/main || result=$?
+          test "$result" -eq 1
+          python3 - <<'PY'
+          import subprocess
+          actual = set(subprocess.check_output(['git','diff','--name-only','--diff-filter=U'], text=True).splitlines())
+          expected = {'.github/workflows/core.yml', 'apps/macos/InspectorBrowserView.swift', 'apps/macos/StorageUI.swift', 'engine/audio/duplex_stub.cpp', 'engine/audio/recording.cpp', 'engine/bridge/daw.cpp', 'scripts/build-macos.sh', 'tests/midi_bridge_tests.cpp'}
+          assert actual == expected, (actual, expected)
+          PY
+          python3 "$RUNNER_TEMP/resolve.py"
+          git apply --check "$RUNNER_TEMP/followup.patch"
+          git apply "$RUNNER_TEMP/followup.patch"
+          rm .github/integration-resolve.py .github/integration-followup.patch .github/workflows/publish-reviewed-integration.yml
+          git add -A
+          git diff --cached --check
+          reviewed_tree=$(git write-tree)
+          test "$reviewed_tree" = 6884fd397139ef3eeaa70e29f6ded3454347279a
+          echo "Verified reviewed source tree: $reviewed_tree"
+          # Workflow changes are published separately by the authorized connector.
+          # This restricted CI token commits source/docs/scripts only.
+          git restore --source="$SOURCE_HEAD" --staged --worktree .github
+          git diff --cached "$SOURCE_HEAD" --exit-code -- .github
+          git commit -m 'merge(integration): reconcile Piano Roll, workspace, folders and MIDI export'
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          trap 'rm -f "$RUNNER_TEMP/askpass.sh"' EXIT
+          remote_head=$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)
+          test "$remote_head" = "$SOURCE_HEAD"
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          git log -1 --format='%H %T'
