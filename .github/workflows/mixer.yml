@@ -1,7 +1,16 @@
 name: Mixer native validation
 on:
   push:
-    branches: [codex/mixer-console]
+    branches: [main, codex/mixer-console]
+    paths:
+      - 'apps/macos/**'
+      - 'engine/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mixer.yml'
+  pull_request:
     paths:
       - 'apps/macos/**'
       - 'engine/**'
@@ -14,7 +23,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: mixer-native-${{ github.ref }}
+  group: mixer-native-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   appkit:
@@ -22,10 +31,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - name: AppKit controls, routing, resize and large-session tests
         shell: bash
         run: |
-          set -o pipefail
+          set -eo pipefail
           mkdir -p validation
           git rev-parse HEAD > validation/revision.txt
           git archive --format=tar.gz --output=validation/source.tar.gz HEAD
@@ -46,6 +57,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - name: Sanitized core build
         id: core
         shell: bash
@@ -59,7 +72,7 @@ jobs:
         if: always() && steps.core.outcome == 'success'
         shell: bash
         run: |
-          set -o pipefail
+          set -eo pipefail
           ctest --preset sanitizers --output-on-failure 2>&1 | tee validation/ctest.log
       - name: Complete signed arm64 application
         if: always()
@@ -75,14 +88,15 @@ jobs:
         if: always()
         shell: bash
         run: |
-          set -o pipefail
+          set -eo pipefail
           bash scripts/test-mixer-groups.sh 2>&1 | tee validation/group-integration.log
       - name: Documentation contracts
         if: always()
         shell: bash
         run: |
-          set -o pipefail
+          set -eo pipefail
           python3 scripts/check_docs.py 2>&1 | tee validation/docs.log
+          python3 scripts/e2e_coverage.py --strict 2>&1 | tee validation/e2e-coverage.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
