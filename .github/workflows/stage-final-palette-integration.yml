@@ -20,10 +20,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          trap 'echo "Integration stopped at line $LINENO" >&2' ERR
           previous=f95a8c9b62a91c3ba01eff1892f8c7e2c65f0603
           base=fdcd21842c017257e1b41ce47eaa7445af590c0d
-          test "$(git rev-parse HEAD^)" = "$previous"
-          test "$(git diff --name-only "$previous" HEAD)" = '.github/workflows/stage-final-palette-integration.yml'
+          # The earlier interrupted attempt added only reviewed CI preparation.
+          # Reject any new product change rather than overwriting concurrent work.
+          git merge-base --is-ancestor "$previous" HEAD
+          git diff --exit-code "$previous" HEAD -- . \
+            ':!.github/workflows/core.yml' \
+            ':!.github/workflows/finish-palette-integration.yml' \
+            ':!.github/workflows/stage-final-palette-integration.yml'
+          test "$(git rev-parse HEAD:.github/workflows/core.yml)" = '31459d4280e6df1b41ee3635084d601a99413c3d'
+          test "$(git rev-parse HEAD:.github/workflows/finish-palette-integration.yml)" = '841f42b801cd132d0f2959f8e09adba2759120bd'
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$base"
           test "$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)" = "$GITHUB_SHA"
           test "$(git rev-parse "$previous^{tree}")" = '05850ed6939f44e6d061b6eb2f0b10aa6753bfac'
@@ -42,8 +50,6 @@ jobs:
           assert hashlib.sha256(patch).hexdigest() == 'aec6c38a87c4a5c7e2c53f1380d13c09611127dd60ada895b23fdc2125482e4b'
           (root / 'resolution.patch').write_bytes(patch)
           PY
-          # Start from the verified integration tree, including all engine/MIDI/mixer work.
-          # The one-shot publisher removes itself from the result.
           git read-tree --reset -u "$previous"
           git checkout "$base" -- \
             apps/macos/CommandPalette.swift apps/macos/CommandPaletteSearch.swift \
@@ -54,11 +60,17 @@ jobs:
           git apply --index --check "$RUNNER_TEMP/resolution.patch"
           git apply --index "$RUNNER_TEMP/resolution.patch"
           git diff --cached --check
+          test "$(git write-tree)" = 'c37f790472a310ad4ef05642bd7b05fe9d36e776'
+          # Retain the already reviewed diagnostics/palette CI exactly. Workflow
+          # cleanup is a separate ordinary connector commit, not a bot CI write.
+          git checkout "$GITHUB_SHA" -- .github
+          git diff --cached "$GITHUB_SHA" --exit-code -- .github
+          git diff --cached --check
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$base"
+          test "$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)" = "$GITHUB_SHA"
           tree="$(git write-tree)"
-          test "$tree" = 'c37f790472a310ad4ef05642bd7b05fe9d36e776'
-          test ! -e .github/workflows/stage-final-palette-integration.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           commit="$(git commit-tree "$tree" -p "$GITHUB_SHA" -p "$base" -m 'merge: preserve command palette and workspace keyboard safety on main 1.74.0')"
           git push origin "$commit:refs/heads/codex/midi-only-export-ui"
-          printf 'Resolved commit: %s\nReviewed tree: %s\n' "$commit" "$tree" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf 'Resolved commit: %s\nTree including reviewed CI preparation: %s\n' "$commit" "$tree" | tee -a "$GITHUB_STEP_SUMMARY"
