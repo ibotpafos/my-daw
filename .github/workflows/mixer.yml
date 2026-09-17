@@ -38,6 +38,7 @@ jobs:
             validation/
             build/mixer-ui.png
             build/mixer-routing-ui.png
+            build/mixer-send-ui.png
           retention-days: 7
   core-and-app:
     runs-on: macos-15

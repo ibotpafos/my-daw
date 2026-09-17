@@ -17,7 +17,8 @@ struct MixerSendTests {
         let mute = strip.subviews.compactMap{$0 as? MixerActionButton}.first{$0.title == "SM"}!
         var commands: [String] = [], panEvents: [String] = []
         var mainPan = 0, mainMute = 0
-        mixer.onMute = { _,_ in mainMute += 1 }
+        var mainMuteValues: [Bool] = []
+        mixer.onMute = { _,value in mainMute += 1; mainMuteValues.append(value) }
         mixer.onPan = { _,_ in mainPan += 1 }
         mixer.onSend = { id,action in
             switch action {
@@ -56,11 +57,23 @@ struct MixerSendTests {
         precondition(mute.state == .on && strip.fader.valueDb == -18 && strip.pan.isEnabled)
         mute.performClick(nil)
         precondition(commands.last == "mute:1:10:false" && mainMute == 0)
+        mode.performClick(nil)
+        precondition(commands.last == "pan:1:10:0.5:false", "Mode toggle uses latest stored send balance")
         // Switching back restores main control semantics and does not itself emit edits.
         mixer.setSendTarget(nil); mixer.layoutSubtreeIfNeeded()
         precondition(strip.pan.value == -0.6 && mute.title == "M" && mode.isHidden && mute.state == .off)
         strip.pan.commit(0.1); mute.performClick(nil)
         precondition(mainPan == 1 && mainMute == 1)
+        var soloValues: [Bool] = [], armValues: [Bool] = []
+        mixer.onSolo = { _,value in soloValues.append(value) }
+        mixer.onArm = { _,value in armValues.append(value) }
+        models[0].isMuted = true; models[0].isSolo = true; models[0].isArmed = true
+        mixer.strips = models; mixer.layoutSubtreeIfNeeded()
+        mute.performClick(nil)
+        let solo = strip.subviews.compactMap{$0 as? MixerActionButton}.first{$0.title == "S"}!
+        let arm = strip.subviews.compactMap{$0 as? MixerActionButton}.first{$0.title == "●"}!
+        solo.performClick(nil); arm.performClick(nil)
+        precondition(mainMuteValues == [true,false] && soloValues == [false] && armValues == [false], "Retained controls must toggle the refreshed model, not initializer values")
         mixer.setSendTarget(10); mixer.layoutSubtreeIfNeeded()
         let currentPan = strip.pan.value
         precondition(strip.pan.accessibilityPerformIncrement())

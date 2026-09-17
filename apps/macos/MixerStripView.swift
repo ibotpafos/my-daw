@@ -41,22 +41,24 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         gainField.toolTip = "Enter an exact level in dB (−120…+24). Decimal point or comma."
         route.controlSize = .small; route.font = .systemFont(ofSize: 10)
         route.target = self; route.action = #selector(routeChanged)
+        // Escaping handlers must read the current model, not capture init(model:)
+        // by value; controls are retained across project refreshes.
         pan.onBegin = { [weak self] in
             guard let self, let bus=sendTarget else { return }
-            workspace?.onSendPanBegin?(model.id,bus)
+            workspace?.onSendPanBegin?(self.model.id,bus)
         }
         pan.onChange = { [weak self] value in
             guard let self, let bus=sendTarget else { return }
-            workspace?.previewSendPan(model.id,bus:bus,value:value,source:self)
-            workspace?.onSendPan?(model.id,bus,value)
+            workspace?.previewSendPan(self.model.id,bus:bus,value:value,source:self)
+            workspace?.onSendPan?(self.model.id,bus,value)
         }
         pan.onEnd = { [weak self] value in
             guard let self else { return }
-            if let bus=sendTarget { workspace?.onSendPanEnd?(model.id,bus,value) }
-            else { workspace?.onPan?(model.id,value) }
+            if let bus=sendTarget { workspace?.onSendPanEnd?(self.model.id,bus,value) }
+            else { workspace?.onPan?(self.model.id,value) }
         }
         sendPanMode.invoke = { [weak self] in
-            guard let self, let send=model.sends.first(where:{$0.busID == sendTarget}) else { return }
+            guard let self, let send=self.model.sends.first(where:{$0.busID == sendTarget}) else { return }
             performSend(.pan(send.busID,send.pan,!send.independentPan),expected:send)
         }
         title.isBordered = false; title.alignment = .center
@@ -68,13 +70,13 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         mute.invoke = { [weak self] in
             guard let self, workspace?.editingEnabled != false else { return }
             if let bus=sendTarget {
-                guard let send=model.sends.first(where:{$0.busID == bus}) else { return }
+                guard let send=self.model.sends.first(where:{$0.busID == bus}) else { return }
                 performSend(.mute(bus,!send.muted),expected:send)
-            } else { workspace?.onMute?(model.id,!model.isMuted) }
+            } else { workspace?.onMute?(self.model.id,!self.model.isMuted) }
         }
-        solo.invoke = { [weak self] in guard let self else { return }; workspace?.onSolo?(model.id, !model.isSolo) }
-        arm.invoke = { [weak self] in guard let self else { return }; workspace?.onArm?(model.id, !model.isArmed) }
-        addInsert.invoke = { [weak self] in guard let self else { return }; workspace?.onInsert?(model.id, .add) }
+        solo.invoke = { [weak self] in guard let self else { return }; workspace?.onSolo?(self.model.id, !self.model.isSolo) }
+        arm.invoke = { [weak self] in guard let self else { return }; workspace?.onArm?(self.model.id, !self.model.isArmed) }
+        addInsert.invoke = { [weak self] in guard let self else { return }; workspace?.onInsert?(self.model.id, .add) }
         addSend.invoke = { [weak self] in self?.showSendMenu() }
         fader.onBegin = { [weak self] in self?.beginGain() }
         fader.onChange = { [weak self] in self?.changeGain($0) }
