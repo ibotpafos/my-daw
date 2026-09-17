@@ -24,6 +24,7 @@ private final class WorkspaceSplit: NSSplitView {
 /// resizing and corrupt preferences. Pane contents keep their identity throughout.
 @MainActor
 final class WorkspaceView: NSView, NSSplitViewDelegate {
+    let overview = ArrangementOverviewView(frame: .zero)
     let columns: NSSplitView = WorkspaceSplit()
     let center: NSSplitView = WorkspaceSplit()
     private let libraryPane = NSView(), inspectorPane = NSView()
@@ -58,7 +59,8 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
             parent.addSubview(child)
         }
         mount(library, in: libraryPane); mount(inspector, in: inspectorPane)
-        mount(arrangement, in: arrangementPane); mount(dock, in: dockPane)
+        mount(ArrangementOverviewContainer(arrangement: arrangement, overview: overview), in: arrangementPane)
+        mount(dock, in: dockPane)
         center.addArrangedSubview(arrangementPane); center.addArrangedSubview(dockPane)
         columns.addArrangedSubview(libraryPane); columns.addArrangedSubview(center); columns.addArrangedSubview(inspectorPane)
         addSubview(columns)

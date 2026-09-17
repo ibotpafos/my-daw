@@ -70,3 +70,6 @@ apps/macos/MixerScale.swift
 apps/macos/MixerStripView.swift
 apps/macos/CommandPaletteSearch.swift
 apps/macos/CommandPalette.swift
+apps/macos/Workspace/ArrangementOverviewGeometry.swift
+apps/macos/Workspace/ArrangementOverviewView.swift
+apps/macos/Workspace/ArrangementOverviewBinding.swift

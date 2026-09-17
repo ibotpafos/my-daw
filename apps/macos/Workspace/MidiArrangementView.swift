@@ -12,6 +12,7 @@ struct MidiArrangementClip {
 /// editable note model. Selection opens the existing dock editor and C ABI path.
 @MainActor
 final class MidiArrangementView: NSView {
+    var trackID: UInt64 = 0
     var clips: [MidiArrangementClip] = []
     var projectFrames: UInt64 = 1
     var barFrames: [UInt64] = []
@@ -68,7 +69,7 @@ final class MidiArrangementView: NSView {
 
 extension DraftApp {
     func makeMidiArrangement(trackID: UInt64, title: String, color: NSColor, count: UInt32, duration: UInt64) -> MidiArrangementView {
-        let view = MidiArrangementView(); view.title = title
+        let view = MidiArrangementView(); view.title = title; view.trackID = trackID
         view.projectFrames = min(48000 * 600, max(48000 * 12, duration + 48000 * 2))
         view.barFrames = tempoBars.map(\.frame); view.playhead = playheadFrame
         for index in 0..<count {
