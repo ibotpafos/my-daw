@@ -24,8 +24,22 @@ struct CommandPaletteAppKitTests {
 
     static func main() {
         _ = NSApplication.shared
-        NSApp.setActivationPolicy(.accessory)
-        NSApp.finishLaunching()
+        NSApp.setActivationPolicy(.regular)
+        // LaunchServices owns activation; run AppKit's event loop rather than
+        // a Foundation-only loop that leaves NSApp.keyWindow/mainWindow nil.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 120) { exit(124) }
+        DispatchQueue.main.async {
+            runTests()
+            guard CommandLine.arguments.count == 2 else { fatalError("missing result path") }
+            do {
+                try Data("PASS\n".utf8).write(to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)
+            } catch { fatalError("cannot write test result: \(error)") }
+            exit(0)
+        }
+        NSApp.run()
+    }
+
+    private static func runTests() {
         let savedMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = savedMenu }
         let suite = "my-daw.palette-appkit-tests.\(UUID().uuidString)"
@@ -66,8 +80,10 @@ struct CommandPaletteAppKitTests {
             host.makeFirstResponder(target)
             drain()
             expect(host.firstResponder === target, "fixture restores source responder")
+            expect(NSApp.keyWindow === host && NSApp.mainWindow === host,
+                   "fixture has an actual key/main window before menu resolution")
             let nilTarget = NSApp.target(forAction: beta.action!, to: nil, from: beta) as AnyObject?
-            print("palette fixture: key=\(NSApp.keyWindow === host), main=\(NSApp.mainWindow === host), nilTarget=\(nilTarget === target)")
+            expect(nilTarget === target, "fixture's unbound action resolves to source responder")
             controller.present(from: host)
             drain()
             expect(controller.isVisible, "palette opens")
@@ -179,7 +195,14 @@ struct CommandPaletteAppKitTests {
             windowNumber: window.windowNumber, context: nil, characters: characters,
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
     }
-    private static func drain() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
+    private static func drain() {
+        let deadline = Date(timeIntervalSinceNow: 0.05)
+        while Date() < deadline {
+            if let event = NSApp.nextEvent(matching: .any, until: deadline, inMode: .default, dequeue: true) {
+                NSApp.sendEvent(event)
+            }
+        }
+    }
     private static func descendants(of view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap { descendants(of: $0) }
     }
