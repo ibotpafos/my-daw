@@ -91,3 +91,10 @@ GUI, железом или live audio. Отдельные TSan, Tracktion и phy
 - [SDK EditController](https://github.com/steinbergmedia/vst3_public_sdk/blob/586dc5e6c8012c3e4b01c79389375cbe96bdb1da/source/vst/vsteditcontroller.cpp).
 - [Порядок сохранения/восстановления](https://steinbergmedia.github.io/vst3_dev_portal/pages/FAQ/Persistence.html).
 - [CheckCXXCompilerFlag](https://cmake.org/cmake/help/latest/module/CheckCXXCompilerFlag.html).
+
+## Продолжение: VST3-инструменты
+
+[Срез 85](85-vst3-instrument-source.md) добавляет отдельный настоящий mda DX10
+с нулём аудиовходов, MIDI-only графом, Note On/Off, save/open, WAV-экспортом
+через публичный ABI и paced isolated audio. ADelay остаётся независимой
+регрессией эффекта; результат одного примера не обобщается на все VST3.

@@ -108,19 +108,42 @@ VST3::UID stateClassId(const Vst3StateEnvelope &envelope) {
   return *parsed;
 }
 
-bool supportedMainStereo(IComponent &component) {
-  if (component.getBusCount(kAudio, kInput) < kExpectedBuses ||
-      component.getBusCount(kAudio, kOutput) < kExpectedBuses)
-    return false;
-  BusInfo input{}, output{};
-  if (component.getBusInfo(kAudio, kInput, 0, input) != kResultTrue ||
-      component.getBusInfo(kAudio, kOutput, 0, output) != kResultTrue)
-    return false;
-  // kDefaultActive is only a plug-in preference. An insert host owns bus
-  // activation and must also accept otherwise inactive main busses.
-  return input.mediaType == kAudio && output.mediaType == kAudio &&
-         input.direction == kInput && output.direction == kOutput &&
-         input.busType == kMain && output.busType == kMain;
+// Only the first main audio/event buses are used. Additional buses stay
+// inactive. A MIDI source may have no audio input at all: never invent a
+// silent input bus for it, since bus counts are part of the VST3 contract.
+struct MainBuses {
+  bool audioInput = false;
+  bool eventInput = false;
+};
+
+MainBuses mainBuses(IComponent &component) {
+  const auto audioInputs = component.getBusCount(kAudio, kInput);
+  const auto audioOutputs = component.getBusCount(kAudio, kOutput);
+  const auto eventInputs = component.getBusCount(kEvent, kInput);
+  if (audioInputs < 0 || audioOutputs < kExpectedBuses || eventInputs < 0)
+    throw Error("VST3 invalid main bus counts");
+  auto requireMain = [&](MediaType media, BusDirection direction) {
+    BusInfo info{};
+    require(component.getBusInfo(media, direction, 0, info), "read main bus");
+    if (info.mediaType != media || info.direction != direction ||
+        info.busType != kMain || info.channelCount <= 0)
+      throw Error("VST3 unsupported main bus");
+  };
+  requireMain(kAudio, kOutput);
+  if (audioInputs > 0)
+    requireMain(kAudio, kInput);
+  if (eventInputs > 0)
+    requireMain(kEvent, kInput);
+  if (audioInputs == 0 && eventInputs == 0)
+    throw Error("VST3 source requires a main note-event input");
+  return {audioInputs > 0, eventInputs > 0};
+}
+
+void requireStereo(IComponent &component, BusDirection direction) {
+  BusInfo info{};
+  require(component.getBusInfo(kAudio, direction, 0, info), "read negotiated audio bus");
+  if (info.channelCount != 2)
+    throw Error("VST3 main audio bus did not negotiate stereo");
 }
 
 std::string string128(const TChar *value) {
@@ -189,9 +212,9 @@ public:
     data.processMode = kRealtime;
     data.symbolicSampleSize = kSample32;
     data.numSamples = static_cast<int32>(frames);
-    data.numInputs = 1;
+    data.numInputs = buses.audioInput ? 1 : 0;
     data.numOutputs = 1;
-    data.inputs = &inputs;
+    data.inputs = buses.audioInput ? &inputs : nullptr;
     data.outputs = &outputs;
     data.processContext = &context;
     changes.clearQueue();
@@ -228,6 +251,10 @@ public:
         std::copy_n(inputRight.data(), frames, right);
         return false;
       }
+      // Every insert sees the track's MIDI span. An audio-only effect has
+      // no event bus, but must still process the audio from an upstream synth.
+      if (!buses.eventInput)
+        continue;
       Event vst{};
       vst.busIndex = 0;
       vst.flags = 0;
@@ -258,11 +285,22 @@ public:
         return false;
       }
     }
-    data.inputEvents = midiEvents.empty() ? nullptr : &inputEvents;
+    data.inputEvents = buses.eventInput ? &inputEvents : nullptr;
     data.outputEvents = nullptr;
+    // The in-place host buffers may contain upstream audio. A no-input
+    // generator must not leak it when it reports silence or writes no samples.
+    if (!buses.audioInput) {
+      std::fill_n(left, frames, 0.0f);
+      std::fill_n(right, frames, 0.0f);
+    }
     const auto result = processor()->process(data);
-    if (result == kResultOk || result == kResultTrue)
+    if (result == kResultOk || result == kResultTrue) {
+      if (outputs.silenceFlags & 1U)
+        std::fill_n(left, frames, 0.0f);
+      if (outputs.silenceFlags & 2U)
+        std::fill_n(right, frames, 0.0f);
       return true;
+    }
     std::copy_n(inputLeft.data(), frames, left);
     std::copy_n(inputRight.data(), frames, right);
     return false;
@@ -316,9 +354,9 @@ public:
     data.processMode = kRealtime;
     data.symbolicSampleSize = kSample32;
     data.numSamples = 1;
-    data.numInputs = 1;
+    data.numInputs = buses.audioInput ? 1 : 0;
     data.numOutputs = 1;
-    data.inputs = &input;
+    data.inputs = buses.audioInput ? &input : nullptr;
     data.outputs = &output;
     data.inputParameterChanges = &changes;
     require(processor()->process(data), "apply parameter change");
@@ -353,7 +391,7 @@ private:
   void initialize(const PluginInsert &plugin, uint32_t sampleRate, uint32_t maxFrames) {
     if (sampleRate != 48000 || maxFrames == 0 || maxFrames > kMaximumFrames)
       throw Error(
-          "VST3 master effects require 48 kHz and 1..4096 frame blocks");
+          "VST3 inserts require 48 kHz and 1..4096 frame blocks");
     std::string error;
     const auto decoded = decodeVst3StateEnvelope(plugin.state, &error);
     if (!decoded)
@@ -373,8 +411,6 @@ private:
     processorInterface = FUnknownPtr<IAudioProcessor>(component);
     if (!processorInterface)
       throw Error("VST3 component has no audio processor interface");
-    if (!supportedMainStereo(*component))
-      throw Error("VST3 effect does not expose an active stereo main bus");
     TUID controllerId{};
     require(component->getControllerClassId(controllerId),
             "read controller class");
@@ -386,18 +422,29 @@ private:
     initializedController = true;
     connect();
     restore(envelope);
+    buses = mainBuses(*component);
+    require(processor()->canProcessSampleSize(kSample32), "negotiate float32 processing");
     SpeakerArrangement stereo = SpeakerArr::kStereo;
-    require(processor()->setBusArrangements(&stereo, 1, &stereo, 1),
+    require(processor()->setBusArrangements(buses.audioInput ? &stereo : nullptr,
+                                           buses.audioInput ? 1 : 0, &stereo, 1),
             "negotiate stereo buses");
+    requireStereo(*component, kOutput);
+    if (buses.audioInput)
+      requireStereo(*component, kInput);
     ProcessSetup setup{};
     setup.processMode = kRealtime;
     setup.symbolicSampleSize = kSample32;
     setup.maxSamplesPerBlock = static_cast<int32>(maxFrames);
     setup.sampleRate = static_cast<SampleRate>(sampleRate);
     require(processor()->setupProcessing(setup), "setup processing");
-    require(component->activateBus(kAudio, kInput, 0, true),
-            "activate input bus");
-    inputActive = true;
+    if (buses.audioInput) {
+      require(component->activateBus(kAudio, kInput, 0, true), "activate audio input bus");
+      inputActive = true;
+    }
+    if (buses.eventInput) {
+      require(component->activateBus(kEvent, kInput, 0, true), "activate note-event input bus");
+      eventInputActive = true;
+    }
     require(component->activateBus(kAudio, kOutput, 0, true),
             "activate output bus");
     outputActive = true;
@@ -438,6 +485,8 @@ private:
         (void)component->setActive(false);
       if (outputActive)
         (void)component->activateBus(kAudio, kOutput, 0, false);
+      if (eventInputActive)
+        (void)component->activateBus(kEvent, kInput, 0, false);
       if (inputActive)
         (void)component->activateBus(kAudio, kInput, 0, false);
       disconnect();
@@ -500,6 +549,7 @@ private:
   BoundedEventList inputEvents;
   std::vector<float> inputLeft;
   std::vector<float> inputRight;
+  MainBuses buses;
   uint32_t maximum = 0;
   uint32_t latency = 0;
   uint32_t tail = 0;
@@ -508,6 +558,7 @@ private:
   bool componentConnected = false;
   bool controllerConnected = false;
   bool inputActive = false;
+  bool eventInputActive = false;
   bool outputActive = false;
   bool active = false;
   bool processing = false;
