@@ -36,3 +36,8 @@ apps/macos/main.swift
 apps/macos/Workspace/AudioClipDrawing.swift
 apps/macos/Workspace/InspectorSignalChain.swift
 apps/macos/Workspace/InspectorSignalChainView.swift
+apps/macos/Workspace/LibraryFolderScanner.swift
+apps/macos/Workspace/LibraryFolderAccess.swift
+apps/macos/Workspace/LibraryFolderController.swift
+apps/macos/Workspace/LibraryFolderBar.swift
+apps/macos/Workspace/LibraryFolderIntegration.swift

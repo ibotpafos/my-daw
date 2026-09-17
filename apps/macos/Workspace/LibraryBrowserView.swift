@@ -22,6 +22,8 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
     private(set) var availableOnly = false
     private(set) var visibleItems: [InspectorBrowserItem] = []
     let favorites: LibraryFavorites
+    let folder: LibraryFolderController
+    let folderBar: LibraryFolderBar
     let search = NSSearchField()
     let table = LibraryTableView()
     let categories = NSSegmentedControl(labels: LibraryCategory.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
@@ -54,6 +56,8 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
     override convenience init(frame: NSRect) { self.init(frame: frame, defaults: .standard) }
     init(frame: NSRect, defaults: UserDefaults) {
         favorites = LibraryFavorites(defaults: defaults)
+        folder = LibraryFolderController(defaults: defaults)
+        folderBar = LibraryFolderBar(controller: folder)
         super.init(frame: frame)
         wantsLayer = true; layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
         let heading = NSTextField(labelWithString: "Библиотека")
@@ -118,7 +122,7 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
         previewStatus.font = .systemFont(ofSize: 11); previewStatus.textColor = DAWDesignTokens.Color.secondaryText
         previewStatus.maximumNumberOfLines = 3
         let previewCommands = NSStackView(views: [previewButton, stopButton]); previewCommands.spacing = 5
-        let stack = NSStackView(views: [heading, categories, search, collections, filters, commands, scanMenu, count, scroll, empty, previewCommands, previewStatus])
+        let stack = NSStackView(views: [heading, categories, search, collections, filters, commands, folderBar, scanMenu, count, scroll, empty, previewCommands, previewStatus])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 9
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
         NSLayoutConstraint.activate([
@@ -127,7 +131,7 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
         ])
-        for view in [categories, collections, search, filters, scanMenu, scroll, empty, previewStatus] {
+        for view in [categories, collections, search, filters, folderBar, scanMenu, scroll, empty, previewStatus] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -219,7 +223,9 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
         let audio = category == .audio
         addButton.isEnabled = mutationEnabled && selectedItem?.available == true && (!audio || !isImportBusy)
         importButton.isEnabled = mutationEnabled && !isImportBusy
-        addFolderButton.isEnabled = !isImportBusy
+        addFolderButton.isEnabled = mutationEnabled && !isImportBusy
+        folderBar.enabled = mutationEnabled && !isImportBusy
+        folder.isPublishingAllowed = mutationEnabled && !isImportBusy
         scanAU.isEnabled = mutationEnabled; scanVST.isEnabled = mutationEnabled
         previewButton.isHidden = !audio; stopButton.isHidden = !audio && !playing
         previewButton.isEnabled = mutationEnabled && audio && selectedItem?.available == true && !playing
@@ -236,9 +242,17 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
     /// The window calls this before global transport/menu keys, only outside text
     /// editing. Native table arrow navigation and search-field typing are retained.
     func handleFocusedKey(_ event: NSEvent) -> Bool {
-        guard let focused = window?.firstResponder as? NSView,
-              focused === table || focused.isDescendant(of: table) else { return false }
+        guard let focused = window?.firstResponder as? NSView else { return false }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        if focused.isDescendant(of: folderBar) {
+            if (event.keyCode == 51 || event.keyCode == 117), modifiers.isEmpty || modifiers == [.command] { return true }
+            if event.keyCode == 49, modifiers.isEmpty, let button = focused as? NSButton {
+                if !event.isARepeat { button.performClick(nil) }
+                return true
+            }
+            return false
+        }
+        guard focused === table || focused.isDescendant(of: table) else { return false }
         if (event.keyCode == 51 || event.keyCode == 117), modifiers.isEmpty || modifiers == [.command] { return true }
         guard modifiers.isEmpty else { return false }
         switch event.keyCode {
@@ -292,7 +306,12 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
     @objc private func changeFormat() { selectFormat(category.formats.indices.contains(formats.indexOfSelectedItem - 1) ? category.formats[formats.indexOfSelectedItem - 1] : nil) }
     @objc private func changeAvailability() { setAvailableOnly(availableButton.state == .on) }
     @objc private func filter() { reload() }
-    @objc private func addFolder() { guard addFolderButton.isEnabled else { return }; onAddFolder?() }
+    @objc private func addFolder() {
+        guard addFolderButton.isEnabled else { return }
+        // The active workspace owns a background folder coordinator. Retain
+        // the legacy callback only for unconfigured/embedded browser hosts.
+        if folder.isConfigured { folder.choose(in: window) } else { onAddFolder?() }
+    }
     @objc private func importAudio() { guard importButton.isEnabled else { return }; onImport?() }
     @objc func addSelected() { guard addButton.isEnabled, let item = selectedItem else { return }; onAdd?(browserKind, item) }
     @objc func previewSelected() { guard previewButton.isEnabled else { return }; onPreview?(selectedItem) }

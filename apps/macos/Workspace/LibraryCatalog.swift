@@ -2,6 +2,7 @@ import AppKit
 
 extension DraftApp {
     func refreshBrowserCatalog() {
+        if !libraryBrowser.folder.isConfigured { wireLibraryFolder() }
         var targets: [UUID: BrowserPluginTarget] = [:]
         var items: [InspectorBrowserItem] = []
         for plugin in auCatalog {
