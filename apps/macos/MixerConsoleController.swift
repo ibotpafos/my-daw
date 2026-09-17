@@ -9,6 +9,9 @@ extension DraftApp {
         guard automationWrites(target:target,id:id) else { return "Read" }
         return automationMode == automationTouch ? "Touch · armed" : "Latch · armed"
     }
+    private var consoleRoutingEditable: Bool {
+        !isRecording && consoleGesture == nil && automationGesture == nil && pluginParameterGesture == nil
+    }
     func configureMixerConsole() {
         mixerWorkspace.onVolumeGestureBegin = { [weak self] in self?.consoleBegin($0, send: nil) }
         mixerWorkspace.onVolume = { [weak self] _, value in self?.consoleWrite(value) }
@@ -77,6 +80,7 @@ extension DraftApp {
     @objc private func openMixerRoutingMatrix() {
         MixerRoutingPresenter.shared.present(
             strips:{ [weak self] in self?.mixerWorkspace.strips ?? [] },
+            editingAllowed:{ [weak self] in self?.consoleRoutingEditable ?? false },
             onOutput:{ [weak self] id,bus in self?.consoleRoute(id,to:bus) },
             onSend:{ [weak self] id,action in self?.consoleSend(id,action) }
         )
@@ -124,7 +128,7 @@ extension DraftApp {
         return kind == .master ? Int32(DAW_INSERT_OWNER_MASTER) : kind == .bus ? Int32(DAW_INSERT_OWNER_BUS) : Int32(DAW_INSERT_OWNER_TRACK)
     }
     private func consoleRoute(_ id: UInt64, to bus: UInt64) {
-        guard !isRecording, let kind = mixerKinds[id], kind != .master else { return }
+        guard consoleRoutingEditable, let kind = mixerKinds[id], kind != .master else { return }
         // The existing routing commands validate all destinations and cycles.
         let result = kind == .track ? daw_set_track_output(session,id,bus,revision) : daw_set_bus_output(session,id,bus,revision)
         _ = check(result); refresh(); pollTransport();MixerRoutingPresenter.shared.reload()
@@ -150,7 +154,7 @@ extension DraftApp {
         }
     }
     private func consoleSend(_ id: UInt64, _ action: MixerSendAction) {
-        guard !isRecording, mixerKinds[id] == .track else { return }
+        guard consoleRoutingEditable, mixerKinds[id] == .track else { return }
         let sends = mixerWorkspace.strips.first { $0.id == id }?.sends ?? []
         switch action {
         case .add(let bus):

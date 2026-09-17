@@ -22,12 +22,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: AppKit controls, workflows, resize and 256-strip tests
+      - name: AppKit controls, routing, resize and large-session tests
         shell: bash
         run: |
           set -o pipefail
           mkdir -p validation
           git rev-parse HEAD > validation/revision.txt
+          git archive --format=tar.gz --output=validation/source.tar.gz HEAD
           bash scripts/test-mixer-ui.sh 2>&1 | tee validation/appkit-tests.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -36,6 +37,7 @@ jobs:
           path: |
             validation/
             build/mixer-ui.png
+            build/mixer-routing-ui.png
           retention-days: 7
   core-and-app:
     runs-on: macos-15

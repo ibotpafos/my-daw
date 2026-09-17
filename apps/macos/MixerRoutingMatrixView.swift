@@ -1,144 +1,310 @@
 import AppKit
 
-/// Large-session routing overview. Project mutations still go through the existing
-/// routing/send callbacks, so Session remains the only graph authority.
-@MainActor
-final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate {
-    enum Mode: Int { case main, sends }
+/// A view-only preflight. Session still validates every actual graph mutation.
+/// Walking the entire destination chain also refuses malformed/cyclic snapshots.
+enum MixerRoutingPolicy {
+    static func outputBlockReason(row: MixerStripModel, destinationID: UInt64,
+                                  strips: [MixerStripModel]) -> String? {
+        guard row.kind != .master else { return "Master has no internal output destination." }
+        var next = destinationID
+        var visited = Set<UInt64>()
+        while next != 0 {
+            if row.kind == .bus && next == row.id { return "This route would create feedback." }
+            guard visited.insert(next).inserted else { return "The destination contains a routing cycle." }
+            guard let bus = strips.first(where: { $0.kind == .bus && $0.id == next }) else {
+                return "The destination is no longer available."
+            }
+            next = bus.outputID
+        }
+        return nil
+    }
+}
 
-    var strips: [MixerStripModel] = [] { didSet { rebuild() } }
+@MainActor
+private final class MixerRoutingTable: NSTableView {
+    weak var matrix: MixerRoutingMatrixView?
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers.isEmpty, let matrix else { super.keyDown(with: event); return }
+        switch event.keyCode {
+        case 123: matrix.moveFocus(rows: 0, columns: -1)
+        case 124: matrix.moveFocus(rows: 0, columns: 1)
+        case 125: matrix.moveFocus(rows: 1, columns: 0)
+        case 126: matrix.moveFocus(rows: -1, columns: 0)
+        case 36, 76, 49: matrix.activateFocusedCell()
+        case 51, 117: matrix.removeFocusedSend()
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
+/// Two native view-based tables share vertical scrolling. Channel names and
+/// column headers remain visible; NSTableView creates/reuses onscreen cells.
+/// Native buttons expose individual routing cells to accessibility clients.
+@MainActor
+final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    enum Mode: Int { case main, sends }
+    struct Cell: Equatable { let rowID: UInt64; let destinationID: UInt64 }
+    private enum Intent { case primary, remove, toggleTap }
+
+    var strips: [MixerStripModel] = [] {
+        didSet { if oldValue != strips { generation &+= 1; rebuild() } }
+    }
     var onOutput: ((UInt64, UInt64) -> Void)?
     var onSend: ((UInt64, MixerSendAction) -> Void)?
+    /// Refresh and check the owning UI on the main thread immediately before an edit.
+    var onWillInteract: (() -> Void)?
+    var editingAllowed: (() -> Bool)?
+    var editingEnabled = true {
+        didSet { if oldValue != editingEnabled { routingTable.reloadData(); updateStatus() } }
+    }
 
-    private let mode = NSSegmentedControl(labels:["Main outputs","Sends"],trackingMode:.selectOne,target:nil,action:nil)
-    private let search = NSSearchField()
-    private let scroll = NSScrollView()
-    private lazy var grid = GridView(owner:self)
-
+    private let mode = NSSegmentedControl(labels: ["Main outputs", "Sends"], trackingMode: .selectOne, target: nil, action: nil)
+    let search = NSSearchField()
+    let routingScroll = NSScrollView()
+    let channelScroll = NSScrollView()
+    let routingTable: NSTableView = MixerRoutingTable()
+    let channelTable: NSTableView = MixerRoutingTable()
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private let empty = NSTextField(labelWithString: "")
+    private var synchronizingScroll = false
+    private var synchronizingSelection = false
+    private var generation: UInt64 = 0
     private(set) var activeMode: Mode = .main
     private(set) var rows: [MixerStripModel] = []
     private(set) var destinations: [MixerStripModel] = []
+    private(set) var focusedCell: Cell?
 
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
-        super.init(frame:frame)
-        wantsLayer=true;layer?.backgroundColor=DAWDesignTokens.Color.canvas.cgColor
-        mode.selectedSegment=0;mode.target=self;mode.action=#selector(modeChanged)
-        search.placeholderString="Filter channels";search.delegate=self
-        scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.hasHorizontalScroller=true;scroll.documentView=grid
-        addSubview(mode);addSubview(search);addSubview(scroll)
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = DAWDesignTokens.Color.canvas.cgColor
+        mode.selectedSegment = 0; mode.target = self; mode.action = #selector(modeChanged)
+        search.placeholderString = "Find channel / output"; search.delegate = self
         mode.setAccessibilityLabel("Routing matrix mode")
-        search.setAccessibilityLabel("Filter routing matrix channels")
-        setAccessibilityElement(true);setAccessibilityRole(.group);setAccessibilityLabel("Mixer routing matrix")
+        search.setAccessibilityLabel("Find routing channel or output")
+        for (table, scroll) in [(routingTable, routingScroll), (channelTable, channelScroll)] {
+            (table as? MixerRoutingTable)?.matrix = self
+            table.delegate = self; table.dataSource = self
+            table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 100, height: 30))
+            table.rowHeight = 28; table.intercellSpacing = .zero
+            table.usesAutomaticRowHeights = false; table.usesAlternatingRowBackgroundColors = true
+            table.allowsMultipleSelection = false; table.allowsEmptySelection = true
+            table.allowsColumnReordering = false; table.style = .plain
+            table.backgroundColor = DAWDesignTokens.Color.canvas
+            table.columnAutoresizingStyle = .noColumnAutoresizing
+            scroll.documentView = table; scroll.drawsBackground = false
+            // Matching, non-autohiding horizontal scrollers keep both row viewports aligned.
+            scroll.scrollerStyle = .legacy; scroll.autohidesScrollers = false
+            scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = table === routingTable
+            scroll.horizontalScrollElasticity = .none; scroll.verticalScrollElasticity = .none
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrollChanged(_:)),
+                name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        }
+        let names = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("channel"))
+        names.title = "CHANNEL"; names.width = 178; names.resizingMask = []
+        channelTable.addTableColumn(names)
+        channelTable.setAccessibilityLabel("Pinned channel names")
+        routingTable.setAccessibilityLabel("Routing destinations. Use arrows, then Return or Space.")
+        status.font = .systemFont(ofSize: 11); status.textColor = DAWDesignTokens.Color.secondaryText
+        status.maximumNumberOfLines = 2
+        empty.textColor = DAWDesignTokens.Color.secondaryText; empty.alignment = .center
+        for view in [mode, search, channelScroll, routingScroll, status, empty] { addSubview(view) }
+        rebuild()
     }
-    required init?(coder:NSCoder){fatalError("init(coder:) is unavailable")}
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func controlTextDidChange(_ obj: Notification) { rebuild() }
-    @objc private func modeChanged(){ setMode(Mode(rawValue:mode.selectedSegment) ?? .main) }
-    func setMode(_ value:Mode){activeMode=value;mode.selectedSegment=value.rawValue;rebuild()}
-
-    private func rebuild(){
-        let q=search.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
-        let allRows=strips.filter{activeMode == .sends ? $0.kind == .track : $0.kind != .master}
-        rows=q.isEmpty ? allRows : allRows.filter{$0.title.localizedCaseInsensitiveContains(q)||$0.outputName.localizedCaseInsensitiveContains(q)}
-        let buses=strips.filter{$0.kind == .bus}
-        if activeMode == .main {
-            destinations=[MixerStripModel(id:0,kind:.master,title:"Master")]+buses
-        } else { destinations=buses }
-        grid.rebuildGeometry();grid.needsDisplay=true
+    @objc private func modeChanged() { setMode(Mode(rawValue: mode.selectedSegment) ?? .main) }
+    func setMode(_ value: Mode) {
+        guard activeMode != value else { return }
+        activeMode = value; mode.selectedSegment = value.rawValue; generation &+= 1; rebuild()
+    }
+    func setSearch(_ text: String) { search.stringValue = text; rebuild() }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "f" {
+            window?.makeFirstResponder(search); return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
-    func activate(rowID:UInt64,destinationID:UInt64){
-        guard let row=rows.first(where:{$0.id == rowID}) else{return}
-        guard destinations.contains(where:{$0.id == destinationID}) else{return}
+    private func rebuild() {
+        let oldDestinationIDs = destinations.map(\.id)
+        let oldDestinationNames = destinations.map(\.title)
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        rows = strips.filter {
+            (activeMode == .sends ? $0.kind == .track : $0.kind != .master) &&
+            (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.outputName.localizedCaseInsensitiveContains(query))
+        }
+        let buses = strips.filter { $0.kind == .bus }
+        destinations = activeMode == .main ? [MixerStripModel(id: 0, kind: .master, title: "Master")] + buses : buses
+        synchronizingSelection = true
+        defer { synchronizingSelection = false }
+        if oldDestinationIDs != destinations.map(\.id) || oldDestinationNames != destinations.map(\.title) {
+            for column in routingTable.tableColumns { routingTable.removeTableColumn(column) }
+            for destination in destinations {
+                let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("destination-\(destination.id)"))
+                column.title = destination.title; column.headerToolTip = destination.title
+                column.width = 112; column.minWidth = 88; column.maxWidth = 240
+                column.resizingMask = .userResizingMask
+                routingTable.addTableColumn(column)
+            }
+        }
+        let rowID = rows.first { $0.id == focusedCell?.rowID }?.id ?? rows.first { $0.isSelected }?.id ?? rows.first?.id
+        let destinationID = destinations.first { $0.id == focusedCell?.destinationID }?.id ?? destinations.first?.id
+        focusedCell = rowID.flatMap { row in destinationID.map { Cell(rowID: row, destinationID: $0) } }
+        channelTable.reloadData(); routingTable.reloadData()
+        if let focusedCell, let row = rows.firstIndex(where: { $0.id == focusedCell.rowID }) {
+            channelTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            routingTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        } else { channelTable.deselectAll(nil); routingTable.deselectAll(nil) }
+        empty.stringValue = rows.isEmpty ? "No matching channels" : "Create a bus to add sends"
+        empty.isHidden = !rows.isEmpty && !destinations.isEmpty
+        updateStatus(); needsLayout = true
+    }
+    private func updateStatus() {
+        status.stringValue = editingEnabled
+            ? "\(rows.count) channels · \(destinations.count) destinations. Arrows navigate; Return/Space connects or edits. Delete removes a send. Routing changes may stop playback."
+            : "Read-only while recording or another edit is active. Search and navigation remain available."
+    }
+    @objc private func scrollChanged(_ notification: Notification) {
+        guard !synchronizingScroll, let source = notification.object as? NSClipView else { return }
+        synchronizingScroll = true; defer { synchronizingScroll = false }
+        let target = source === routingScroll.contentView ? channelScroll : routingScroll
+        var origin = target.contentView.bounds.origin; origin.y = source.bounds.origin.y
+        if target === channelScroll { origin.x = 0 }
+        target.contentView.scroll(to: origin); target.reflectScrolledClipView(target.contentView)
+    }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int) -> NSView? {
+        guard rows.indices.contains(index) else { return nil }
+        let row = rows[index]
+        if tableView === channelTable {
+            let identifier = NSUserInterfaceItemIdentifier("routing-name")
+            let label = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField ?? NSTextField(labelWithString: "")
+            label.identifier = identifier; label.stringValue = row.title
+            label.font = .systemFont(ofSize: 12, weight: row.kind == .bus ? .semibold : .regular)
+            label.textColor = row.color ?? DAWDesignTokens.Color.text
+            label.lineBreakMode = .byTruncatingTail; label.toolTip = row.title
+            label.setAccessibilityLabel("\(row.title), \(row.kind == .bus ? "bus" : "track")")
+            return label
+        }
+        guard let tableColumn, let column = routingTable.tableColumns.firstIndex(of: tableColumn),
+              destinations.indices.contains(column) else { return nil }
+        let destination = destinations[column]
+        let identifier = NSUserInterfaceItemIdentifier("routing-cell")
+        let button = tableView.makeView(withIdentifier: identifier, owner: self) as? MixerActionButton ?? MixerActionButton("")
+        button.identifier = identifier
+        let send = row.sends.first { $0.busID == destination.id }
+        let connected = activeMode == .main ? row.outputID == destination.id : send != nil
+        let reason = blockReason(rowID: row.id, destinationID: destination.id)
+        button.title = reason != nil ? "—" : activeMode == .main ? (connected ? "● MAIN" : "Connect")
+            : send.map { "\($0.preFader ? "PRE" : "POST") \(MixerScale.label($0.gainDb))" } ?? "+ Send"
+        button.isEnabled = editingEnabled && reason == nil
+        button.contentTintColor = connected ? .systemMint : .secondaryLabelColor
+        button.setAccessibilityLabel("\(row.title) → \(destination.title), \(activeMode == .main ? "main output" : "send")")
+        button.setAccessibilityValue(connected ? (send.map { "\($0.preFader ? "Pre-fader" : "Post-fader"), \(MixerScale.label($0.gainDb)) dB" } ?? "Connected") : "Not connected")
+        button.toolTip = reason ?? (activeMode == .main ? "Route \(row.title) to \(destination.title)." : connected ? "Edit send level. Right-click for PRE/POST or Remove." : "Add a post-fader send at −12 dB.")
+        button.setAccessibilityHelp(button.toolTip)
+        button.wantsLayer = true
+        button.layer?.borderWidth = focusedCell == Cell(rowID: row.id, destinationID: destination.id) ? 1.5 : 0
+        button.layer?.borderColor = NSColor.controlAccentColor.cgColor; button.layer?.cornerRadius = 4
+        let token = generation
+        button.invoke = { [weak self] in
+            self?.perform(.primary, rowID: row.id, destinationID: destination.id, expectedGeneration: token)
+        }
+        button.contextMenu = { [weak self] in self?.sendMenu(rowID: row.id, destinationID: destination.id) ?? NSMenu() }
+        return button
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !synchronizingSelection, let table = notification.object as? NSTableView,
+              rows.indices.contains(table.selectedRow), let destination = focusedCell?.destinationID ?? destinations.first?.id else { return }
+        focus(rowID: rows[table.selectedRow].id, destinationID: destination, reveal: false)
+    }
+    func focus(rowID: UInt64, destinationID: UInt64, reveal: Bool = true) {
+        guard let row = rows.firstIndex(where: { $0.id == rowID }),
+              let column = destinations.firstIndex(where: { $0.id == destinationID }) else { return }
+        let previous = focusedCell.flatMap { cell in rows.firstIndex { $0.id == cell.rowID } }
+        focusedCell = Cell(rowID: rowID, destinationID: destinationID)
+        synchronizingSelection = true
+        channelTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        routingTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        synchronizingSelection = false
+        var changed = IndexSet(integer: row); if let previous { changed.insert(previous) }
+        routingTable.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integersIn: 0..<destinations.count))
+        if reveal { routingTable.scrollRowToVisible(row); routingTable.scrollColumnToVisible(column) }
+    }
+    func moveFocus(rows rowDelta: Int, columns columnDelta: Int) {
+        guard !rows.isEmpty, !destinations.isEmpty else { return }
+        let row = rows.firstIndex { $0.id == focusedCell?.rowID } ?? 0
+        let column = destinations.firstIndex { $0.id == focusedCell?.destinationID } ?? 0
+        let nextRow = max(0, min(rows.count - 1, row + max(-rows.count, min(rows.count, rowDelta))))
+        let nextColumn = max(0, min(destinations.count - 1, column + max(-destinations.count, min(destinations.count, columnDelta))))
+        focus(rowID: rows[nextRow].id, destinationID: destinations[nextColumn].id)
+    }
+    func activateFocusedCell() { if let focusedCell { activate(rowID: focusedCell.rowID, destinationID: focusedCell.destinationID) } }
+    func removeFocusedSend() { if let focusedCell { removeSend(rowID: focusedCell.rowID, destinationID: focusedCell.destinationID) } }
+    func activate(rowID: UInt64, destinationID: UInt64) { perform(.primary, rowID: rowID, destinationID: destinationID) }
+    func removeSend(rowID: UInt64, destinationID: UInt64) { perform(.remove, rowID: rowID, destinationID: destinationID) }
+
+    func blockReason(rowID: UInt64, destinationID: UInt64) -> String? {
+        guard let row = rows.first(where: { $0.id == rowID }), destinations.contains(where: { $0.id == destinationID }) else {
+            return "Channel or destination is no longer available."
+        }
+        if activeMode == .main { return MixerRoutingPolicy.outputBlockReason(row: row, destinationID: destinationID, strips: strips) }
+        guard row.kind == .track, destinationID != 0 else { return "Sends require a track and a bus." }
+        if !row.sends.contains(where: { $0.busID == destinationID }), row.sends.count >= 8 { return "This track already has eight sends." }
+        return nil
+    }
+    private func perform(_ intent: Intent, rowID: UInt64, destinationID: UInt64, expectedGeneration: UInt64? = nil) {
+        onWillInteract?()
+        guard expectedGeneration == nil || expectedGeneration == generation,
+              editingEnabled, editingAllowed?() != false,
+              blockReason(rowID: rowID, destinationID: destinationID) == nil,
+              let row = rows.first(where: { $0.id == rowID }) else { return }
+        focus(rowID: rowID, destinationID: destinationID)
         if activeMode == .main {
-            guard row.kind != .master, row.id != destinationID else{return}
-            if row.outputID != destinationID { onOutput?(row.id,destinationID) }
+            guard intent == .primary, row.outputID != destinationID else { return }
+            onOutput?(rowID, destinationID)
         } else {
-            guard row.kind == .track, destinationID != 0 else{return}
-            if row.sends.contains(where:{$0.busID == destinationID}) { onSend?(row.id,.remove(destinationID)) }
-            else { onSend?(row.id,.add(destinationID)) }
+            let send = row.sends.first { $0.busID == destinationID }
+            switch intent {
+            case .primary: onSend?(rowID, send == nil ? .add(destinationID) : .edit(destinationID))
+            case .remove: if send != nil { onSend?(rowID, .remove(destinationID)) }
+            case .toggleTap: if let send { onSend?(rowID, .tap(destinationID, !send.preFader)) }
+            }
         }
     }
-
-    fileprivate func sendMenu(rowID:UInt64,destinationID:UInt64) -> NSMenu? {
-        guard activeMode == .sends,
-              let row=rows.first(where:{$0.id == rowID}),row.kind == .track,
-              let send=row.sends.first(where:{$0.busID == destinationID}) else{return nil}
-        let menu=NSMenu();menu.autoenablesItems=false
-        menu.addItem(MixerMenuItem("Edit level…") { [weak self] in self?.onSend?(rowID,.edit(destinationID)) })
-        menu.addItem(MixerMenuItem(send.preFader ? "Switch to POST" : "Switch to PRE") { [weak self] in self?.onSend?(rowID,.tap(destinationID,!send.preFader)) })
-        menu.addItem(.separator())
-        menu.addItem(MixerMenuItem("Remove send") { [weak self] in self?.onSend?(rowID,.remove(destinationID)) })
+    func sendMenu(rowID: UInt64, destinationID: UInt64) -> NSMenu? {
+        onWillInteract?()
+        guard activeMode == .sends, let row = rows.first(where: { $0.id == rowID }),
+              let send = row.sends.first(where: { $0.busID == destinationID }),
+              destinations.contains(where: { $0.id == destinationID }) else { return nil }
+        let token = generation
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let enabled = editingEnabled && editingAllowed?() != false
+        for (title, intent) in [("Edit level…", Intent.primary), (send.preFader ? "Switch to POST" : "Switch to PRE", Intent.toggleTap), ("Remove send", Intent.remove)] {
+            menu.addItem(MixerMenuItem(title, enabled: enabled) { [weak self] in
+                self?.perform(intent, rowID: rowID, destinationID: destinationID, expectedGeneration: token)
+            })
+        }
         return menu
     }
-
-    override func layout(){
-        super.layout();let w=bounds.width
-        mode.frame=NSRect(x:10,y:8,width:min(230,max(120,w*0.34)),height:28)
-        search.frame=NSRect(x:mode.frame.maxX+10,y:9,width:max(100,min(260,w-mode.frame.maxX-20)),height:26)
-        scroll.frame=NSRect(x:0,y:44,width:w,height:max(0,bounds.height-44))
-        grid.rebuildGeometry()
-    }
-
-    @MainActor
-    private final class GridView:NSView {
-        weak var owner:MixerRoutingMatrixView?
-        let rowLabelWidth:CGFloat=150,columnWidth:CGFloat=86,rowHeight:CGFloat=25,headerHeight:CGFloat=32
-        override var isFlipped:Bool{true}
-        init(owner:MixerRoutingMatrixView){self.owner=owner;super.init(frame:.zero);setAccessibilityElement(true);setAccessibilityRole(.group);setAccessibilityLabel("Routing cells")}
-        required init?(coder:NSCoder){fatalError("init(coder:) is unavailable")}
-        func rebuildGeometry(){
-            guard let owner else{return}
-            frame.size=NSSize(width:max(owner.scroll.contentSize.width,rowLabelWidth+CGFloat(owner.destinations.count)*columnWidth),height:max(owner.scroll.contentSize.height,headerHeight+CGFloat(owner.rows.count)*rowHeight))
-        }
-        private func hit(_ point:NSPoint)->(MixerStripModel,MixerStripModel)?{
-            guard let owner,point.x>=rowLabelWidth,point.y>=headerHeight else{return nil}
-            let rowIndex=Int((point.y-headerHeight)/rowHeight),columnIndex=Int((point.x-rowLabelWidth)/columnWidth)
-            guard owner.rows.indices.contains(rowIndex),owner.destinations.indices.contains(columnIndex) else{return nil}
-            return(owner.rows[rowIndex],owner.destinations[columnIndex])
-        }
-        override func mouseDown(with event:NSEvent){guard let owner,let pair=hit(convert(event.locationInWindow,from:nil)) else{return};owner.activate(rowID:pair.0.id,destinationID:pair.1.id)}
-        override func rightMouseDown(with event:NSEvent){guard let owner,let pair=hit(convert(event.locationInWindow,from:nil)),let menu=owner.sendMenu(rowID:pair.0.id,destinationID:pair.1.id) else{return};NSMenu.popUpContextMenu(menu,with:event,for:self)}
-        override func draw(_ dirtyRect:NSRect){
-            guard let owner else{return}
-            DAWDesignTokens.Color.canvas.setFill();bounds.fill()
-            DAWDesignTokens.Color.surface.setFill();NSRect(x:0,y:0,width:bounds.width,height:headerHeight).fill()
-            let headerAttrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:9,weight:.semibold),.foregroundColor:DAWDesignTokens.Color.secondaryText]
-            let header=(owner.activeMode == .main ? "CHANNEL → OUTPUT" : "CHANNEL → SEND") as NSString
-            header.draw(at:NSPoint(x:8,y:9),withAttributes:headerAttrs)
-            for (column,destination) in owner.destinations.enumerated(){
-                let x=rowLabelWidth+CGFloat(column)*columnWidth
-                let title=destination.title as NSString
-                title.draw(in:NSRect(x:x+4,y:5,width:columnWidth-8,height:22),withAttributes:headerAttrs)
-                DAWDesignTokens.Color.border.withAlphaComponent(0.35).setFill();NSRect(x:x,y:0,width:1,height:bounds.height).fill()
-            }
-            for (rowIndex,row) in owner.rows.enumerated(){
-                let y=headerHeight+CGFloat(rowIndex)*rowHeight
-                if rowIndex%2 == 1 { DAWDesignTokens.Color.surface.withAlphaComponent(0.32).setFill();NSRect(x:0,y:y,width:bounds.width,height:rowHeight).fill() }
-                let tint=row.color ?? DAWDesignTokens.Color.accent
-                tint.withAlphaComponent(0.7).setFill();NSRect(x:2,y:y+4,width:3,height:rowHeight-8).fill()
-                let nameAttrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:10,weight:row.isSelected ? .semibold:.regular),.foregroundColor:row.isSelected ? DAWDesignTokens.Color.text:DAWDesignTokens.Color.secondaryText]
-                (row.title as NSString).draw(in:NSRect(x:10,y:y+5,width:rowLabelWidth-15,height:18),withAttributes:nameAttrs)
-                for (column,destination) in owner.destinations.enumerated(){
-                    let x=rowLabelWidth+CGFloat(column)*columnWidth
-                    let cell=NSRect(x:x+1,y:y+1,width:columnWidth-2,height:rowHeight-2)
-                    if owner.activeMode == .main {
-                        let invalid=row.id == destination.id && row.kind == .bus
-                        if invalid { NSColor.systemRed.withAlphaComponent(0.08).setFill();cell.fill();continue }
-                        if row.outputID == destination.id {
-                            tint.withAlphaComponent(0.3).setFill();NSBezierPath(roundedRect:cell.insetBy(dx:5,dy:4),xRadius:5,yRadius:5).fill()
-                            tint.setFill();NSBezierPath(ovalIn:NSRect(x:cell.midX-3,y:cell.midY-3,width:6,height:6)).fill()
-                        }
-                    } else if row.kind == .track,let send=row.sends.first(where:{$0.busID == destination.id}) {
-                        NSColor.systemMint.withAlphaComponent(0.24).setFill();NSBezierPath(roundedRect:cell.insetBy(dx:5,dy:4),xRadius:5,yRadius:5).fill()
-                        let text=String(format:"%@ %.0f",send.preFader ? "PRE":"POST",send.gainDb) as NSString
-                        let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:8,weight:.medium),.foregroundColor:NSColor.systemMint]
-                        text.draw(in:cell.insetBy(dx:7,dy:5),withAttributes:attrs)
-                    }
-                }
-                DAWDesignTokens.Color.border.withAlphaComponent(0.22).setFill();NSRect(x:0,y:y+rowHeight-1,width:bounds.width,height:1).fill()
-            }
-        }
+    override func layout() {
+        super.layout()
+        let w = max(0, bounds.width), h = max(0, bounds.height)
+        mode.frame = NSRect(x: 10, y: 8, width: min(230, max(100, w * 0.44)), height: 28)
+        search.frame = NSRect(x: mode.frame.maxX + 10, y: 9, width: max(0, w - mode.frame.maxX - 20), height: 26)
+        let namesWidth = min(178, max(70, w * 0.30)), tableHeight = max(0, h - 100)
+        channelTable.tableColumns.first?.width = namesWidth
+        channelScroll.frame = NSRect(x: 0, y: 44, width: namesWidth, height: tableHeight)
+        routingScroll.frame = NSRect(x: namesWidth, y: 44, width: max(0, w - namesWidth), height: tableHeight)
+        status.frame = NSRect(x: 10, y: max(44, h - 50), width: max(0, w - 20), height: 44)
+        empty.frame = NSRect(x: namesWidth + 8, y: 90, width: max(0, w - namesWidth - 16), height: 24)
+        channelScroll.tile(); routingScroll.tile()
+        scrollChanged(Notification(name: NSView.boundsDidChangeNotification, object: routingScroll.contentView))
     }
 }

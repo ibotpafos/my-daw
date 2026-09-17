@@ -67,7 +67,7 @@ struct MixerUITests {
         precondition(matrix.rows.count == 12 && matrix.destinations.map(\.id) == [100,101])
         matrix.activate(rowID:8,destinationID:100)
         matrix.activate(rowID:1,destinationID:100)
-        precondition(matrixSends == ["remove:8:100","add:1:100"])
+        precondition(matrixSends == ["edit:8:100","add:1:100"])
 
         mixer.strips = tracks
         mixer.layoutSubtreeIfNeeded()
@@ -195,6 +195,7 @@ struct MixerUITests {
         mixer.contentView.scroll(to:NSPoint(x:12000,y:0));mixer.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.post(name:NSView.boundsDidChangeNotification,object:mixer.contentView)
         precondition(mixer.stripViews[1]!.isHidden)
+        try MixerRoutingTests.run()
         print("Mixer AppKit tests PASS: scale, routing matrix, search, visibility, zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }
