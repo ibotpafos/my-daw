@@ -41,7 +41,7 @@ jobs:
           git rev-parse HEAD > validation/revision.txt
           git archive --format=tar.gz --output=validation/source.tar.gz HEAD
           bash scripts/test-mixer-ui.sh 2>&1 | tee validation/appkit-tests.log
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: mixer-appkit-${{ github.sha }}
@@ -97,7 +97,7 @@ jobs:
           set -eo pipefail
           python3 scripts/check_docs.py 2>&1 | tee validation/docs.log
           python3 scripts/e2e_coverage.py --strict 2>&1 | tee validation/e2e-coverage.log
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: mixer-core-app-${{ github.sha }}
