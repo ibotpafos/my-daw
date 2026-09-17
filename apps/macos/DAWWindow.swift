@@ -1,6 +1,6 @@
 import AppKit
 
-/// The main DAW window's keyboard boundary.  The embedding controller owns the
+/// The main DAW window's keyboard boundary. The embedding controller owns the
 /// command implementations; this class only decides whether a key is safe to
 /// treat as a global DAW command.
 final class DAWWindow: NSWindow {
@@ -11,10 +11,8 @@ final class DAWWindow: NSWindow {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onZoomReset: (() -> Void)?
-    private lazy var commandPalette = DAWCommandPaletteController()
+    private var commandPalette: DAWCommandPaletteController?
 
-    /// Capture unmodified transport/edit keys before focused canvas views.
-    /// Command equivalents deliberately remain in AppKit's menu routing first.
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown,
            !defersToTextInput,
@@ -24,23 +22,28 @@ final class DAWWindow: NSWindow {
         super.sendEvent(event)
     }
 
-    /// Preserve the responder chain and standard menu shortcuts. Command-K is
-    /// the one deliberate global exception: the palette must remain reachable
-    /// even while a rename/search text field owns first responder.
+    /// The palette remains reachable during rename/search, but never interrupts
+    /// marked-text composition. All other command equivalents keep menu routing.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if handleCommandPaletteCommand(event) {
+        if DAWCommandPaletteKey.isToggle(event) {
+            if let textView = firstResponder as? NSTextView, textView.hasMarkedText() {
+                return super.performKeyEquivalent(with: event)
+            }
+            if !event.isARepeat {
+                if commandPalette == nil { commandPalette = DAWCommandPaletteController() }
+                commandPalette?.toggle(from: self)
+            }
             return true
         }
-        guard !defersToTextInput else {
-            return super.performKeyEquivalent(with: event)
-        }
-        if super.performKeyEquivalent(with: event) {
-            return true
-        }
-        if handleTrackDeleteCommand(event) {
-            return true
-        }
+        guard !defersToTextInput else { return super.performKeyEquivalent(with: event) }
+        if super.performKeyEquivalent(with: event) { return true }
+        if handleTrackDeleteCommand(event) { return true }
         return handleZoomCommand(event)
+    }
+
+    override func close() {
+        commandPalette?.dismiss(restoreFocus: false)
+        super.close()
     }
 
     private var defersToTextInput: Bool {
@@ -49,8 +52,7 @@ final class DAWWindow: NSWindow {
             if current is NSTextView || current is NSTextField || current is NSSearchField {
                 return true
             }
-            if let inputClient = current as? NSTextInputClient,
-               inputClient.hasMarkedText() {
+            if let inputClient = current as? NSTextInputClient, inputClient.hasMarkedText() {
                 return true
             }
             responder = current.nextResponder
@@ -59,61 +61,32 @@ final class DAWWindow: NSWindow {
     }
 
     private func handleUnmodifiedGlobalCommand(_ event: NSEvent) -> Bool {
-        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else {
-            return false
-        }
-
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return false }
         switch event.keyCode {
-        case 49: // Space
-            return invoke(onPlayStop)
-        case 115: // Home
-            return invoke(onRewind)
-        case 51, 117: // Backspace/Delete and forward Delete
-            return invoke(onDeleteSelectedClip)
-        default:
-            return false
+        case 49: return invoke(onPlayStop)
+        case 115: return invoke(onRewind)
+        case 51, 117: return invoke(onDeleteSelectedClip)
+        default: return false
         }
-    }
-
-    private func handleCommandPaletteCommand(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown else { return false }
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard modifiers == [.command],
-              event.charactersIgnoringModifiers?.lowercased() == "k" else {
-            return false
-        }
-        commandPalette.toggle(from: self)
-        return true
     }
 
     private func handleZoomCommand(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard modifiers.contains(.command),
               modifiers.subtracting([.command, .shift]).isEmpty,
-              let characters = event.charactersIgnoringModifiers else {
-            return false
-        }
-
+              let characters = event.charactersIgnoringModifiers else { return false }
         switch characters {
-        case "+", "=":
-            return invoke(onZoomIn)
-        case "-", "_":
-            return invoke(onZoomOut)
-        case "0":
-            return invoke(onZoomReset)
-        default:
-            return false
+        case "+", "=": return invoke(onZoomIn)
+        case "-", "_": return invoke(onZoomOut)
+        case "0": return invoke(onZoomReset)
+        default: return false
         }
     }
 
-    /// Keep the unmodified Delete key scoped to clips.  Command-Delete is a
-    /// distinct, explicitly reversible project command for the selected track.
+    /// Unmodified Delete stays scoped to clips; Command-Delete deletes a track.
     private func handleTrackDeleteCommand(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard modifiers == [.command],
-              event.keyCode == 51 || event.keyCode == 117 else {
-            return false
-        }
+        guard modifiers == [.command], event.keyCode == 51 || event.keyCode == 117 else { return false }
         return invoke(onDeleteSelectedTrack)
     }
 
