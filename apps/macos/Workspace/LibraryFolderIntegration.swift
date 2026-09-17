@@ -16,7 +16,7 @@ extension DraftApp {
             })
             self.libraryBrowser.audioItems = items
         }
-#if !DAW_WORKSPACE_TESTS
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         folder.restore()
 #endif
     }

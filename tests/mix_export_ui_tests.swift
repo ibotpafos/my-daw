@@ -152,6 +152,64 @@ func runMixExportIntegrationTests() {
     expect(!app.hasAudio && app.hasMidiContent, "Fixture has MIDI and no WAV source")
     expect(app.exportButton.isEnabled && app.validateMenuItem(menu), "MIDI-only button and menu are enabled")
     expect(app.exportButton.toolTip?.contains("инструмента") == true, "MIDI-only tooltip does not promise sound")
+    app.selectedMixerID = midiTrack
+    app.updateMixerInspector(midiTrack)
+    let editor = app.inspectorBrowser.midiEditor
+    let piano = editor.integrationEditState
+    expect(piano.context?.documentID == app.midiDocumentID && piano.timeMap != nil,
+           "Docked Piano Roll receives the real document binding and tempo map")
+    let originalNotes = piano.entities.map(\.note)
+    let originalRevision = revision()
+    let beforePreviewPrompts = answers.prompts.count
+    piano.selectAll()
+    piano.previewVelocityRamp(from: 70, to: 70)
+    expect(piano.isTransformPreview && editor.hasUncommittedEdit,
+           "Actual Piano Roll transform has an uncommitted preview")
+    expect(!app.exportButton.isEnabled && !app.validateMenuItem(menu),
+           "Preview change immediately disables WAV button and menu")
+    app.exportMix()
+    expect(answers.prompts.count == beforePreviewPrompts && app.exportJob == nil && piano.isTransformPreview,
+           "Direct WAV action cannot finish or silently ignore Piano Roll preview")
+    expect(revision() == originalRevision, "Preview and rejected export do not modify project")
+    piano.cancelTransformPreview()
+    expect(!editor.hasUncommittedEdit && app.exportButton.isEnabled,
+           "Cancel restores export without changing note data")
+    expect(piano.entities.map(\.note) == originalNotes, "Cancelled preview retains original notes")
+
+    // A missing host echo is not accepted as a committed edit.
+    let commitCallback = editor.onCommitRequest
+    var delayedRequest: PRCommitRequest?
+    editor.onCommitRequest = { delayedRequest = $0 }
+    piano.selectAll(); piano.previewVelocityRamp(from: 71, to: 71); piano.applyTransformPreview()
+    expect(piano.awaitingCommit && delayedRequest != nil, "Production editor waits for authoritative host echo")
+    app.exportMix()
+    expect(!app.exportButton.isEnabled && app.exportJob == nil && piano.awaitingCommit,
+           "Pending Piano Roll commit also blocks export")
+    expect(answers.prompts.count == beforePreviewPrompts && revision() == originalRevision,
+           "Pending commit cannot export or consume a revision")
+    editor.onCommitRequest = commitCallback
+    app.loadMidiInspector(midiTrack) // Echo the unchanged snapshot, rejecting the pending write.
+    expect(!piano.awaitingCommit && piano.entities.map(\.note) == originalNotes && app.exportButton.isEnabled,
+           "Rejected pending edit receives one atomic authoritative snapshot")
+
+    // The same inspector callback now performs an actual revision-bound C ABI write.
+    piano.selectAll(); piano.previewVelocityRamp(from: 72, to: 72); piano.applyTransformPreview()
+    expect(revision() == originalRevision + 1 && !piano.awaitingCommit && piano.entities.first?.note.velocity == 72,
+           "Docked Piano Roll commit reaches real C ABI with exactly one revision")
+    app.undo()
+    expect(piano.entities.map(\.note) == originalNotes && app.exportButton.isEnabled,
+           "Project Undo restores the editor and export availability")
+    let identityDraft = directory.appendingPathComponent("piano-identity.mydawdraft")
+    expect(daw_save_draft(app.session, identityDraft.path) == 0, "Save integration identity fixture")
+    let oldPianoID = app.midiDocumentID, oldExportID = app.mixExportDocumentID
+    let beforeReopenRevision = revision()
+    app.openDraftFile(identityDraft)
+    expect(revision() == beforeReopenRevision && app.midiDocumentID != oldPianoID && app.mixExportDocumentID != oldExportID,
+           "Equal-revision reopen invalidates both Piano Roll and export document tokens")
+    if let delayedRequest { app.commitMidiEdit(delayedRequest) }
+    expect(revision() == beforeReopenRevision && piano.entities.map(\.note) == originalNotes,
+           "Late Piano Roll callback cannot edit a reopened document")
+
     let midiWav = choose("midi-only.wav")
     let beforeExport = revision()
     app.exportButton.performClick(nil)

@@ -1,10 +1,12 @@
 #include "bridge/daw.h"
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #define CHECK(x) do { if (!(x)) throw std::runtime_error("Failed: " #x); } while (false)
@@ -56,10 +58,36 @@ int main() { try {
     CHECK(daw_get_midi_clip(s,1,0,&out,5,read,1,&written)!=0); // offset past the end
     CHECK(daw_get_midi_clip(s,1,1,&out,0,nullptr,0,&written)!=0); // index out of range
 
-    // replace notes with two
+    // Replace notes exactly like the graphical editor's one-command commit.
     daw_midi_note two[2]={note(0,500,60,0,15),note(500,400,62,15,9)};
     CHECK(daw_set_midi_notes(s,1,0,two,2,revision())==0);
     out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0&&out.note_count==2&&written==2);
+    CHECK(read[0].velocity==15&&read[1].pitch==62&&read[1].channel==15);
+
+    // A piano-roll commit is one project Undo entry; redo restores the exact edit.
+    CHECK(daw_undo(s,revision())==0);
+    out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0&&out.note_count==3&&written==3);
+    CHECK(read[0].start==100&&read[1].pitch==64&&read[2].start==47000);
+    CHECK(daw_redo(s,revision())==0);
+    out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0&&out.note_count==2&&written==2);
+    CHECK(read[0].start==0&&read[0].velocity==15&&read[1].start==500&&read[1].pitch==62&&read[1].channel==15);
+
+    // The exact edited MIDI clip must survive the same draft save/open path used by the app.
+    std::string draftPattern=(std::filesystem::temp_directory_path()/"mydaw-midi-roundtrip-XXXXXX").string();
+    std::vector<char> draftBytes(draftPattern.begin(),draftPattern.end());draftBytes.push_back(0);
+    const int draftFd=mkstemp(draftBytes.data());CHECK(draftFd>=0);close(draftFd);
+    const std::string draftPath=draftBytes.data();
+    struct Cleanup{std::string path;~Cleanup(){if(!path.empty())unlink(path.c_str());}} cleanup{draftPath};
+    CHECK(daw_save_draft(s,draftPath.c_str())==0);
+    std::unique_ptr<daw_session,decltype(&daw_destroy)> reopened(daw_create(),daw_destroy);CHECK(reopened);
+    CHECK(daw_open_draft(reopened.get(),draftPath.c_str())==0);
+    uint32_t reopenedCount=0;CHECK(daw_get_midi_clip_count(reopened.get(),1,&reopenedCount)==0&&reopenedCount==1);
+    daw_midi_clip reopenedMeta{};reopenedMeta.struct_size=sizeof(reopenedMeta);reopenedMeta.version=DAW_MIDI_CLIP_VERSION;
+    daw_midi_note reopenedNotes[4]{};uint32_t reopenedWritten=0;
+    CHECK(daw_get_midi_clip(reopened.get(),1,0,&reopenedMeta,0,reopenedNotes,4,&reopenedWritten)==0);
+    CHECK(reopenedMeta.start==0&&reopenedMeta.length==48000&&reopenedMeta.lane==7&&reopenedMeta.note_count==2&&reopenedWritten==2);
+    CHECK(reopenedNotes[0].start==0&&reopenedNotes[0].length==500&&reopenedNotes[0].pitch==60&&reopenedNotes[0].velocity==15);
+    CHECK(reopenedNotes[1].start==500&&reopenedNotes[1].length==400&&reopenedNotes[1].pitch==62&&reopenedNotes[1].channel==15&&reopenedNotes[1].velocity==9);
 
     // move
     CHECK(daw_move_midi_clip(s,1,0,10000,revision())==0);
@@ -138,6 +166,6 @@ int main() { try {
     CHECK(daw_add_midi_clip(s,1,&clip,nullptr,0,revision())!=0);
 
     std::cout<<"PASS: MIDI-only stopped transport duration, seek/loop bounds, trim/split/move/Undo/Redo"<<std::endl;
-    std::cout<<"PASS: MIDI bridge commands/queries (add,set,move,trim,split,remove,paged get,undo/redo,ABI+revision guards)"<<std::endl;
+    std::cout<<"PASS: MIDI bridge commands/queries (add,set,move,trim,split,remove,paged get,note-edit undo/redo,draft roundtrip,ABI+revision guards)"<<std::endl;
     return 0;
 } catch (const std::exception& error) { std::cerr<<error.what()<<std::endl; return 1; } }

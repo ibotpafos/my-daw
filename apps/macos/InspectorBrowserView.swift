@@ -29,6 +29,7 @@ struct InspectorMidiModel: Equatable {
     var selectedClip: Int?
     var notes: [PianoRollNote] = []
     var editable = false
+    var context: PRClipContext?
 }
 
 /// One live CoreMIDI source the app can arm a keyboard take from. id 0 is the
@@ -80,6 +81,7 @@ final class InspectorBrowserView: NSView {
     var onMidiInputSelect: ((UInt32) -> Void)?
     var onMidiRecordToggle: (() -> Void)?
     var onMidiNotesChange: (([PianoRollNote]) -> Void)?
+    var onMidiCommitRequest: ((PRCommitRequest) -> Void)?
     var onMidiAddNote: (() -> Void)?
     var onMidiRemoveNote: ((Int) -> Void)?
     var onShowDevices: (() -> Void)?
@@ -200,6 +202,7 @@ final class InspectorBrowserView: NSView {
         for child in children { form.addArrangedSubview(child); child.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         midiEditor.onClipSelect = { [weak self] in self?.onMidiClipSelect?($0) }
         midiEditor.onNotesChange = { [weak self] in self?.onMidiNotesChange?($0) }
+        midiEditor.onCommitRequest = { [weak self] in self?.onMidiCommitRequest?($0) }
         midiEditor.onAddNote = { [weak self] in self?.onMidiAddNote?() }
         midiEditor.onAddClip = { [weak self] in self?.onMidiAddClip?() }
         midiEditor.onRemoveClip = { [weak self] in self?.onMidiRemoveClip?($0) }
@@ -241,9 +244,9 @@ final class InspectorBrowserView: NSView {
         }
     }
     private func applyMidi() {
-        midiEditor.editorEnabled = editingEnabled && midi?.editable == true
-        midiEditor.clips = midi?.clips ?? []; midiEditor.selectedClip = midi?.selectedClip
-        midiEditor.notes = midi?.notes ?? []
+        var model = midi
+        model?.editable = editingEnabled && midi?.editable == true
+        midiEditor.apply(model: model)
         applyMidiCapture()
         reloadInspector()
     }

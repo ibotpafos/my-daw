@@ -13,12 +13,15 @@ func runWorkspaceIntegrationTests() {
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
     let controller = DraftApp()
+    let previousDelegate = app.delegate
+    app.delegate = controller
     controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
     guard let session = controller.session, let root = controller.window.contentView,
           let workspace = controller.workspace, let dock = controller.workspaceDock else { fatalError("Missing actual workspace") }
     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("mydaw-workspace-\(UUID().uuidString)", isDirectory: true)
     do { try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true) } catch { fatalError("Temporary fixtures: \(error)") }
     defer {
+        app.delegate = previousDelegate
         NotificationCenter.default.removeObserver(controller)
         controller.window.orderOut(nil); controller.window.delegate = nil
         daw_destroy(session); controller.session = nil
