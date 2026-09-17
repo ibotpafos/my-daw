@@ -3,7 +3,7 @@ on:
   push:
     branches: [codex/pro-piano-roll]
     paths:
-      - '.github/piano-roll-candidate.part*'
+      - '.github/piano-roll-layout.patch'
       - '.github/workflows/piano-roll-candidate.yml'
 concurrency:
   group: piano-roll-candidate
@@ -24,33 +24,32 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Verify anchored patch and prepare a coherent candidate commit
+      - name: Verify anchored layout patch and prepare coherent candidate
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build/qa-candidate
           python3 - <<'PY'
-          import base64, hashlib, lzma, pathlib, subprocess
-          base = '07faebdb494aa6ac8c32ed88da691f441655c8e1'
-          allowed = {'.github/piano-roll-candidate.part1', '.github/piano-roll-candidate.part2', '.github/piano-roll-candidate.part3', '.github/workflows/piano-roll-candidate.yml', '.github/workflows/piano-roll-appkit.yml', '.github/workflows/core.yml'}
+          import hashlib, pathlib, subprocess
+          base = 'e03a76ff5651cf7ece22d3e514f9bddc4e4404b1'
+          allowed = {'.github/piano-roll-candidate.part1', '.github/piano-roll-candidate.part2', '.github/piano-roll-candidate.part3', '.github/piano-roll-layout.patch', '.github/workflows/piano-roll-candidate.yml'}
           changed = set(subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD'], text=True).splitlines())
           if not changed <= allowed: raise SystemExit('Source moved beyond reviewed base: ' + repr(changed - allowed))
-          encoded = ''.join(pathlib.Path(f'.github/piano-roll-candidate.part{i}').read_text() for i in (1, 2, 3))
-          compressed = base64.b64decode(encoded, validate=True)
-          if hashlib.sha256(compressed).hexdigest() != '4d0f137a0bade6c3f063aa8adbaae19f4682a4fd65e0bf2928469333c14a7fbe': raise SystemExit('Patch digest mismatch')
-          patch = pathlib.Path('/tmp/piano-roll-candidate.patch')
-          patch.write_bytes(lzma.decompress(compressed))
-          subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(patch)], check=True)
-          subprocess.run(['git', 'apply', '--unidiff-zero', str(patch)], check=True)
+          data = pathlib.Path('.github/piano-roll-layout.patch').read_bytes().replace(b'\n diff --git ', b'\ndiff --git ')
+          if hashlib.sha256(data).hexdigest() != 'a99b4ba227a2af61dad45648eda558dba9c52248215e681407d77b9bcf622d87': raise SystemExit('Canonical patch digest mismatch')
+          patch = pathlib.Path('/tmp/piano-roll-layout.patch')
+          patch.write_bytes(data)
+          subprocess.run(['git', 'apply', '--check', str(patch)], check=True)
+          subprocess.run(['git', 'apply', str(patch)], check=True)
           changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
-          if any(not p.startswith(('apps/', 'docs/', 'engine/', 'scripts/', 'tests/')) for p in changed): raise SystemExit('Patch changed an unexpected path')
+          if any(not p.startswith(('apps/', 'tests/')) for p in changed): raise SystemExit('Unexpected layout patch path')
           PY
           git diff --check
-          git add apps docs engine scripts tests
+          git add apps tests
           git diff --cached --stat
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat(piano-roll): make edits revision-safe, support full-size clips and validate native interactions'
+          git commit -m 'fix(piano-roll): frame recorded notes on open and keep native controls visible'
           git rev-parse HEAD > build/qa-candidate/commit.txt
           git archive --format=zip --output=build/qa-candidate/source.zip HEAD
       - name: Typecheck the complete native application

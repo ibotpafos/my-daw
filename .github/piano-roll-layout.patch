@@ -1,0 +1,206 @@
+diff --git a/apps/macos/PianoRoll/PianoRollProWorkspace.swift b/apps/macos/PianoRoll/PianoRollProWorkspace.swift
+--- a/apps/macos/PianoRoll/PianoRollProWorkspace.swift
++++ b/apps/macos/PianoRoll/PianoRollProWorkspace.swift
+@@ -1,4 +1,9 @@
+ import AppKit
++
++@MainActor
++private final class PRInspectorStack: NSStackView {
++    override var isFlipped: Bool { true }
++}
+ 
+ @MainActor
+ final class PRProWorkspaceView: NSView {
+@@ -10,7 +15,7 @@
+     private let velocityLane: PRProVelocityLane
+     private let laneGrip = PRProLaneGrip()
+     private let toolbar = NSStackView()
+-    private let inspector = NSStackView()
++    private let inspector = PRInspectorStack()
+     let inspectorScroll = NSScrollView() // Internal read-only surface for native layout acceptance.
+     private let quantizeStrength = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
+     private let statusField = NSTextField(labelWithString: "")
+@@ -62,6 +67,8 @@
+         keyboard = PRProKeyboardView(state: state)
+         velocityLane = PRProVelocityLane(state: state)
+         super.init(frame: .zero)
++        wantsLayer = true
++        layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
+         canvas.workspace = self
+         ruler.workspace = self
+         keyboard.workspace = self
+@@ -115,8 +122,10 @@
+         toolControl.target = self; toolControl.action = #selector(changeTool)
+         toolControl.selectedSegment = PRTool.select.rawValue
+         for (index, tool) in PRTool.allCases.enumerated() {
++            toolControl.setWidth(30, forSegment: index)
+             toolControl.setToolTip("\(tool.title) · \(tool.shortcut)", forSegment: index)
+         }
++        toolControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+         gridPopup.addItems(withTitles: PRGridDivision.allCases.map(\.title))
+         gridPopup.selectItem(at: PRGridDivision.sixteenth.rawValue)
+         gridPopup.target = self; gridPopup.action = #selector(changeGrid)
+@@ -145,6 +154,7 @@
+         let musicRow = NSStackView(views: [rootPopup, scalePopup, scaleLock, foldButton, followButton,
+             separator(), quantize, legato, humanize, reverse, flexible()])
+         for row in [editRow, musicRow] {
++            row.distribution = .fill
+             row.spacing = 6; row.alignment = .centerY
+             toolbar.addArrangedSubview(row)
+             row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true
+@@ -198,8 +208,17 @@
+         rampTo.identifier = NSUserInterfaceItemIdentifier("piano.roll.ramp.to")
+         rampFrom.target = self; rampFrom.action = #selector(previewRampNow)
+         rampTo.target = self; rampTo.action = #selector(previewRampNow)
+-        let ramp = NSStackView(views: [rampFrom, NSTextField(labelWithString: "→"), rampTo])
++        let rampArrow = NSTextField(labelWithString: "→")
++        let ramp = NSStackView(views: [rampFrom, rampArrow, rampTo])
++        ramp.distribution = .fill
+         ramp.spacing = 4; ramp.alignment = .centerY
++        rampArrow.widthAnchor.constraint(equalToConstant: 14).isActive = true
++        rampFrom.widthAnchor.constraint(equalTo: rampTo.widthAnchor).isActive = true
++        rampFrom.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
++        for field in [rampFrom, rampTo] {
++            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
++            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        }
+         inspector.addArrangedSubview(ramp)
+         inspector.addArrangedSubview(button("Preview Ramp", #selector(previewRampNow)))
+         inspector.addArrangedSubview(divider())
+@@ -380,6 +399,13 @@
+ 
+     func focusCanvas() { window?.makeFirstResponder(canvas) }
+ 
++    func scrollInspectorToTop() {
++        guard let document = inspectorScroll.documentView else { return }
++        let y = document.isFlipped ? 0 : max(0, document.bounds.height - inspectorScroll.contentSize.height)
++        inspectorScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
++        inspectorScroll.reflectScrolledClipView(inspectorScroll.contentView)
++    }
++
+     func scroll(to point: NSPoint) {
+         let maxX = max(0, canvas.bounds.width - scrollView.contentSize.width)
+         let maxY = max(0, canvas.bounds.height - scrollView.contentSize.height)
+ diff --git a/apps/macos/PianoRoll/PianoRollProWindow.swift b/apps/macos/PianoRoll/PianoRollProWindow.swift
+--- a/apps/macos/PianoRoll/PianoRollProWindow.swift
++++ b/apps/macos/PianoRoll/PianoRollProWindow.swift
+@@ -6,6 +6,7 @@
+     let workspace: PRProWorkspaceView
+     var onClose: (() -> Void)?
+     private var playheadTimer: Timer?
++    private var fittedInitialContent = false
+ 
+     init(state: PRProState) {
+         self.state = state
+@@ -14,6 +15,7 @@
+                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                               backing: .buffered, defer: false)
+         window.title = "Piano Roll — My DAW"
++        window.appearance = NSAppearance(named: .darkAqua)
+         window.minSize = NSSize(width: 980, height: 560)
+         window.isReleasedWhenClosed = false
+         window.contentView = workspace
+@@ -31,9 +33,22 @@
+         }
+         showWindow(nil)
+         window?.makeKeyAndOrderFront(nil)
++        prepareForPresentation()
++        startPlayheadPolling()
++    }
++
++    /// Initial framing belongs to presentation, after the real viewport has
++    /// been laid out. A new editor must not start at MIDI pitch 127.
++    func prepareForPresentation() {
++        window?.layoutIfNeeded()
++        workspace.layoutSubtreeIfNeeded()
+         workspace.refreshFromState()
++        if !fittedInitialContent {
++            workspace.fit(selectionOnly: false)
++            workspace.scrollInspectorToTop()
++            fittedInitialContent = true
++        }
+         workspace.focusCanvas()
+-        startPlayheadPolling()
+     }
+ 
+     private func startPlayheadPolling() {
+ diff --git a/apps/macos/PianoRollView.swift b/apps/macos/PianoRollView.swift
+--- a/apps/macos/PianoRollView.swift
++++ b/apps/macos/PianoRollView.swift
+@@ -200,6 +200,7 @@
+     /// The host must replace binding, metadata and notes in ONE receive. Property
+     /// didSet callbacks alone would acknowledge a pending commit with old notes.
+     func apply(model: InspectorMidiModel?) {
++        let previousContext = context
+         syncing = true
+         context = model?.context
+         notes = model?.notes ?? []
+@@ -208,6 +209,12 @@
+         editorEnabled = model?.editable ?? false
+         syncing = false
+         syncState()
++        if let next = context, previousContext?.sameClip(as: next) != true,
++           let controller = windowController, controller.window?.isVisible == true {
++            controller.workspace.layoutSubtreeIfNeeded()
++            controller.workspace.fit(selectionOnly: false)
++            controller.workspace.scrollInspectorToTop()
++        }
+     }
+ 
+     private func syncState() {
+ diff --git a/tests/piano_roll/AppKitSmokeTests.swift b/tests/piano_roll/AppKitSmokeTests.swift
+--- a/tests/piano_roll/AppKitSmokeTests.swift
++++ b/tests/piano_roll/AppKitSmokeTests.swift
+@@ -44,6 +44,7 @@
+ 
+         _ = NSApplication.shared
+         NSApp.setActivationPolicy(.prohibited)
++        NSApp.appearance = NSAppearance(named: .darkAqua)
+         let appDelegate = DraftApp()
+         appDelegate.tempoBars = (0..<9).map { index in
+             ProjectBarStart(frame: UInt64(index * 96_000), beats: Double(index * 4), number: index + 1)
+@@ -190,17 +191,44 @@
+             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
+         }
++        workspace.fit(selectionOnly: false)
++        workspace.scrollInspectorToTop()
++        workspace.layoutSubtreeIfNeeded()
++        check(workspace.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
++              "native screenshots use production dark appearance")
++        check(from.frame.width >= 40 && to.frame.width >= 40 && abs(from.frame.width - to.frame.width) < 1,
++              "velocity ramp endpoints have equal usable field widths")
++        check(to.frame.maxX <= to.superview!.bounds.maxX + 1,
++              "second velocity ramp endpoint stays inside its row")
++        let document = workspace.inspectorScroll.documentView!
++        let selectionTitle = descendants(document).compactMap { $0 as? NSTextField }.first { $0.stringValue == "SELECTION" }!
++        let titleRect = document.convert(selectionTitle.bounds, from: selectionTitle)
++        check(workspace.inspectorScroll.contentView.documentVisibleRect.intersects(titleRect),
++              "inspector opens at Selection rather than its bottom controls")
+         try screenshot("piano-roll-1280.png")
+         window.setContentSize(NSSize(width: 980, height: 560))
+         window.layoutIfNeeded(); workspace.layoutSubtreeIfNeeded()
+         check(workspace.canvas.frame.width > 400, "minimum window still has usable note canvas")
+         check(workspace.inspectorScroll.documentView!.frame.height > workspace.inspectorScroll.contentSize.height,
+               "minimum window keeps long inspector scrollable instead of clipping controls")
++        workspace.fit(selectionOnly: false)
++        workspace.scrollInspectorToTop()
++        workspace.layoutSubtreeIfNeeded()
+         try screenshot("piano-roll-980.png")
+ 
+         let controller = PRProWindowController(state: state)
+         check(controller.window?.minSize.width == 980, "dedicated editor window has desktop minimum width")
+         check(controller.window?.contentView === controller.workspace, "dedicated window owns pro workspace")
++        controller.prepareForPresentation()
++        let shown = controller.workspace.canvas.visibleRect
++        check(state.entities.allSatisfy { entity in
++            guard let rect = PRProDrawing.noteRect(entity.note, state: state, rows: controller.workspace.rows) else { return false }
++            return shown.intersects(rect)
++        }, "first presentation brings recorded note pitches into view")
++        let priorOrigin = controller.workspace.scrollOrigin
++        controller.prepareForPresentation()
++        check(controller.workspace.scrollOrigin == priorOrigin,
++              "reopening the same editor preserves its viewport")
+         controller.close()
+         window.close()
+ 
