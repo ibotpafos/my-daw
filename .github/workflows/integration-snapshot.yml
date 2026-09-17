@@ -1,0 +1,25 @@
+name: PR 8 integration snapshot
+on:
+  push:
+    branches: [feature/command-palette-foundation]
+    paths: [.github/workflows/integration-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Preserve both histories for three-way integration
+        run: |
+          git rev-parse HEAD refs/remotes/origin/main
+          git bundle create "$RUNNER_TEMP/my-daw-integration.bundle" HEAD refs/remotes/origin/main
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: my-daw-integration-${{ github.sha }}
+          path: ${{ runner.temp }}/my-daw-integration.bundle
+          if-no-files-found: error
+          retention-days: 1
