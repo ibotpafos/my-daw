@@ -1,0 +1,58 @@
+name: Prepare PR 8 integration blobs
+on:
+  push:
+    branches: [feature/command-palette-foundation]
+    paths: [.github/workflows/prepare-palette-integration.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/feature/command-palette-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: 176aeb314983295fcf234915ac97de362d567607
+      - name: Materialize exact three-way source and authored docs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, subprocess, tempfile
+          feature = '80bf3bdf026aa7ccf696a67cb5c95816d78914ad'
+          base = 'bf002ce5c33145b8e415c4aa1eb1935f17a2cad1'
+          main = '176aeb314983295fcf234915ac97de362d567607'
+          def source(ref, path):
+              return subprocess.check_output(['git', 'show', ref + ':' + path])
+          with tempfile.TemporaryDirectory() as directory:
+              files = [Path(directory) / name for name in ['ours', 'base', 'theirs']]
+              for file, ref in zip(files, [feature, base, main]):
+                  file.write_bytes(source(ref, 'apps/macos/main.swift'))
+              merged = subprocess.check_output(['git', 'merge-file', '-p', *map(str, files)])
+          if hashlib.sha256(merged).hexdigest() != '35f19479fd0d4e8a829c50d8a6c1822449b512b170352ae78095437f909ff25a':
+              raise SystemExit('Merged source differs from locally verified integration')
+          Path('apps/macos/main.swift').write_bytes(merged)
+          for path in ['README.md', 'VERSION', 'docs/11-roadmap.md', 'docs/79-command-palette.md']:
+              Path(path).write_bytes(source(feature, path))
+          PY
+          python3 -m pip install Markdown==3.8.2
+          python3 scripts/build_handbook.py
+      - name: Publish only two source blobs, never branches or workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, subprocess
+          for path in ['apps/macos/main.swift', 'docs/index.html']:
+              data = Path(path).read_bytes()
+              payload = json.dumps({'encoding': 'utf-8', 'content': data.decode('utf-8')})
+              reply = subprocess.check_output(['gh', 'api', '--method', 'POST',
+                  'repos/ibotpafos/my-daw/git/blobs', '--input', '-'], input=payload, text=True)
+              result = json.loads(reply)
+              print(path, result['sha'], hashlib.sha256(data).hexdigest())
+          PY
