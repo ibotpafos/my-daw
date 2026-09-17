@@ -157,5 +157,6 @@ func runLibraryBrowserTests(_ controller: DraftApp) -> Int {
     screenshot(1536, 1000, "workspace-library-favorites")
     screenshot(1060, 700, "workspace-library-1060")
     print("PASS: \(assertions) native library controls, stable catalog selection, keyboard scopes and AU command assertions")
+    assertions += runLibraryFolderTests(controller)
     return assertions
 }
