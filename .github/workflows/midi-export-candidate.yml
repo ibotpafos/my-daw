@@ -48,6 +48,16 @@ jobs:
           path.write_bytes(patch)
           subprocess.run(['git', 'apply', '--index', '--check', str(path)], check=True)
           subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+          # The first native run correctly rejected an invalid fixture: the
+          # ABI requires metadata.note_count to match the supplied note array.
+          fixture = pathlib.Path('tests/mix_export_ui_tests.swift')
+          if subprocess.check_output(['git', 'hash-object', str(fixture)], text=True).strip() != '9f764b281625b2296c24220aea51dc9864a2effc':
+              raise SystemExit('Changed native fixture')
+          text = fixture.read_text()
+          text = text.replace('clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length', 'clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length\n        clip.note_count = notes ? 1 : 0')
+          text = text.replace('print("PASS \\(name)")', 'FileHandle.standardOutput.write(Data("PASS \\(name)\\n".utf8))')
+          fixture.write_text(text)
+          subprocess.run(['git', 'add', str(fixture)], check=True)
           PY
           git rm .github/midi-export-{0,1,2,3}.part .github/workflows/midi-export-candidate.yml
           git diff --cached --check
