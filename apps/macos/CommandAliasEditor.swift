@@ -66,6 +66,9 @@ final class DAWCommandAliasEditor: NSView, NSTextFieldDelegate {
     }
     @objc private func saveAliases() {
         if let editor = input.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+        // Return is intercepted before AppKit ends field editing. Commit the
+        // user's current editor text to the control before reading its value.
+        input.validateEditing()
         onSave?(DAWCommandAliases.parse(input.stringValue))
     }
     @objc private func cancelEditing() { onCancel?() }

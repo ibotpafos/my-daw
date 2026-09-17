@@ -224,8 +224,9 @@ struct CommandPaletteAppKitTests {
         inspectLayoutAndCapture(aliasPanel, name: "command-alias-editor")
         guard let aliasFieldEditor = drawer.input.currentEditor() as? NSTextView else { fatalError("alias field editor missing") }
         expect(!drawer.control(drawer.input, textView: PaletteMarkedTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))), "alias editor preserves marked text")
-        drawer.input.stringValue = "рендер; bounce"
-        expect(drawer.control(drawer.input, textView: aliasFieldEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))), "Return saves aliases rather than performing DAW action")
+        aliasFieldEditor.insertText("рендер; bounce", replacementRange: NSRange(location: 0, length: aliasFieldEditor.string.utf16.count))
+        aliasPanel.sendEvent(key(code: 36, characters: "\r", flags: [], window: aliasPanel))
+        expect(drawer.isHidden, "native field-editor insertion and Return save aliases without a DAW action")
         expect(drawer.isHidden && controller.isVisible, "save returns to palette, not to DAW action")
         expect(aliasStore.aliases.aliases(for: alphaID) == ["рендер", "bounce"], "inline editor stores aliases for original stable ID")
         expect(usage.history == usageBefore && target.invocations == invocationsBefore, "editing aliases never dispatches or changes usage history")
