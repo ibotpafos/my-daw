@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Apply exact checked local diff without rewriting existing history
+      - name: Apply exact checked local source diff without rewriting existing history
         id: publish
         shell: bash
         run: |
@@ -40,19 +40,22 @@ jobs:
           if hashlib.sha256(data).hexdigest() != expected:
               raise SystemExit('Integrated diff does not match the locally checked source')
           patch = Path('/tmp/linked-mixer.patch'); patch.write_bytes(data)
-          subprocess.run(['git','apply','--index','--check',str(patch)],check=True)
-          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          # GITHUB_TOKEN has contents permission only, never workflow authority.
+          # The companion read-only validation update is published separately.
+          args = ['git','apply','--index','--exclude=.github/workflows/mixer.yml']
+          subprocess.run(args+['--check',str(patch)],check=True)
+          subprocess.run(args+[str(patch)],check=True)
           PY
           git diff --cached --check
-          git rm .github/mixer-stage/group-*.patch .github/workflows/mixer-apply-groups.yml
+          git rm .github/mixer-stage/group-*.patch
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat(mixer): linked track selection with relative levels and atomic Undo'
-          git push origin HEAD:refs/heads/codex/mixer-console
           mkdir -p validation
           git rev-parse HEAD | tee validation/revision.txt
           git archive --format=tar.gz --output=validation/source.tar.gz HEAD
           git show --stat --oneline HEAD > validation/changes.txt
+          git push origin HEAD:refs/heads/codex/mixer-console
       - name: Real AppKit mixer, send, routing and linked selection tests
         if: always() && steps.publish.outcome == 'success'
         shell: bash
