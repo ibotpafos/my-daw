@@ -1,203 +1,172 @@
-# Professional Mixer Console — integrated implementation
+# Professional Mixer Console
 
-Updated 17 September 2026. This console extends the existing AppKit/Session/C ABI/renderer.
-It does not introduce a second routing graph or change the project file format.
+Updated 17 September 2026. This console extends the existing AppKit/Session/C ABI/
+renderer. There is no second audio graph, plug-in catalog or Undo history.
 See [mixer semantics](30-mixer.md), [routing](35-routing-buses-sends.md),
-[automation/PDC](38-volume-automation-pdc.md), and [multi-target automation](39-multi-automation-workflow.md).
+[automation/PDC](38-volume-automation-pdc.md), [automation writing](39-multi-automation-workflow.md),
+[send mute and independent balance](83-send-controls.md), and
+[linked static track levels](84-linked-mixer-levels.md).
 
-## Implemented path
+## Current feature boundary
 
-`MixerWorkspaceView` owns search/type filters, three strip widths, selected-channel
-inspector, horizontally scrolling channels, a pinned Master, focus mode and the
-explicit Sends on Faders destination. `MixerStripView` exposes exact numeric dB
-entry, native slider tracking, stereo balance, arm/mute/solo, output routing,
-insert add/edit/bypass/reorder/remove, and send add/edit/PRE/POST/remove. Channel
-menus keep processing accessible when the docked console is too short for racks.
-Inserts and sends carry stable plug-in/bus IDs, never names or display indices.
-The existing parameter editor and plug-in catalog remain the implementation.
+`MixerWorkspaceView` presents the selected-channel inspector, a horizontal channel
+bank and pinned Master, search by channel/output, type filters, three strip widths,
+Focus mode, visibility controls, left/right pin zones, an overview/meter bridge,
+and Full/Inserts/Sends/Faders section focus. Offscreen strips are culled from
+compositing but retain their control instances. This is presentation optimization,
+not evidence of real-time performance for 256 simultaneous audio tracks.
 
-A selected send replaces only the eligible track fader. Tracks without that send
-are disabled; buses and Master retain their main faders. Main balance is disabled
-in send mode because independent send pan is not supported. Search also matches
-output names, so searching a bus exposes its feeding tracks. Meters update existing
-strip instances without rebuilding controls; the selected inspector receives the
-same meter and fader previews. Clip reset is UI-only. The meters show logarithmic
-**sample peak**, not true peak; Master adds existing momentary/short-term LUFS,
-not integrated LUFS. Native AppKit handles focus, menus, text entry and tracking.
+`MixerStripView` connects native faders, exact dB entry, stereo balance, arm/mute/solo,
+output routing, insert add/edit/bypass/reorder/remove, and send add/edit/PRE/POST/
+remove to existing commands. Actions carry stable track/bus/plug-in IDs, never
+names or displayed positions. Channel menus retain processing access at short
+console heights. The existing parameter editor and plug-in catalog remain in use.
 
-## Gesture and realtime contract
+Meters show logarithmic stereo **sample peak**, with a clip latch/reset. Master
+also reports existing momentary/short-term LUFS. These are not live true-peak or
+integrated-loudness meters. Polling updates retained meter views rather than
+rebuilding the complete channel strip. The selected inspector mirrors previews.
 
-`beginMixerGesture` copies the authoritative state once; subsequent writes change
-only the private scalar preview. Reads/save still see committed state. End commits
-at most one revision/Undo entry; no-op and cancel create none. Invalid/non-finite
-values, stale end, conflicting revisioned edits and nested automation are rejected.
-A failed end remains cancelable. Recording and transport preparation cannot start
-in a static gesture. UI automation-armed faders use the existing automation gesture
-instead; this does not implement new live automation audition or new write modes.
-Option-Solo and Clear Solo now use one atomic Session command, not a stale-revision
-loop of independent commands.
+### Sends on Faders
 
-A gain-only change to an existing send preserves transport and PRE/POST routing.
-The renderer has prepared stable-ID/atomic target slots and per-send smoothed gains;
-only the control thread looks up domain objects. The audio callback has no new
-allocation, locking, file I/O or mutable domain traversal. Structural route/tap
-changes still rebuild transport. Bus deletion now invalidates the running graph.
+Choose **Faders: Main** or **Send → destination** in the toolbar. A selected send
+replaces only eligible track controls. Tracks without the send cannot accidentally
+edit their main gain/mute/balance; buses and Master retain main faders. **SM** mutes
+only the selected send while retaining its stored level. **LINK / IND** selects
+legacy linked or independent send balance. IND has its own native balance slider
+and one Undo per gesture. Main solo/arm remain separate.
 
-## Verification
+Independent POST follows the track fader, including automation, but taps before
+track balance; independent PRE taps before both. These controls use unity-center
+stereo balance, not equal-power mono pan. Their full signal/history/compatibility
+contract is [documented separately](83-send-controls.md).
 
-`mixer_gestures` covers all six static targets, preview isolation, failed/nested
-commands, one-step Undo/Redo, no-op/cancel, C ABI save/open, exclusive solo and a
-live prepared-renderer send edit with smoothing and mute gate. Existing routing,
-Session/storage, automation, history and plug-in regression tests remain enabled.
-Linux Clang Debug build succeeded; six focused tests passed under ASan/UBSan.
-The earlier full Linux run had two import failures: the pre-existing non-macOS
-resampler stub rejects 44.1 kHz conversion required by those fixtures. These tests
-were not skipped or weakened; no full-green Linux claim is made.
+### Multiple selected track faders
 
-`bash scripts/test-mixer-ui.sh` builds the actual AppKit views and exercises search,
-filters, pinned Master, send mapping, disabled editing, retained view identities,
-clip reset, multiple sizes and a 256-strip presentation. It writes
-`build/mixer-ui.png` from AppKit offscreen rendering. This test and full macOS app
-build must be run on macOS; local Swift syntax parsing is not typechecking.
+Command-click toggles track selection. Shift-click selects a visible range;
+Command-Shift adds a range. A normal header click selects one track. Selecting a
+bus/Master clears the temporary track selection. With multiple tracks, the bar
+shows **Link levels** and **Clear selection**. Filtering/hiding removes members;
+scrolling offscreen does not.
 
-## Native validation recorded — 16 September 2026
+Linked main faders move all selected static track levels by a common dB delta.
+At either travel limit the entire group stops, preserving relative gains. Numeric
+entry, keyboard and accessibility increments use the same production binding and
+Session gesture. An invalid/automated group never silently falls back to editing
+only the source. Buses, Master, sends, pan, mute, solo and arm are not grouped.
 
-Verified source: `2616c534b377e5882daf154e93ed12cf9652cd18`.
-The [native run](https://github.com/ibotpafos/my-daw/actions/runs/35114763374)
-finished successfully in both `appkit` and `core-and-app` jobs:
+This is temporary static-level linking, **not VCA, durable grouping or group
+automation**. Tracks with volume automation or armed volume writing are rejected
+as a whole. Resulting ordinary gains are saved; selection membership is UI-only.
+See the [linked-level contract and tests](84-linked-mixer-levels.md).
 
-- 32/32 macOS core tests passed with ASan/UBSan, including the new mixer gesture
-  test, routing, automation, Session/storage, plug-ins and Undo/Redo.
-- Actual AppKit controls compiled and their tests passed: insert/send click action
-  IDs, search/type filtering, send fader mapping, clip latch/reset, retained views,
-  three window sizes and 256-strip presentation. An offscreen PNG was produced
-  and visually inspected. Its channels, insert names and levels are test fixtures,
-  not a recording or evidence of real-device audio/plugin processing.
-- The complete arm64 `My DAW.app` built and passed strict code-signature verification.
-  Bundle version is 1.73.0, build commit `2616c53`, minimum macOS 14.0.
-  The build used Apple Swift 6.1.2 / SDK 15.5 on macOS 15.7.9.
-- The delivered candidate is **ad-hoc signed, not notarized**. This CI build did
-  not bootstrap the optional VST3 SDK, so it contains the VST3 fallback, not the
-  optional VST3 runtime helpers. The normal developer build still packages/signs
-  those helpers when the pinned SDK is present.
-- Native documentation links, script hygiene, version and SQL checks passed.
-  Full JSON Schema validation was skipped there because `jsonschema` was absent;
-  local full schema validation passed separately. The unrelated generic Ubuntu
-  workflow still fails at build; the dedicated native success is not an all-platform
-  green-CI claim.
+## Routing matrix
 
-These checks distinguish a built complete application, tested native components,
-and tested core audio from an interactive full-app/device listening session.
+Open **Микшер → Матрица маршрутизации…** (**Command-Option-R**). Native view-based
+NSTableView cells reuse views for large sessions. Channel names stay fixed at the
+left; destination headers stay fixed at the top. Vertical scrolling is synchronized.
+Search matches channel/output names; column widths and focused row/destination IDs
+survive bus renaming/reordering.
 
-## Using the candidate
+**Main outputs:** select one destination per track/bus. Selecting the existing
+route is a no-op. UI preflight blocks self-routing, indirect feedback and malformed
+chains; Session is the final validator for every mutation.
 
-Open the **Сведение** workspace and use **Focus** to expand the console. The Master
-stays visible when the channel bank scrolls. Click a channel title for selection;
-use its context menu for rename, processing menus, unity reset and bus deletion.
-Choose **Faders: Main** or **Send → destination** in the toolbar. Missing-send tracks
-become non-editable instead of silently changing their main level. Click an insert
-for the existing parameter editor; its context menu exposes bypass/reorder/remove.
-Click a send for exact dB entry and use its context menu for PRE/POST or removal.
-The numeric fader field accepts decimal comma; double-clicking the fader resets
-it to 0 dB. Structural routing/tap changes still stop/rebuild transport by design;
-only existing-send gain changes use the non-stopping live-target path.
+**Sends:** an empty cell adds a post-fader send at -12 dB. An existing send opens
+its exact level editor, not deletion. Context menus provide PRE/POST, mute,
+independent balance and explicit removal. The eight-send cap limits additions,
+not edits/removals of existing sends.
 
-## Routing and large-session UI — 17 September 2026
+With a table focused, arrows navigate, Return/Space activates, Delete/Forward
+Delete removes a send, and Command-F focuses search. Native cells expose source,
+destination, value, help and enabled state to accessibility. Metadata/event tests
+do not substitute for manual VoiceOver acceptance.
 
-The console also has a sample-peak overview, visibility controls, up to three
-left/right pinned channels, and Full/Inserts/Sends/Faders section focus. These
-are presentation settings, not audio groups or VCA controls. The scrolling bank
-culls offscreen strips from compositing but retains their control instances.
-The Undo/Redo buttons use the existing Session history, not a second mixer history.
+The non-modal window refreshes UI snapshots at 4 Hz while visible and not minimized.
+Identical snapshots do not rebuild tables. Each edit refreshes synchronously and
+checks recording/active-gesture guards. Stale cell/menu actions reject rather than
+applying to changed settings. Closing releases the timer/providers; reopening an
+existing window preserves geometry. Providers read UI-owned snapshots on the main
+thread, not the audio callback.
 
-Open **Микшер → Матрица маршрутизации…** (**Command-Option-R**). The matrix uses
-native view-based `NSTableView` cells, a fixed channel-name table, synchronized
-vertical scrolling and fixed destination headers. Destination columns resize;
-their widths and the focused row/destination IDs survive bus renaming/reordering.
-Search matches channel and output names. The two modes remain distinct:
+## Gesture, audio and persistence contract
 
-- **Main outputs:** choose one main destination per track/bus. Re-selecting the
-  existing route is a no-op. Self-routing, indirect feedback, and broken/cyclic
-  destination chains are disabled with a reason. This is UI preflight only:
-  Session remains the final authority on every mutation.
-- **Sends:** clicking an empty cell adds a post-fader send at -12 dB. Clicking an
-  existing send opens its exact level editor; it no longer deletes that send.
-  The context menu exposes PRE/POST and explicit removal. The eight-send add
-  limit does not prevent editing/removing an existing send.
+Static mixer gestures capture one private State. High-rate preview writes do not
+create history snapshots. Save/export/committed reads keep seeing committed state.
+A changed end produces one revision/Undo; cancel/no-op produces none and preserves
+Redo. Non-finite/out-of-range values, missing targets, stale revisions and conflicting
+or nested edits reject. A failed end remains cancelable. Group no-ops compare actual
+resulting gains, so floating-point roundoff does not create empty Undo entries.
 
-With a routing table focused, arrow keys navigate; Return/Space activates the
-focused cell, and Delete/Forward Delete removes only an existing send. Command-F
-focuses search. Native cells expose source/destination, value, help and enabled
-state to accessibility. A main connection is announced separately from a send
-level even when both target the same bus. Full VoiceOver interaction remains a
-manual acceptance task, not implied by metadata assertions.
+Option-Solo/Clear Solo use a single atomic Session command. Automation-armed single
+faders reuse existing automation gestures; no new automation mode or live automation
+audition implementation is implied by this mixer work.
 
-The non-modal window refreshes UI snapshots at 4 Hz while visible and not
-minimized. Identical snapshots do not rebuild tables. Each edit also refreshes
-synchronously and checks recording/active-gesture locks before emitting a callback.
-Actions from menus/cells opened against a changed snapshot are rejected rather
-than replayed on stale routing data. Closing the window releases its timer and
-providers; reopening an existing window preserves its geometry instead of
-recentering it. The providers read UI-owned snapshots on the main thread, never
-the audio callback. This iteration changes no engine, C ABI, storage format or
-real-time processing code. Structural routing/tap changes retain the existing
-stop/rebuild behavior.
+Scalar main/send targets are published to an already prepared renderer using the
+existing atomic/smoothing path. Gain-only send edits and send mute/balance/mode do
+not restart transport. Group static levels reuse Renderer::updateMix; there is no
+new allocation/lock/file I/O/domain traversal in the audio callback, nor a claim
+that multiple independent atomic target writes are sample-atomic together.
+Structural output/PRE-POST changes and adding/removing routes still stop/rebuild
+transport. Bus deletion invalidates the running graph.
 
-`tests/mixer_routing_tests.swift` is compiled into the existing AppKit harness.
-It exercises native cell clicks, synthesized key events, menu actions, stale
-snapshots, dynamic read-only guards, direct/indirect feedback, missing destinations,
-capacity limits, search/empty states, stable focus, column widths, accessibility
-metadata and presenter close/reopen cleanup. A 256-track by 16-destination fixture
-checks that the table does not instantiate all 4096 logical buttons at once.
-This is a UI allocation/compositing check, not a DSP throughput benchmark.
+Send controls introduced draft **v22**; old drafts v1–21 open with linked, unmuted,
+centered send defaults. **Pre-v22 builds cannot open drafts saved by this candidate;
+test using project copies.** Linked levels add no further format change. Native
+save/recovery/package retain send controls. DAWproject export warns about omitted
+independent send balance and muted sends rather than silently changing their
+meaning. Details: [send persistence and interchange](83-send-controls.md).
 
-Visual inspection caught an initially invisible channel-name column despite the
-first action tests passing. Its document/cell geometry is now explicit and covered
-by visible-frame assertions. The harness emits `build/mixer-routing-ui.png` and
-`build/mixer-ui.png` from real AppKit offscreen rendering with synthetic fixtures.
-The read-only native workflow retains both PNGs, logs and a tracked-source archive.
+## Current native evidence
 
-## Latest native validation — 17 September 2026
+Code: `322342668384fe48a4167288a792eed442adf662`.
+[Read-only run 35239753182](https://github.com/ibotpafos/my-daw/actions/runs/35239753182)
+finished successfully in both jobs:
 
-Verified code: `5ed6eacc6a1aaf744a3f1a4e9dbb2d9e9043a161`.
-[Native run 35225797150](https://github.com/ibotpafos/my-daw/actions/runs/35225797150)
-completed successfully in both jobs. A following documentation-only commit does
-not change the source used for this candidate.
+- **35/35 core tests PASS with ASan/UBSan**, 72.98 seconds, including mixer groups,
+  send controls, routing, automation, save/open, offline export and Undo/Redo.
+- **Native AppKit component tests PASS**, including linked selection, relative
+  previews, guards, resize, routing and send interactions. Four real offscreen
+  AppKit PNGs are retained; synthetic channels/levels are not hardware audio evidence.
+- **Native controls → production MixerGroupBinding → real C ABI PASS** for group
+  preview, one-step commit/Undo, keyboard events, cancellation, collective limits,
+  automation rejection and edit-policy guards. The adapter is the one used by the app.
+- **Full arm64 My DAW.app build and strict codesign verification PASS**. Version
+  1.73.0, build `3223426`, minimum macOS 14.0; Swift 6.1.2 / SDK 15.5 / runner 15.7.9.
+- Native docs/SQL/version/script checks passed. JSON Schema validation was skipped
+  there because jsonschema was absent; full schema checks ran separately locally.
 
-- **32/32 core tests PASS** with ASan/UBSan, total 62.88 seconds. This includes
-  mixer gestures, routing, automation, project persistence and Undo/Redo.
-- **AppKit harness PASS**, including the routing tests above and all pre-existing
-  mixer checks. The 4096-cell fixture instantiated **240 buttons** at the tested
-  viewport, not all 4096. Both offscreen PNGs were downloaded and visually checked.
-  This validates component rendering and event dispatch, not physical playback.
-- **Complete arm64 application PASS**, including the existing strict codesign
-  verification. Bundle version is 1.73.0, `DAWBuildCommit=5ed6eac`, minimum macOS
-  14.0. Manifest: Apple Swift 6.1.2, SDK 15.5, macOS runner 15.7.9.
-- The candidate is **ad-hoc signed, not notarized**. The optional VST3 SDK was not
-  bootstrapped: this artifact has the AU scan helper and VST3 fallback, not VST3
-  runtime helpers. Normal developer packaging remains unchanged.
-- Native documentation, SQL, version and script checks passed. Full JSON Schema
-  validation was skipped on the runner because `jsonschema` was absent. Separately,
-  local `python3 scripts/check_docs.py --require-schemas` passed all three schemas,
-  three examples, ten negative schema cases and the remaining documentation checks.
-- The generic Ubuntu workflow still fails on existing GCC misleading-indentation
-  errors in `engine/domain/session.cpp`. No all-platform green-CI claim is made;
-  tests and warning gates were not disabled.
+The 256-track console test checks presentation/culling. The 256×16 routing fixture
+creates 240 buttons in the tested viewport, not 4096. The group core test resolves
+and edits 256 tracks in one revision. None is a 256-track real-time DSP benchmark.
 
-Run artifacts are `mixer-appkit-5ed6eacc...` (PNGs, harness log, source archive)
-and `mixer-core-app-5ed6eacc...` (application ZIP, CTest/build/docs logs, manifest),
-with seven-day retention. SHA-256 of the inner `My-DAW-app.zip`:
-`2a41faf8cd1c85662b1b49b43baed373f86e3643ca9fa6f0e7ac9bace6478632`.
+Artifacts are mixer-appkit-322342668... (PNGs, log, source) and
+mixer-core-app-322342668... (app ZIP, logs, manifest), retained seven days. The full
+[group verification report](84-linked-mixer-levels.md#verified-native-candidate--17-september-2026)
+records the application ZIP checksum and local-test limits. The downloaded source
+matches the local checked code; the temporary publishing workflow and staged patches
+are removed. Ongoing native validation is read-only.
 
-## Remaining acceptance / explicit limitations
+Historical evidence remains available in the [initial console run](https://github.com/ibotpafos/my-daw/actions/runs/35114763374)
+(2616c53, 32 tests), [routing run](https://github.com/ibotpafos/my-daw/actions/runs/35225797150)
+(5ed6eac, 32 tests), and [send-control run](https://github.com/ibotpafos/my-daw/actions/runs/35234854227)
+(b08655a). Earlier reports saying independent send balance was unsupported describe
+those earlier code revisions, not the current branch.
 
-Physical device listening, third-party plug-in GUI compatibility, audible automation
-writing/PDC acceptance, accessibility navigation and interactive visual acceptance
-remain separate. A synthetic 256-strip view test is not a 256-track audio benchmark.
-The engine still lacks bus sends/solo, VCA, snapshots and independent send pan;
-these are not simulated by disabled or mislabeled UI. Track pan is the documented
-stereo balance, not an equal-power mono panner. An integrated console is not a claim
-of parity with every mixer feature in mature DAWs.
+## Remaining acceptance
 
-Workflow references consulted: [Logic Sends on Faders](https://support.apple.com/en-gb/101897)
-and the [AppKit slider SDK](https://developer.apple.com/documentation/appkit/nsslider).
+The delivered build is **ad-hoc signed, not notarized**. This CI candidate did not
+bootstrap optional VST3 SDK: it contains the AU scan helper and VST3 fallback,
+not the optional VST3 runtime helpers. Existing developer packaging still builds
+and signs those helpers when the pinned SDK is present.
+
+The generic Ubuntu pipeline remains red on the existing GCC misleading-indentation
+build issue. A local Linux subset timed out in session_storage_bridge; no full-green
+Linux claim is made. Tests and compiler warning gates were not disabled.
+
+Physical device listening, full interactive app/device acceptance, third-party
+plug-in GUIs, audible automation/PDC acceptance and manual VoiceOver testing remain
+open. The engine still lacks bus sends/solo, VCA, durable mix snapshots and group
+automation. Stereo balance is not advertised as an equal-power mono panner. A built
+and tested mixer branch is not parity with every feature of mature DAWs, and is
+not a claim that the PR has been merged into the evolving main branch.

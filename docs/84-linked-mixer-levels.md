@@ -12,7 +12,7 @@ visible console order; Command-Shift adds the range. A normal header click selec
 one track. Selecting a bus or Master clears this temporary track selection.
 The selection bar appears only for multiple tracks and exposes **Link levels**
 and **Clear selection**. Link levels is enabled initially and can be turned off
-without losing selection. A normal arranger/inspector selection replaces the
+without losing selection. A changed arranger/inspector selection replaces the
 console selection. Filtering/hiding a track removes it from the temporary
 selection; scrolling it offscreen does not. These choices prevent invisible
 channels from changing through an old hidden selection.
@@ -86,3 +86,53 @@ third-party plug-in compatibility or manual accessibility acceptance.
 Design reference: [Logic channel-strip groups](https://support.apple.com/en-euro/guide/logicpro/lgcp8e7ab0b8/10.7/mac/11.0)
 distinguish linked parameter relationships from bus routing and VCA control. This
 implementation intentionally covers only the static-level subset described above.
+
+
+## Verified native candidate — 17 September 2026
+
+Code revision: `322342668384fe48a4167288a792eed442adf662`.
+[Read-only native run 35239753182](https://github.com/ibotpafos/my-daw/actions/runs/35239753182)
+completed successfully in both jobs:
+
+- **35/35 macOS core tests PASS with ASan/UBSan**, total 72.98 seconds. The new
+  group test passed in 3.83 seconds. Existing send controls, routing, automation,
+  save/open, export and history tests remain enabled and passed.
+- **AppKit component harness PASS** for ordinary mixer, routing, sends and linked
+  selection. The group fixture covers modifier/range selection, source/peer
+  previews, model refresh, rejection/cancel, common travel limits and resizing.
+- **Native controls + production MixerGroupBinding + real C ABI PASS**. This is
+  the same adapter compiled into the application, not a test-only gain model.
+  The test checks committed Session values and revisions after drag-like sequences,
+  an actual native keyboard event, one-step Undo, cancellation, common limits and
+  automation/recording-policy rejection. It is not a hardware recording test.
+- **Full arm64 My DAW.app build and strict codesign verification PASS**. Bundle
+  version 1.73.0, build commit `3223426`, minimum macOS 14.0. Manifest records
+  Apple Swift 6.1.2, SDK 15.5 and macOS runner 15.7.9.
+- The four offscreen AppKit images were retained. The group and send fixtures were
+  visually inspected; levels/channels are synthetic. The downloaded tracked-source
+  archive matches the local code byte for byte and has no staging-patch remnants.
+- Local Clang ASan/UBSan group regression also passed (5.93 seconds). A broader
+  local Linux selection timed out in `session_storage_bridge`; that is not reported
+  as a full Linux pass. The separate generic Ubuntu workflow remains outside the
+  green native gate and still has the existing GCC warning/build problem.
+
+Roundoff-only group changes now compare actual resulting gains against captured
+values before deciding to commit: a nonzero delta that rounds away does not create
+an empty Undo entry or discard Redo. This is covered by the `1e-300` regression.
+
+Artifacts: `mixer-appkit-322342668...` (four PNGs, AppKit log, tracked source) and
+`mixer-core-app-322342668...` (application ZIP, build/CTest/C-ABI logs, manifest).
+The inner app ZIP has SHA-256
+`445cb2a6dfa722ee21b94d68aab41a9bc17ca8da89c1a1e23e07a8abbbfd94b0`.
+This candidate is ad-hoc signed, not notarized. Its optional VST3 SDK is not linked;
+it packages the AU scan helper and VST3 fallback, not VST3 runtime helpers.
+The preceding send controls already require draft v22; **use project copies**,
+because pre-v22 application builds cannot reopen newly saved drafts. Linked static
+levels themselves introduce no further storage or ABI-layout change.
+
+The temporary source-publishing workflow has been removed. Ongoing validation is
+read-only and now includes the real C-ABI integration test. Native documentation
+checks passed, with JSON Schema validation skipped on that runner because the
+module was absent. Full schema validation was run separately in the local container.
+Physical device listening, full interactive app/VoiceOver acceptance, VCA, durable
+mix snapshots and group automation remain separate, unclaimed work.
