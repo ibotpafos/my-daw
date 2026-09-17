@@ -1,0 +1,83 @@
+name: Piano roll AppKit
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/macos/**'
+      - 'engine/**'
+      - 'tests/piano_roll/**'
+      - 'scripts/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/piano-roll-appkit.yml'
+  workflow_dispatch:
+concurrency:
+  group: piano-roll-appkit-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  typecheck-and-smoke:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      PR_QA_DIR: ${{ github.workspace }}/build/qa-ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive exact tested source for reproduction
+        run: |
+          mkdir -p build/qa-source
+          git archive --format=zip --output=build/qa-source/source.zip HEAD
+          git rev-parse HEAD > build/qa-source/commit.txt
+          shasum -a 256 build/qa-source/source.zip > build/qa-source/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: piano-roll-tested-source-${{ github.run_id }}
+          path: build/qa-source/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Typecheck Swift AppKit application
+        run: bash scripts/typecheck-macos-ui.sh
+      - name: Run native Piano Roll AppKit smoke checks
+        run: bash scripts/test-piano-roll-appkit.sh
+      - name: Preserve native UI screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: piano-roll-ui-${{ github.run_id }}
+          path: build/qa-ui/
+          retention-days: 7
+          if-no-files-found: warn
+  app-build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build and verify native arm64 application
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/qa-app
+          bash scripts/build-macos.sh 2>&1 | tee build/qa-app/build.log
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/qa-app/My-DAW-arm64.zip
+          cp build/build-manifest.json build/qa-app/
+          shasum -a 256 build/qa-app/My-DAW-arm64.zip > build/qa-app/SHA256SUMS
+      - name: Verify real MIDI edit persistence and project Undo
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-app/midi-bridge-tests.log
+      - name: Preserve build evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: piano-roll-app-${{ github.run_id }}
+          path: build/qa-app/
+          retention-days: 7
+          if-no-files-found: warn

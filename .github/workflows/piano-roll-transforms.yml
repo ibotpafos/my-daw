@@ -1,0 +1,28 @@
+name: Piano roll transform core
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/macos/PianoRoll/**'
+      - 'tests/piano_roll/**'
+      - 'scripts/test-piano-roll-transforms.sh'
+      - '.github/workflows/piano-roll-transforms.yml'
+  workflow_dispatch:
+concurrency:
+  group: piano-roll-transforms-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  transforms:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Swift compiler
+        run: swiftc --version
+      - name: Test MIDI note transforms on macOS
+        run: bash scripts/test-piano-roll-transforms.sh
