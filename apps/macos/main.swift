@@ -224,6 +224,7 @@ final class TimelineRulerView: NSView {
 final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate, NSSplitViewDelegate {
     var session: OpaquePointer!
     var window: DAWWindow!
+    var midiDocumentID = UUID()
     var revision: UInt64 = 0
     var savedRevision: UInt64 = 0
     var currentURL: URL?
@@ -694,7 +695,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         transportTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             // Дрен MIDI-ring живёт в этом же цикле: транспорт, метры и тейк
             // опрашиваются одной 10 Гц-проверкой, отдельного таймера нет.
-            MainActor.assumeIsolated { self?.pollTransport(); self?.pollMeters(); self?.pollMidiCapture(); self?.pollStorage() }
+            MainActor.assumeIsolated { self?.pollTransport(); self?.pollMeters(); self?.pollMidiCapture(); self?.refreshMidiEditorBinding(); self?.pollStorage() }
         }
         if let timer = transportTimer { RunLoop.main.add(timer, forMode: .common) }
         refresh(); window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -880,51 +881,62 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if strip.kind == .track { loadMidiInspector(id) } else { inspectorBrowser.midi = nil }
     }
     func loadMidiInspector(_ trackID: UInt64) {
-        var clipCount: UInt32 = 0
-        guard daw_get_midi_clip_count(session, trackID, &clipCount) == 0, clipCount > 0 else { midiClipIndex = nil; midiNotesCache = []; inspectorBrowser.midi = nil; return }
-        var clips: [PianoRollClipModel] = []
-        for index in 0..<Int(clipCount) {
-            var meta = daw_midi_clip(); meta.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
-            guard daw_get_midi_clip(session, trackID, UInt32(index), &meta, 0, nil, 0, nil) == 0 else { continue }
-            clips.append(PianoRollClipModel(index: index, startFrames: meta.start, lengthFrames: meta.length, noteCount: meta.note_count))
-        }
-        guard let first = clips.first else { midiClipIndex = nil; midiNotesCache = []; inspectorBrowser.midi = nil; return }
-        let selected = clips.contains(where: { $0.index == midiClipIndex }) ? midiClipIndex : first.index
-        var notes: [PianoRollNote] = []
-        if let selected {
-            var meta = daw_midi_clip(); meta.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
-            if daw_get_midi_clip(session, trackID, UInt32(selected), &meta, 0, nil, 0, nil) == 0 {
-                var offset: UInt32 = 0
-                while offset < meta.note_count {
-                    let pageSize = Int(min(meta.note_count - offset, UInt32(DAW_MIDI_NOTES_PER_CALL)))
-                    var page = [daw_midi_note](repeating: daw_midi_note(), count: pageSize)
-                    var written: UInt32 = 0
-                    let result = page.withUnsafeMutableBufferPointer { buffer in daw_get_midi_clip(session, trackID, UInt32(selected), &meta, offset, buffer.baseAddress, UInt32(pageSize), &written) }
-                    guard result == 0, written > 0 else { break }
-                    for note in page.prefix(Int(written)) { notes.append(PianoRollNote(startFrames: note.start, lengthFrames: note.length, pitch: note.pitch, channel: note.channel, velocity: note.velocity)) }
-                    offset += written
-                }
+        do {
+            let loaded = try PRBridge.readTrack(session, document: midiDocumentID, track: trackID, selected: midiClipIndex)
+            guard let snapshot = loaded.selected else {
+                midiClipIndex = nil; midiNotesCache = []; inspectorBrowser.midi = nil
+                return
             }
+            midiClipIndex = snapshot.context.clipIndex
+            midiNotesCache = snapshot.notes
+            inspectorBrowser.midi = InspectorMidiModel(clips: loaded.clips, selectedClip: midiClipIndex,
+                notes: snapshot.notes, editable: snapshot.editable, context: snapshot.context)
+            refreshMidiCapture(rescan: true)
+        } catch {
+            // A missing page is NOT an empty/deletable note array.
+            midiNotesCache = []
+            inspectorBrowser.midi = nil
+            setProjectMessage("Не удалось прочитать MIDI-клип: \(error)")
         }
-        midiClipIndex = selected
-        midiNotesCache = notes
-        inspectorBrowser.midi = InspectorMidiModel(clips: clips, selectedClip: selected, notes: notes, editable: !isRecording)
-        // Ряд захвата относится к той же MIDI-дорожке: пересобираем список
-        // источников именно здесь (выбор дорожки — естественная точка обновления).
-        refreshMidiCapture(rescan: true)
     }
+
+    func commitMidiEdit(_ request: PRCommitRequest) {
+        do {
+            guard request.context.documentID == midiDocumentID,
+                  request.context.trackID == inspectorTrackID,
+                  request.context.clipIndex == midiClipIndex else { throw PREditError.staleEdit }
+            _ = try PRBridge.commit(request, session: session, document: midiDocumentID)
+            refresh()
+        } catch { setProjectMessage("MIDI: \(error)") }
+        // Both acceptance and rejection echo a complete authoritative snapshot.
+        // Never choose the write target from a possibly newer inspector context.
+        if let track = inspectorTrackID { loadMidiInspector(track) }
+        else { inspectorBrowser.midi = nil }
+    }
+
     func commitMidiNotes(track trackID: UInt64, clip clipIndex: Int, notes: [PianoRollNote]) {
-        guard !isRecording else { return }
-        var marshaled = notes.map { note -> daw_midi_note in
-            var value = daw_midi_note()
-            value.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); value.version = UInt32(DAW_MIDI_NOTE_VERSION)
-            value.start = note.startFrames; value.length = note.lengthFrames
-            value.pitch = note.pitch; value.channel = note.channel; value.velocity = note.velocity
-            return value
-        }
-        let noteCount = UInt32(marshaled.count)
-        let result = marshaled.withUnsafeMutableBufferPointer { buffer in daw_set_midi_notes(session, trackID, UInt32(clipIndex), buffer.baseAddress, noteCount, revision) }
-        if check(result) { refresh(); updateMixerInspector(trackID) } else { loadMidiInspector(trackID) }
+        guard let model = inspectorBrowser.midi, let context = model.context,
+              context.trackID == trackID, context.clipIndex == clipIndex,
+              let clip = model.clips.first(where: { $0.index == clipIndex }) else { return }
+        commitMidiEdit(PRCommitRequest(context: context, clipStart: clip.startFrames,
+            clipLength: clip.lengthFrames, original: model.notes, notes: notes))
+    }
+
+    /// Cheap revision/capture check on the existing transport timer; page reads
+    /// happen only when the binding or editability really changed.
+    func refreshMidiEditorBinding() {
+        guard let track = inspectorTrackID, let model = inspectorBrowser.midi,
+              let context = model.context else { return }
+        do {
+            let currentRevision = try PRBridge.revision(session)
+            let editable = try PRBridge.canEdit(session)
+            if context.documentID != midiDocumentID || context.trackID != track ||
+                context.revision != currentRevision || model.editable != editable {
+                // Musical mapping must be from the same project revision as notes.
+                reloadTempoMap()
+                loadMidiInspector(track)
+            }
+        } catch { inspectorBrowser.midi = nil }
     }
     // MARK: - Живой MIDI-вход, запись с клавиатуры и метроном
     //
@@ -1117,6 +1129,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         inspectorBrowser.onMidiInputSelect = { [weak self] id in self?.selectMidiInput(id) }
         inspectorBrowser.onMidiRecordToggle = { [weak self] in self?.toggleMidiRecording() }
+        inspectorBrowser.onMidiCommitRequest = { [weak self] request in self?.commitMidiEdit(request) }
         inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }
         inspectorBrowser.onMidiAddNote = { [weak self] in
             guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex, !self.isRecording else { return }

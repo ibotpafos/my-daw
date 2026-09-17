@@ -400,6 +400,7 @@ extension DraftApp {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             self.rotateRecovery(); daw_destroy(self.session); self.session = fresh
+            self.midiDocumentID = UUID()
             self.currentURL = nil; self.savedRevision = 0; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
         }
     }
@@ -416,6 +417,7 @@ extension DraftApp {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             guard self.check(daw_open_draft(self.session, url.path)) else { return }
+            self.midiDocumentID = UUID()
             var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
             guard self.check(daw_get_snapshot(self.session, &snapshot)) else { return }
             self.rotateRecovery(); self.currentURL = url; self.savedRevision = snapshot.revision; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
@@ -592,6 +594,7 @@ extension DraftApp {
         alert.informativeText = "Можно восстановить последнюю резервную копию как новый проект. Исходный файл не будет перезаписан. История Undo не восстанавливается."
         alert.addButton(withTitle: "Восстановить"); alert.addButton(withTitle: "Позже")
         guard alert.runModal() == .alertFirstButtonReturn, check(daw_open_draft(session, url.path)) else { return }
+        midiDocumentID = UUID()
         rotateRecovery(); recoveredFrom = url; currentURL = nil; savedRevision = UInt64.max; saveError = nil;armedTrackID=nil;selectedTakes.removeAll(); refresh()
     }
     func offerRecordingRecovery() -> Bool {
