@@ -1,0 +1,107 @@
+name: Mixer native validation
+on:
+  push:
+    branches: [main, codex/mixer-console]
+    paths:
+      - 'apps/macos/**'
+      - 'engine/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mixer.yml'
+  pull_request:
+    paths:
+      - 'apps/macos/**'
+      - 'engine/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mixer.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mixer-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  appkit:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: AppKit controls, routing, resize and large-session tests
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p validation
+          git rev-parse HEAD > validation/revision.txt
+          git archive --format=tar.gz --output=validation/source.tar.gz HEAD
+          bash scripts/test-mixer-ui.sh 2>&1 | tee validation/appkit-tests.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mixer-appkit-${{ github.sha }}
+          path: |
+            validation/
+            build/mixer-ui.png
+            build/mixer-routing-ui.png
+            build/mixer-send-ui.png
+            build/mixer-group-ui.png
+          retention-days: 7
+  core-and-app:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Sanitized core build
+        id: core
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p validation
+          git rev-parse HEAD > validation/revision.txt
+          cmake --preset sanitizers 2>&1 | tee validation/configure.log
+          cmake --build --preset sanitizers -j 2 2>&1 | tee validation/core-build.log
+      - name: Full core regression
+        if: always() && steps.core.outcome == 'success'
+        shell: bash
+        run: |
+          set -eo pipefail
+          ctest --preset sanitizers --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Complete signed arm64 application
+        if: always()
+        shell: bash
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: |
+          set -eo pipefail
+          mkdir -p validation
+          bash scripts/build-macos.sh 2>&1 | tee validation/app-build.log
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' validation/My-DAW-app.zip
+      - name: Native group UI to real C ABI
+        if: always()
+        shell: bash
+        run: |
+          set -eo pipefail
+          bash scripts/test-mixer-groups.sh 2>&1 | tee validation/group-integration.log
+      - name: Documentation contracts
+        if: always()
+        shell: bash
+        run: |
+          set -eo pipefail
+          python3 scripts/check_docs.py 2>&1 | tee validation/docs.log
+          python3 scripts/e2e_coverage.py --strict 2>&1 | tee validation/e2e-coverage.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mixer-core-app-${{ github.sha }}
+          path: |
+            validation/
+            build/build-manifest.json
+          retention-days: 7

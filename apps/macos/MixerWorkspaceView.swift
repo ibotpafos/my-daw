@@ -1,404 +1,474 @@
 import AppKit
 
-enum MixerStripKind: Sendable { case track, bus, master }
-
-struct MixerMeterSnapshot: Sendable, Equatable {
-    var leftPeak: Float = 0
-    var rightPeak: Float = 0
-    var leftHold: Float = 0
-    var rightHold: Float = 0
-    /// BS.1770 momentary/short-term LUFS, только для мастера; nil — нет живого рендерера.
-    var momentaryLufs: Float?
-    var shortTermLufs: Float?
-}
-
-struct MixerInsertSummary: Sendable, Equatable {
-    var name: String
-    var bypassed: Bool = false
-}
-
-struct MixerSendSummary: Sendable, Equatable {
-    var destination: String
-    var gainDb: Double = -12
-    var preFader: Bool = false
-}
-
-struct MixerStripModel: Identifiable, Sendable, Equatable {
-    var id: UInt64
-    var kind: MixerStripKind
-    var title: String
-    var channelNumber: Int = 0
-    var color: NSColor? = nil
-    var volumeDb: Double = 0
-    var pan: Double = 0
-    var meter = MixerMeterSnapshot()
-    var outputName: String = "Main"
-    var inserts: [MixerInsertSummary] = []
-    var sends: [MixerSendSummary] = []
-    var isSelected = false
-    var isArmed = false
-    var isMuted = false
-    var isSolo = false
-    var isAutomationRead = true
-}
-
 @MainActor
-final class MixerMeterView: NSView {
-    var snapshot = MixerMeterSnapshot() { didSet { needsDisplay = true } }
-    override var isFlipped: Bool { true }
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.levelIndicator)
-        setAccessibilityHelp("Пиковый стереоуровень канала")
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    override func accessibilityValue() -> Any? {
-        let peak = max(snapshot.leftPeak, snapshot.rightPeak)
-        guard peak > 0 else { return "−∞ dBFS" }
-        return String(format: "%.1f dBFS", 20 * log10(Double(peak)))
-    }
-    override func draw(_ dirtyRect: NSRect) {
-        DAWDesignTokens.Color.canvas.withAlphaComponent(0.86).setFill(); bounds.fill()
-        let channels = [snapshot.leftPeak, snapshot.rightPeak]
-        let holds = [snapshot.leftHold, snapshot.rightHold]
-        for index in 0..<2 {
-            let lane = NSRect(x: CGFloat(index) * (bounds.width + 1) / 2, y: 0, width: max(1, (bounds.width - 1) / 2), height: bounds.height)
-            let level = CGFloat(min(1, max(0, channels[index])))
-            let filled = NSRect(x: lane.minX, y: lane.maxY - lane.height * level, width: lane.width, height: lane.height * level)
-            let color = DAWDataVisuals.meterColor(for: level)
-            color.withAlphaComponent(0.9).setFill(); filled.fill()
-            let hold = lane.maxY - lane.height * CGFloat(min(1, max(0, holds[index])))
-            color.setFill(); NSRect(x: lane.minX, y: hold, width: lane.width, height: 1).fill()
-        }
-    }
-}
+private final class MixerCanvasView: NSView { override var isFlipped: Bool { true } }
 
+/// Compact whole-console map. It is intentionally presentation-only: click selects/reveals a
+/// stable channel ID while meter values come from the same snapshots as the channel strips.
 @MainActor
-final class MixerFaderView: NSView {
-    var valueDb: Double = 0 { didSet { needsDisplay = true } }
-    var onBegin: (() -> Void)?
-    var onChange: ((Double) -> Void)?
-    var onEnd: ((Double) -> Void)?
-    private var dragging = false
-    override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.slider)
-        setAccessibilityHelp("Стрелки вверх и вниз изменяют уровень на 0,5 dB")
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    override func accessibilityValue() -> Any? { String(format: "%+.1f dB", valueDb) }
-    override func accessibilityPerformIncrement() -> Bool { nudge(0.5); return true }
-    override func accessibilityPerformDecrement() -> Bool { nudge(-0.5); return true }
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 125: nudge(-0.5)
-        case 126: nudge(0.5)
-        default: super.keyDown(with: event)
-        }
-    }
-    private func nudge(_ delta: Double) {
-        let next = min(24, max(-120, valueDb + delta))
-        guard next != valueDb else { return }
-        onBegin?(); valueDb = next; onChange?(next); onEnd?(next)
-        NSAccessibility.post(element: self, notification: .valueChanged)
-    }
-    private func value(at point: NSPoint) -> Double {
-        let fraction = min(1, max(0, 1 - Double(point.y / max(1, bounds.height))))
-        return -120 + fraction * 144
-    }
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); dragging = true; onBegin?(); let v=value(at:convert(event.locationInWindow,from:nil)); valueDb=v; onChange?(v) }
-    override func mouseDragged(with event: NSEvent) { guard dragging else{return}; let v=value(at:convert(event.locationInWindow,from:nil)); valueDb=v; onChange?(v) }
-    override func mouseUp(with event: NSEvent) { guard dragging else{return}; dragging=false; onEnd?(valueDb) }
-    override func draw(_ dirtyRect: NSRect) {
-        DAWDesignTokens.Color.canvas.withAlphaComponent(0.85).setFill(); NSBezierPath(roundedRect: bounds, xRadius: DAWDesignTokens.Radius.control, yRadius: DAWDesignTokens.Radius.control).fill()
-        let fraction=CGFloat((min(24,max(-120,valueDb))+120)/144); let y=bounds.height*(1-fraction)
-        DAWDesignTokens.Color.accent.withAlphaComponent(0.45).setFill(); NSRect(x: bounds.midX - 1, y: y, width: 2, height: bounds.maxY-y).fill()
-        DAWDesignTokens.Color.text.withAlphaComponent(0.9).setFill(); NSBezierPath(roundedRect:NSRect(x:2,y:y-4,width:bounds.width-4,height:8),xRadius:3,yRadius:3).fill()
-    }
-}
-
-@MainActor
-private final class MixerCanvasView: NSView {
-    override var isFlipped: Bool { true }
-}
-
-@MainActor
-private final class MixerStripView: NSView {
-    var model: MixerStripModel { didSet { refresh() } }
+private final class MixerMeterBridgeView: NSView {
+    var models: [MixerStripModel] = [] { didSet { needsDisplay = true } }
+    var snapshots: [UInt64:MixerMeterSnapshot] = [:] { didSet { needsDisplay = true } }
+    var leftPinned = Set<UInt64>() { didSet { needsDisplay = true } }
+    var rightPinned = Set<UInt64>() { didSet { needsDisplay = true } }
     var onSelect: ((UInt64) -> Void)?
-    var onArm: ((UInt64, Bool) -> Void)?
-    var onMute: ((UInt64, Bool) -> Void)?
-    var onSolo: ((UInt64, Bool) -> Void)?
-    var onVolumeBegin: ((UInt64) -> Void)?
-    var onVolume: ((UInt64, Double) -> Void)?
-    var onVolumeEnd: ((UInt64, Double) -> Void)?
-    var onPan: ((UInt64, Double) -> Void)?
-    var onDeleteBus: ((UInt64) -> Void)?
-    private let title = NSTextField(labelWithString: "")
-    private let insertHeading = NSTextField(labelWithString: "INSERTS")
-    private let sendHeading = NSTextField(labelWithString: "SENDS")
-    private let routing = NSTextField(labelWithString: "")
-    private let loudness = NSTextField(labelWithString: "")
-    private let automation = NSTextField(labelWithString: "")
-    private let value = NSTextField(labelWithString: "")
-    private let footer = NSTextField(labelWithString: "")
-    private let meter=MixerMeterView()
-    private let fader=MixerFaderView()
-    private let pan=NSSlider(value:0,minValue:-1,maxValue:1,target:nil,action:nil)
-    private let arm=NSButton(title:"R",target:nil,action:nil), mute=NSButton(title:"M",target:nil,action:nil), solo=NSButton(title:"S",target:nil,action:nil)
-    private let deleteBusButton=NSButton(title:"✕",target:nil,action:nil)
-    private let inserts=NSTextField(wrappingLabelWithString:""), sends=NSTextField(wrappingLabelWithString:"")
-    init(model: MixerStripModel) { self.model=model; super.init(frame:.zero); setup(); refresh() }
-    required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
-    private func setup() {
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
         wantsLayer = true
-        for button in [arm, mute, solo] {
-            button.bezelStyle = .texturedRounded
-            button.setButtonType(.toggle)
-            button.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
-            addSubview(button)
-        }
-        arm.target = self; arm.action = #selector(toggleArm)
-        mute.target = self; mute.action = #selector(toggleMute)
-        solo.target = self; solo.action = #selector(toggleSolo)
-        pan.target = self; pan.action = #selector(changePan)
-        deleteBusButton.bezelStyle = .texturedRounded
-        deleteBusButton.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
-        deleteBusButton.target = self; deleteBusButton.action = #selector(deleteBus)
-        deleteBusButton.isHidden = true  // shown only for bus kind
-
-        title.alignment = .center
-        title.font = .systemFont(ofSize: 10, weight: .semibold)
-        title.lineBreakMode = .byTruncatingTail
-        footer.alignment = .center
-        footer.font = .monospacedSystemFont(ofSize: 9, weight: .bold)
-        footer.textColor = .white
-        footer.lineBreakMode = .byTruncatingTail
-        routing.alignment = .center
-        routing.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
-        routing.lineBreakMode = .byTruncatingTail
-        loudness.alignment = .center
-        loudness.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
-        loudness.textColor = DAWDesignTokens.Color.mint
-        loudness.lineBreakMode = .byTruncatingTail
-        loudness.isHidden = true
-        automation.alignment = .center
-        automation.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
-        value.alignment = .center
-        value.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
-        for heading in [insertHeading, sendHeading] {
-            heading.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
-            heading.textColor = .tertiaryLabelColor
-        }
-        for detail in [inserts, sends] {
-            detail.font = .systemFont(ofSize: 8)
-            detail.textColor = .secondaryLabelColor
-            detail.lineBreakMode = .byTruncatingTail
-        }
-        [title, insertHeading, inserts, sendHeading, sends, routing, loudness, automation, value, meter, fader, pan, footer, deleteBusButton].forEach(addSubview)
-        fader.onBegin={ [weak self] in self.map { $0.onVolumeBegin?($0.model.id) } };fader.onChange={ [weak self] value in self.map { $0.onVolume?($0.model.id,value) } };fader.onEnd={ [weak self] value in self.map { $0.onVolumeEnd?($0.model.id,value) } }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Mixer overview and meter bridge")
+        setAccessibilityHelp("Click a channel cell to select it and reveal it in the mixer.")
+        toolTip = "Channel overview · sample peak meters · click to reveal"
     }
-    private func refresh() {
-        title.stringValue = model.kind == .bus ? "BUS · \(model.title)" : (model.kind == .master ? "MASTER" : model.title)
-        let footerPrefix = model.kind == .master ? "M" : "\(model.channelNumber)"
-        footer.stringValue = "\(footerPrefix)  \(model.title.uppercased())"
-        meter.snapshot = model.meter
-        fader.valueDb = model.volumeDb
-        pan.doubleValue = model.pan
-        arm.state = model.isArmed ? .on : .off
-        mute.state = model.isMuted ? .on : .off
-        solo.state = model.isSolo ? .on : .off
-        routing.stringValue = model.kind == .master ? "MAIN  \(model.outputName)" : "OUT  \(model.outputName)"
-        if model.kind == .master, let momentary = model.meter.momentaryLufs {
-            loudness.isHidden = false
-            loudness.stringValue = momentary < -99 ? "LUFS · тишина" : String(format: "M %.1f · S %.1f LUFS", momentary, model.meter.shortTermLufs ?? momentary)
-            loudness.setAccessibilityLabel("Громкость мастера: \(loudness.stringValue)")
-        } else { loudness.isHidden = true; loudness.stringValue = "" }
-        automation.stringValue = model.isAutomationRead ? "AUTO: READ" : "AUTO: OFF"
-        value.stringValue = String(format: "%+.1f dB", model.volumeDb)
-        inserts.stringValue = model.inserts.isEmpty ? "—" : model.inserts.prefix(4).map { $0.bypassed ? "⊘ \($0.name)" : "◉ \($0.name)" }.joined(separator: "\n")
-        sends.stringValue = model.sends.prefix(3).map {
-            "→ \($0.destination) \(String(format: "%+.0f", $0.gainDb)) \($0.preFader ? "PRE" : "POST")"
-        }.joined(separator: "\n")
-        if sends.stringValue.isEmpty { sends.stringValue = "—" }
-        meter.setAccessibilityLabel("Пиковый уровень \(model.title)")
-        fader.setAccessibilityLabel("Громкость \(model.title)")
-        pan.setAccessibilityLabel("Панорама \(model.title)")
-        arm.setAccessibilityLabel("Запись \(model.title)")
-        mute.setAccessibilityLabel("Mute \(model.title)")
-        solo.setAccessibilityLabel("Solo \(model.title)")
-        inserts.setAccessibilityLabel("Inserts \(model.title): \(inserts.stringValue)")
-        sends.setAccessibilityLabel("Sends \(model.title): \(sends.stringValue)")
-        routing.setAccessibilityLabel("Выход \(model.title): \(routing.stringValue)")
-        value.setAccessibilityLabel("Текущий уровень \(model.title): \(value.stringValue)")
-        automation.setAccessibilityLabel("Автоматизация \(model.title): \(automation.stringValue)")
-        let channelName = model.kind == .master ? "Master" : "Канал \(model.channelNumber) \(model.title)"
-        setAccessibilityLabel("\(channelName) микшера")
-        title.toolTip = model.title
-        footer.toolTip = model.title
-        title.setAccessibilityLabel(channelName)
-        footer.setAccessibilityLabel(channelName)
-        let canArm = model.kind == .track
-        arm.isHidden = !canArm
-        arm.isEnabled = canArm
-        let canMute = model.kind != .master
-        mute.isHidden = !canMute
-        mute.isEnabled = canMute
-        let canSolo = model.kind == .track
-        solo.isHidden = !canSolo
-        solo.isEnabled = canSolo
-        let canPan = model.kind != .master
-        pan.isHidden = !canPan
-        pan.isEnabled = canPan
-        deleteBusButton.isHidden = model.kind != .bus
-        needsDisplay = true
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    private func itemWidth() -> CGFloat { models.isEmpty ? bounds.width : bounds.width / CGFloat(models.count) }
+    override func mouseDown(with event: NSEvent) {
+        guard !models.isEmpty, bounds.width > 0 else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = min(models.count - 1, max(0, Int(point.x / max(0.001, itemWidth()))))
+        onSelect?(models[index].id)
     }
-    override var isFlipped: Bool { true }
-    override func layout() {
-        let width = bounds.width
-        let height = bounds.height
-        let padding: CGFloat = 5
-        let footerHeight: CGFloat = 20
-        let titleHeight: CGFloat = 15
-        let showDetails = height >= 286
-        let detailTop = padding + titleHeight + 2
-        let detailHeight = showDetails ? min(176, max(104, height * 0.34)) : 0
-        let channelControlsY = showDetails ? detailTop + detailHeight + 5 : detailTop + 2
-        let meterTop = channelControlsY + 74
-        let meterBottom = max(meterTop + 30, height - footerHeight - 22)
-
-        insertHeading.isHidden = !showDetails
-        inserts.isHidden = !showDetails
-        sendHeading.isHidden = !showDetails
-        sends.isHidden = !showDetails
-        title.isHidden = false
-        title.frame = NSRect(x: padding, y: padding, width: width - 2 * padding, height: titleHeight)
-
-        if showDetails {
-            insertHeading.frame = NSRect(x: padding, y: detailTop, width: width - 2 * padding, height: 13)
-            inserts.frame = NSRect(x: padding, y: detailTop + 14, width: width - 2 * padding, height: max(24, detailHeight * 0.52 - 15))
-            let sendY = detailTop + max(48, detailHeight * 0.52)
-            sendHeading.frame = NSRect(x: padding, y: sendY, width: width - 2 * padding, height: 13)
-            sends.frame = NSRect(x: padding, y: sendY + 14, width: width - 2 * padding, height: max(24, detailTop + detailHeight - sendY - 15))
+    override func draw(_ dirtyRect: NSRect) {
+        DAWDesignTokens.Color.surface.withAlphaComponent(0.72).setFill(); bounds.fill()
+        guard !models.isEmpty else { return }
+        let width = itemWidth()
+        for (index, model) in models.enumerated() {
+            let x = CGFloat(index) * width
+            let rect = NSRect(x:x,y:0,width:max(1,width),height:bounds.height)
+            let tint = model.color ?? DAWDesignTokens.Color.accent
+            tint.withAlphaComponent(model.isSelected ? 0.24 : 0.09).setFill(); rect.insetBy(dx:0.5,dy:1).fill()
+            let snapshot = snapshots[model.id] ?? .init()
+            let peak = max(snapshot.leftPeak,snapshot.rightPeak)
+            let level = CGFloat(MixerScale.meterPosition(peak))
+            let meterArea = rect.insetBy(dx:max(1,min(4,width*0.18)),dy:5)
+            if meterArea.height > 1, level > 0 {
+                let meterRect = NSRect(x:meterArea.minX,y:meterArea.maxY-meterArea.height*level,width:max(1,meterArea.width),height:meterArea.height*level)
+                DAWDataVisuals.meterColor(for: level).withAlphaComponent(0.78).setFill(); meterRect.fill()
+            }
+            if leftPinned.contains(model.id) {
+                NSColor.systemCyan.setFill(); NSRect(x:rect.minX,y:1,width:min(3,rect.width),height:max(1,rect.height-2)).fill()
+            } else if rightPinned.contains(model.id) {
+                NSColor.systemPurple.setFill(); NSRect(x:max(rect.minX,rect.maxX-min(3,rect.width)),y:1,width:min(3,rect.width),height:max(1,rect.height-2)).fill()
+            }
+            if model.totalInsertLatencyFrames > 0 {
+                NSColor.systemOrange.setFill(); NSBezierPath(ovalIn:NSRect(x:max(rect.minX,rect.maxX-5),y:2,width:min(4,rect.width),height:4)).fill()
+            }
+            if model.hasUnavailableInsert {
+                NSColor.systemRed.setFill(); NSRect(x:rect.minX,y:rect.maxY-3,width:max(1,rect.width),height:2).fill()
+            }
+            if model.isSelected {
+                tint.setStroke(); let path=NSBezierPath(rect:rect.insetBy(dx:1,dy:1));path.lineWidth=1.5;path.stroke()
+            }
+            if width >= 34 {
+                let label = width >= 64 ? model.title : String(model.channelNumber > 0 ? model.channelNumber : index + 1)
+                let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:8,weight:model.isSelected ? .semibold:.regular),.foregroundColor:DAWDesignTokens.Color.secondaryText]
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect:rect.insetBy(dx:2,dy:1)).addClip()
+                (label as NSString).draw(at:NSPoint(x:rect.minX+3,y:2),withAttributes:attrs)
+                NSGraphicsContext.restoreGraphicsState()
+            }
         }
-
-        routing.frame = NSRect(x: padding, y: channelControlsY, width: width - 2 * padding, height: 15)
-        loudness.frame = NSRect(x: padding, y: max(channelControlsY + 20, height - 34), width: width - 2 * padding, height: 11)
-        if !pan.isHidden {
-            pan.frame = NSRect(x: padding, y: channelControlsY + 17, width: width - 2 * padding, height: 17)
-        }
-        let activeButtons: [NSButton] = [arm, mute, solo].filter { !$0.isHidden }
-        let buttonWidth = max(20, (width - padding * CGFloat(activeButtons.count + 1)) / CGFloat(max(1, activeButtons.count)))
-        for (index, button) in activeButtons.enumerated() {
-            button.frame = NSRect(x: padding + CGFloat(index) * (buttonWidth + padding), y: channelControlsY + 37, width: buttonWidth, height: 19)
-        }
-        // Delete button for bus strips - positioned at top-right
-        if !deleteBusButton.isHidden {
-            deleteBusButton.frame = NSRect(x: width - padding - 20, y: padding, width: 20, height: 16)
-        }
-        value.frame = NSRect(x: padding, y: channelControlsY + 58, width: width - 2 * padding, height: 13)
-        let meterHeight = max(26, meterBottom - meterTop)
-        meter.frame = NSRect(x: padding + 9, y: meterTop, width: 12, height: meterHeight)
-        fader.frame = NSRect(x: padding + 28, y: meterTop, width: max(22, width - 42), height: meterHeight)
-        automation.frame = NSRect(x: padding, y: height - footerHeight - 19, width: width - 2 * padding, height: 14)
-        footer.frame = NSRect(x: 2, y: height - footerHeight, width: width - 4, height: footerHeight - 2)
     }
-    override func mouseDown(with event:NSEvent) { onSelect?(model.id) }
-    override func draw(_ dirtyRect:NSRect) {
-        let color = model.color ?? (model.kind == .master ? DAWDesignTokens.Color.warning : (model.kind == .bus ? DAWDesignTokens.Color.accent : DAWDesignTokens.Color.mint))
-        let card = bounds.insetBy(dx: 1, dy: 1)
-        (model.isSelected ? color.withAlphaComponent(0.18) : DAWDesignTokens.Color.surface).setFill()
-        NSBezierPath(roundedRect: card, xRadius: DAWDesignTokens.Radius.card, yRadius: DAWDesignTokens.Radius.card).fill()
-        color.withAlphaComponent(model.isSelected ? 0.85 : 0.28).setStroke()
-        NSBezierPath(roundedRect: card, xRadius: DAWDesignTokens.Radius.card, yRadius: DAWDesignTokens.Radius.card).stroke()
-        color.withAlphaComponent(0.92).setFill()
-        NSRect(x: 2, y: max(2, bounds.height - 20), width: max(0, bounds.width - 4), height: 17).fill()
-        if model.kind == .bus {
-            color.withAlphaComponent(0.72).setFill()
-            NSRect(x: 2, y: 2, width: max(0, bounds.width - 4), height: 2).fill()
-        }
-        if model.kind == .master {
-            color.withAlphaComponent(0.95).setFill()
-            NSRect(x: 2, y: 2, width: 3, height: max(0, bounds.height - 24)).fill()
-        }
-        DAWDesignTokens.Color.canvas.withAlphaComponent(0.55).setStroke()
-        NSBezierPath(rect: NSRect(x: 4, y: 0, width: max(0, bounds.width - 8), height: 0.5)).stroke()
-    }
-    @objc private func toggleArm(){onArm?(model.id,arm.state == .on)}
-    @objc private func toggleMute(){onMute?(model.id,mute.state == .on)}
-    @objc private func toggleSolo(){onSolo?(model.id,solo.state == .on)}
-    @objc private func changePan(){onPan?(model.id,pan.doubleValue)}
-    @objc private func deleteBus(){onDeleteBus?(model.id)}
 }
 
+/// Toolbar + selected-channel inspector + horizontally scrolling bank + fixed zones/master.
+/// All project mutations are callbacks; visibility, zones and virtualization are presentation state.
 @MainActor
-final class MixerWorkspaceView: NSScrollView {
-    var strips: [MixerStripModel] = [] { didSet { rebuild() } }
+final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
+    var strips: [MixerStripModel] = [] { didSet { reconcile() } }
     var onSelect: ((UInt64) -> Void)?
-    var onArm: ((UInt64, Bool) -> Void)?
-    var onMute: ((UInt64, Bool) -> Void)?
-    var onSolo: ((UInt64, Bool) -> Void)?
+    var onArm: ((UInt64,Bool) -> Void)?
+    var onMute: ((UInt64,Bool) -> Void)?
+    var onSolo: ((UInt64,Bool) -> Void)?
     var onVolumeGestureBegin: ((UInt64) -> Void)?
-    var onVolume: ((UInt64, Double) -> Void)?
-    var onVolumeGestureEnd: ((UInt64, Double) -> Void)?
-    var onPan: ((UInt64, Double) -> Void)?
+    var onVolume: ((UInt64,Double) -> Void)?
+    var onVolumeGestureEnd: ((UInt64,Double) -> Void)?
+    var onVolumeGestureCancel: (() -> Void)?
+    lazy var linkedLevels = MixerLinkedLevels(workspace: self)
+    var presentedStripViews: [MixerStripView] { Array(stripViews.values) + [inspector].compactMap { $0 } }
+    var onPan: ((UInt64,Double) -> Void)?
     var onDeleteBus: ((UInt64) -> Void)?
-    private let canvas=MixerCanvasView()
-    private var stripViews:[UInt64:MixerStripView]=[:]
-    override init(frame: NSRect) { super.init(frame:frame); drawsBackground=false; hasHorizontalScroller=true; hasVerticalScroller=false; documentView=canvas }
+    var onOutput: ((UInt64,UInt64) -> Void)?
+    var onInsert: ((UInt64,MixerInsertAction) -> Void)?
+    var onSend: ((UInt64,MixerSendAction) -> Void)?
+    var onSendPanBegin: ((UInt64,UInt64) -> Void)?
+    var onSendPan: ((UInt64,UInt64,Double) -> Void)?
+    var onSendPanEnd: ((UInt64,UInt64,Double) -> Void)?
+    var onSendGainBegin: ((UInt64,UInt64) -> Void)?
+    var onSendGain: ((UInt64,UInt64,Double) -> Void)?
+    var onSendGainEnd: ((UInt64,UInt64,Double) -> Void)?
+    var onCreateBus: (() -> Void)?
+    var onFocus: ((Bool) -> Void)?
+    var onResetPeaks: (() -> Void)?
+    var onClearSolo: (() -> Void)?
+    var onRename: ((UInt64,String) -> Void)?
+    var onUndo: (() -> Void)?
+    var onRedo: (() -> Void)?
+    var historyState: (() -> (canUndo: Bool, canRedo: Bool))?
+    var editingEnabled = true {
+        didSet {
+            for view in stripViews.values { view.updateFaderMode(); view.updateDestinations() }
+            inspector?.updateFaderMode(); updateHistoryButtons()
+            if !editingEnabled { linkedLevels.cancel() }
+            linkedLevels.refreshPresentation()
+        }
+    }
+    private(set) var sendTargetID: UInt64?
+    private(set) var stripViews: [UInt64:MixerStripView] = [:]
+    private(set) var visibleIDs: [UInt64] = []
+    private(set) var scrollingIDs: [UInt64] = []
+    let consoleState = MixerConsoleState()
+    let search = NSSearchField()
+    let filter = NSSegmentedControl(labels:["All","Tracks","Buses"],trackingMode:.selectOne,target:nil,action:nil)
+    let density = NSPopUpButton(frame:.zero,pullsDown:false)
+    let sendTarget = NSPopUpButton(frame:.zero,pullsDown:false)
+    private let focus = MixerActionButton("Focus")
+    private let inspect = MixerActionButton("Inspector")
+    private let reset = MixerActionButton("Reset peaks")
+    private let addBus = MixerActionButton("+ Bus")
+    private let undoButton = MixerActionButton("↶")
+    private let redoButton = MixerActionButton("↷")
+    private let visibilityButton = MixerActionButton("Visibility")
+    private let zonesButton = MixerActionButton("Zones")
+    private let overviewButton = MixerActionButton("Overview")
+    private let caption = NSTextField(labelWithString: "CONSOLE")
+    private let inspectorCaption = NSTextField(labelWithString:"SELECTED CHANNEL")
+    private let empty = NSTextField(labelWithString:"No matching channels")
+    private let scroll = NSScrollView()
+    private let canvas = MixerCanvasView()
+    private let meterBridge = MixerMeterBridgeView(frame:.zero)
+    private var inspector: MixerStripView?
+    private var inspectorVisible = true
+    private var overviewVisible = true
+    private var focused = false
+    private var latestMeters: [UInt64:MixerMeterSnapshot] = [:]
+    private var lastStripWidth: CGFloat = 110
+    var documentView: NSView? { scroll.documentView }
+    var contentView: NSClipView { scroll.contentView }
+
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) {
+        super.init(frame:frame)
+        wantsLayer = true; layer?.backgroundColor = DAWDesignTokens.Color.canvas.cgColor
+        scroll.drawsBackground = false; scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = false
+        scroll.documentView = canvas
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self,selector:#selector(scrollBoundsChanged),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
+        for view in [caption,filter,search,density,sendTarget,undoButton,redoButton,visibilityButton,zonesButton,overviewButton,reset,addBus,inspect,focus,meterBridge,scroll,inspectorCaption,empty] { addSubview(view) }
+        addSubview(linkedLevels.bar)
+        caption.font = .monospacedSystemFont(ofSize:11,weight:.semibold)
+        inspectorCaption.font = .monospacedSystemFont(ofSize:10,weight:.medium)
+        inspectorCaption.textColor = DAWDesignTokens.Color.secondaryText
+        search.placeholderString = "Find channel / output"; search.delegate = self
+        filter.selectedSegment = 0; filter.target = self; filter.action = #selector(viewOptionsChanged)
+        for title in ["Compact","Standard","Wide"] { density.addItem(withTitle:title) }; density.selectItem(at:1)
+        density.target = self; density.action = #selector(viewOptionsChanged)
+        sendTarget.addItem(withTitle:"Faders: Main")
+        sendTarget.target = self; sendTarget.action = #selector(sendTargetChanged)
+        inspect.setButtonType(.toggle); inspect.state = .on
+        inspect.invoke = { [weak self] in guard let self else{return}; inspectorVisible.toggle(); inspect.state = inspectorVisible ? .on:.off; needsLayout = true }
+        focus.setButtonType(.toggle)
+        focus.invoke = { [weak self] in guard let self else { return }; focused.toggle(); focus.state = focused ? .on:.off; onFocus?(focused) }
+        overviewButton.setButtonType(.toggle); overviewButton.state = .on
+        overviewButton.invoke = { [weak self] in guard let self else{return}; overviewVisible.toggle(); overviewButton.state = overviewVisible ? .on:.off; needsLayout = true }
+        reset.invoke = { [weak self] in self?.resetPeaks() }
+        addBus.invoke = { [weak self] in self?.onCreateBus?() }
+        undoButton.invoke = { [weak self] in self?.onUndo?() }
+        redoButton.invoke = { [weak self] in self?.onRedo?() }
+        visibilityButton.invoke = { [weak self] in self?.showVisibilityMenu() }
+        zonesButton.invoke = { [weak self] in self?.showZonesMenu() }
+        meterBridge.onSelect = { [weak self] id in self?.selectAndReveal(id) }
+        search.setAccessibilityLabel("Find mixer channel or output")
+        filter.setAccessibilityLabel("Channel type filter")
+        density.setAccessibilityLabel("Mixer strip width")
+        sendTarget.setAccessibilityLabel("Fader target: main or send destination")
+        undoButton.setAccessibilityLabel("Undo mixer change")
+        redoButton.setAccessibilityLabel("Redo mixer change")
+        visibilityButton.setAccessibilityLabel("Mixer visibility and channel sections")
+        zonesButton.setAccessibilityLabel("Pinned mixer channels")
+        overviewButton.setAccessibilityLabel("Show mixer meter bridge")
+        sendTarget.toolTip = "Sends on faders: only existing sends are editable. Bus and master faders retain their main level."
+        visibilityButton.toolTip = "Show/hide channels and focus inserts, sends or faders."
+        zonesButton.toolTip = "Pin up to three channels outside horizontal scrolling."
+        empty.textColor = DAWDesignTokens.Color.secondaryText
+        for popup in [density,sendTarget] { popup.controlSize = .small; popup.font = .systemFont(ofSize:11) }
+        updateHistoryButtons()
+    }
     required init?(coder:NSCoder) { fatalError("init(coder:) is unavailable") }
-    func updateMeters(_ snapshots:[UInt64:MixerMeterSnapshot]) { for(id,snapshot) in snapshots { stripViews[id]?.model.meter=snapshot } }
-    private func rebuild() {
-        canvas.subviews.forEach { $0.removeFromSuperview() }
-        stripViews.removeAll()
-        for (index, model) in strips.enumerated() {
-            var displayModel=model;displayModel.channelNumber=index + 1
-            let strip = MixerStripView(model: displayModel)
-            stripViews[model.id] = strip
-            strip.onSelect = { [weak self] in self?.onSelect?($0) }
-            strip.onArm = { [weak self] in self?.onArm?($0, $1) }
-            strip.onMute = { [weak self] in self?.onMute?($0, $1) }
-            strip.onSolo = { [weak self] in self?.onSolo?($0, $1) }
-            strip.onVolumeBegin = { [weak self] in self?.onVolumeGestureBegin?($0) }
-            strip.onVolume = { [weak self] in self?.onVolume?($0, $1) }
-            strip.onVolumeEnd = { [weak self] in self?.onVolumeGestureEnd?($0, $1) }
-            strip.onPan = { [weak self] in self?.onPan?($0, $1) }
-            strip.onDeleteBus = { [weak self] id in
-                guard let self else { return }
-                self.onDeleteBus?(id)
+
+    func controlTextDidChange(_ obj: Notification) { needsLayout = true }
+    @objc private func viewOptionsChanged() { needsLayout = true }
+    @objc private func sendTargetChanged() { setSendTarget((sendTarget.selectedItem?.representedObject as? NSNumber)?.uint64Value) }
+    @objc private func scrollBoundsChanged() { virtualizeScrolledBank() }
+
+    private func updateHistoryButtons() {
+        if let state = historyState?() {
+            undoButton.isEnabled = editingEnabled && state.canUndo
+            redoButton.isEnabled = editingEnabled && state.canRedo
+        } else {
+            undoButton.isEnabled = false
+            redoButton.isEnabled = false
+        }
+    }
+
+    private func selectedStrip() -> MixerStripModel? { strips.first { $0.isSelected && $0.kind != .master } }
+
+    private func presentationChanged() {
+        meterBridge.needsDisplay = true
+        needsLayout = true
+    }
+
+    func setRackMode(_ mode: MixerConsoleState.RackMode) {
+        consoleState.rackMode = mode
+        for view in stripViews.values { view.rackMode = mode }
+        inspector?.rackMode = mode
+        needsLayout = true
+    }
+
+    private func showVisibilityMenu() {
+        let menu=NSMenu();menu.autoenablesItems=false
+        menu.addItem(MixerMenuItem("Show all channels") { [weak self] in self?.consoleState.showAll(); self?.presentationChanged() })
+        if let selected=selectedStrip() {
+            menu.addItem(MixerMenuItem("Hide selected · \(selected.title)") { [weak self] in self?.consoleState.setHidden(true,id:selected.id); self?.presentationChanged() })
+            let busID = selected.kind == .bus ? selected.id : selected.outputID
+            if busID != 0 {
+                menu.addItem(MixerMenuItem("Show route family") { [weak self] in
+                    guard let self else{return}
+                    var keep=Set<UInt64>([selected.id,busID])
+                    for strip in strips where strip.kind == .track && (strip.outputID == busID || strip.sends.contains(where:{$0.busID == busID})) { keep.insert(strip.id) }
+                    consoleState.showOnly(keep,from:strips); presentationChanged()
+                })
             }
-            canvas.addSubview(strip)
         }
-        layoutStrips()
+        menu.addItem(.separator())
+        func submenu(_ title:String,_ models:[MixerStripModel]) -> NSMenuItem {
+            let parent=NSMenuItem(title:title,action:nil,keyEquivalent:"")
+            let child=NSMenu();child.autoenablesItems=false
+            for model in models {
+                let item=MixerMenuItem(model.title) { [weak self] in self?.consoleState.toggleHidden(model.id); self?.presentationChanged() }
+                item.state = consoleState.isHidden(model.id) ? .off:.on
+                child.addItem(item)
+            }
+            parent.submenu=child;return parent
+        }
+        menu.addItem(submenu("Tracks",strips.filter{$0.kind == .track}))
+        menu.addItem(submenu("Buses",strips.filter{$0.kind == .bus}))
+        menu.addItem(.separator())
+        let sections = NSMenu(); sections.autoenablesItems = false
+        let sectionModes: [(String,MixerConsoleState.RackMode)] = [("Full channel",.full),("Inserts focus",.inserts),("Sends focus",.sends),("Faders focus",.faders)]
+        for (title, mode) in sectionModes {
+            let item=MixerMenuItem(title) { [weak self] in self?.setRackMode(mode) }
+            item.state = consoleState.rackMode == mode ? .on:.off
+            sections.addItem(item)
+        }
+        let sectionsItem=NSMenuItem(title:"Channel sections",action:nil,keyEquivalent:"");sectionsItem.submenu=sections;menu.addItem(sectionsItem)
+        menu.popUp(positioning:nil,at:NSPoint(x:0,y:visibilityButton.bounds.maxY),in:visibilityButton)
     }
-    private func layoutStrips() {
-        let stripWidth: CGFloat = bounds.height >= 300 ? 80 : 74
-        let gap: CGFloat = 4
-        let groupGap: CGFloat = 10
-        let extraGaps = strips.enumerated().reduce(0) { partial, item in
-            guard item.offset > 0 else { return partial }
-            return partial + (item.element.kind != strips[item.offset - 1].kind ? 1 : 0)
+
+    private func showZonesMenu() {
+        let menu=NSMenu();menu.autoenablesItems=false
+        if let selected=selectedStrip() {
+            menu.addItem(MixerMenuItem("Pin \(selected.title) left") { [weak self] in self?.consoleState.pin(selected.id,to:.left); self?.presentationChanged() })
+            menu.addItem(MixerMenuItem("Pin \(selected.title) right") { [weak self] in self?.consoleState.pin(selected.id,to:.right); self?.presentationChanged() })
+            menu.addItem(MixerMenuItem("Unpin \(selected.title)",enabled:consoleState.isPinned(selected.id)) { [weak self] in self?.consoleState.pin(selected.id,to:.scrolling); self?.presentationChanged() })
+            menu.addItem(.separator())
         }
-        let canvasSize = NSSize(
-            width: max(bounds.width, CGFloat(strips.count) * (stripWidth + gap) + gap + CGFloat(extraGaps) * groupGap),
-            height: max(150, bounds.height)
-        )
-        if canvas.frame.size != canvasSize { canvas.frame.size = canvasSize }
-        var x = gap
-        for (index, model) in strips.enumerated() {
-            if index > 0, model.kind != strips[index - 1].kind { x += groupGap }
-            stripViews[model.id]?.frame = NSRect(
-                x: x,
-                y: 0,
-                width: stripWidth,
-                height: canvasSize.height
-            )
-            x += stripWidth + gap
+        menu.addItem(MixerMenuItem("Clear left pins",enabled:!consoleState.leftPinnedIDs.isEmpty) { [weak self] in self?.consoleState.clearPins(.left);self?.presentationChanged() })
+        menu.addItem(MixerMenuItem("Clear right pins",enabled:!consoleState.rightPinnedIDs.isEmpty) { [weak self] in self?.consoleState.clearPins(.right);self?.presentationChanged() })
+        if !consoleState.leftPinnedIDs.isEmpty || !consoleState.rightPinnedIDs.isEmpty {
+            menu.addItem(.separator())
+            let names=Dictionary(uniqueKeysWithValues:strips.map{($0.id,$0.title)})
+            for id in consoleState.leftPinnedIDs { let item=NSMenuItem(title:"Left · \(names[id] ?? "Channel")",action:nil,keyEquivalent:"");item.isEnabled=false;menu.addItem(item) }
+            for id in consoleState.rightPinnedIDs { let item=NSMenuItem(title:"Right · \(names[id] ?? "Channel")",action:nil,keyEquivalent:"");item.isEnabled=false;menu.addItem(item) }
+        }
+        menu.popUp(positioning:nil,at:NSPoint(x:0,y:zonesButton.bounds.maxY),in:zonesButton)
+    }
+
+    func setSendTarget(_ id: UInt64?) {
+        guard !linkedLevels.isEditing else { return }
+        sendTargetID = strips.contains { $0.kind == .bus && $0.id == id } ? id : nil
+        sendTarget.select(sendTarget.itemArray.first { ($0.representedObject as? NSNumber)?.uint64Value == sendTargetID } ?? sendTarget.item(at:0))
+        for view in stripViews.values { view.updateFaderMode() }
+        inspector?.updateFaderMode()
+        caption.stringValue = sendTargetID == nil ? "CONSOLE" : "SEND MIX"
+        caption.textColor = sendTargetID == nil ? .labelColor : .systemMint
+        linkedLevels.refreshPresentation()
+    }
+
+    func previewLevel(_ id:UInt64,send:UInt64?,value:Double,source:MixerStripView) {
+        for view in [stripViews[id],inspector].compactMap({$0}) where view !== source && view.model.id == id && view.sendTarget == send {
+            view.fader.valueDb = value
+            view.gainField.stringValue = MixerScale.label(value)
         }
     }
-    override func layout() { super.layout(); layoutStrips() }
+
+    func previewSendPan(_ id:UInt64,bus:UInt64,value:Double,source:MixerStripView) {
+        for view in [stripViews[id],inspector].compactMap({$0}) where view !== source && view.model.id == id && view.sendTarget == bus {
+            view.pan.value = value
+        }
+    }
+
+    func resetFocus() { focused = false; focus.state = .off }
+    func resetPeaks() { stripViews.values.forEach { $0.meter.resetClip() }; inspector?.meter.resetClip(); onResetPeaks?() }
+
+    func updateMeters(_ snapshots: [UInt64:MixerMeterSnapshot]) {
+        for (id,snapshot) in snapshots {
+            latestMeters[id]=snapshot
+            if let view=stripViews[id], !view.isHidden { view.updateMeter(snapshot) }
+        }
+        meterBridge.snapshots=latestMeters
+        if let inspector, let snapshot=snapshots[inspector.model.id] { inspector.updateMeter(snapshot) }
+    }
+
+    private func selectAndReveal(_ id: UInt64) {
+        linkedLevels.select(id)
+        revealChannel(id)
+    }
+
+    func revealChannel(_ id: UInt64) {
+        guard consoleState.zone(of:id) == .scrolling, scrollingIDs.contains(id), let view=stripViews[id] else { return }
+        layoutSubtreeIfNeeded()
+        let maxX=max(0,canvas.frame.width-scroll.contentSize.width)
+        let target=max(0,min(maxX,view.frame.midX-scroll.contentSize.width/2))
+        scroll.contentView.scroll(to:NSPoint(x:target,y:0));scroll.reflectScrolledClipView(scroll.contentView);virtualizeScrolledBank()
+    }
+
+    private func reconcile() {
+        linkedLevels.synchronize(strips)
+        let valid = Set(strips.filter{$0.kind != .master}.map(\.id))
+        consoleState.cleanup(validIDs:valid)
+        let allValid=Set(strips.map(\.id))
+        latestMeters=latestMeters.filter{allValid.contains($0.key)}
+        for id in Array(stripViews.keys) where !allValid.contains(id) { stripViews.removeValue(forKey:id)?.removeFromSuperview() }
+        for (i, original) in strips.enumerated() {
+            var model=original;model.channelNumber=i+1
+            if let existing=stripViews[model.id] { existing.apply(model); existing.rackMode=consoleState.rackMode }
+            else {
+                let view=MixerStripView(model:model);view.workspace=self;view.rackMode=consoleState.rackMode;stripViews[model.id]=view
+                if model.kind == .master { addSubview(view) } else { canvas.addSubview(view) }
+                view.apply(model)
+            }
+        }
+        sendTarget.removeAllItems();sendTarget.addItem(withTitle:"Faders: Main")
+        for bus in strips where bus.kind == .bus { sendTarget.addItem(withTitle:"Send → \(bus.title)");sendTarget.lastItem?.representedObject=NSNumber(value:bus.id) }
+        setSendTarget(sendTargetID)
+        if let selected=strips.first(where:{$0.isSelected}) {
+            if inspector?.model.id != selected.id {
+                inspector?.removeFromSuperview();inspector=MixerStripView(model:selected);inspector?.workspace=self
+                if let inspector { addSubview(inspector) }
+            }
+            inspector?.rackMode=consoleState.rackMode
+            inspector?.apply(selected)
+            if selected.totalInsertLatencyFrames > 0 {
+                inspectorCaption.stringValue=String(format:"SELECTED · INSERT LAT %.2f ms",selected.totalInsertLatencyMilliseconds)
+            } else { inspectorCaption.stringValue="SELECTED CHANNEL" }
+            inspectorCaption.textColor=selected.hasUnavailableInsert ? .systemOrange:DAWDesignTokens.Color.secondaryText
+        } else {
+            inspector?.removeFromSuperview();inspector=nil;inspectorCaption.stringValue="SELECTED CHANNEL"
+        }
+        meterBridge.snapshots=latestMeters
+        linkedLevels.refreshPresentation()
+        updateHistoryButtons();needsLayout=true
+    }
+
+    private func attach(_ view:MixerStripView,to parent:NSView) {
+        if view.superview !== parent { view.removeFromSuperview();parent.addSubview(view) }
+    }
+
+    private func virtualizeScrolledBank() {
+        guard scroll.frame.width > 0 else{return}
+        let scrollSet=Set(scrollingIDs)
+        let overscan=max(100,lastStripWidth*2.2)
+        let visibleRect=scroll.contentView.bounds.insetBy(dx:-overscan,dy:0)
+        for (id,view) in stripViews where view.model.kind != .master {
+            if consoleState.isPinned(id) { view.isHidden=false; if let meter=latestMeters[id]{view.updateMeter(meter)};continue }
+            guard scrollSet.contains(id), view.superview === canvas else { view.isHidden=true;continue }
+            let show=view.frame.intersects(visibleRect)
+            view.isHidden = !show
+            if show, let meter=latestMeters[id] { view.updateMeter(meter) }
+        }
+    }
+
+    private func layoutToolbar(width w:CGFloat) -> CGFloat {
+        let rows = w >= 1320 ? 1 : (w >= 820 ? 2 : 3)
+        if rows == 1 {
+            caption.frame=NSRect(x:10,y:14,width:64,height:18);filter.frame=NSRect(x:80,y:8,width:176,height:28);search.frame=NSRect(x:265,y:9,width:150,height:26);density.frame=NSRect(x:425,y:9,width:92,height:26);sendTarget.frame=NSRect(x:527,y:9,width:178,height:26)
+            undoButton.frame=NSRect(x:713,y:9,width:32,height:26);redoButton.frame=NSRect(x:749,y:9,width:32,height:26);visibilityButton.frame=NSRect(x:789,y:9,width:68,height:26);zonesButton.frame=NSRect(x:863,y:9,width:54,height:26);overviewButton.frame=NSRect(x:923,y:9,width:70,height:26);focus.frame=NSRect(x:999,y:9,width:58,height:26);inspect.frame=NSRect(x:1063,y:9,width:72,height:26);addBus.frame=NSRect(x:1141,y:9,width:58,height:26);reset.frame=NSRect(x:1205,y:9,width:88,height:26)
+            return 46
+        }
+        if rows == 2 {
+            caption.frame=NSRect(x:10,y:14,width:64,height:18);filter.frame=NSRect(x:80,y:8,width:176,height:28);search.frame=NSRect(x:265,y:9,width:160,height:26);density.frame=NSRect(x:435,y:9,width:92,height:26);sendTarget.frame=NSRect(x:537,y:9,width:180,height:26)
+            undoButton.frame=NSRect(x:10,y:43,width:32,height:26);redoButton.frame=NSRect(x:46,y:43,width:32,height:26);visibilityButton.frame=NSRect(x:84,y:43,width:72,height:26);zonesButton.frame=NSRect(x:162,y:43,width:58,height:26);overviewButton.frame=NSRect(x:226,y:43,width:72,height:26);focus.frame=NSRect(x:304,y:43,width:58,height:26);inspect.frame=NSRect(x:368,y:43,width:76,height:26);addBus.frame=NSRect(x:450,y:43,width:62,height:26);reset.frame=NSRect(x:518,y:43,width:90,height:26)
+            return 78
+        }
+        caption.frame=NSRect(x:10,y:14,width:64,height:18);filter.frame=NSRect(x:80,y:8,width:176,height:28);search.frame=NSRect(x:265,y:9,width:min(150,max(80,w-275)),height:26)
+        density.frame=NSRect(x:10,y:43,width:94,height:26);sendTarget.frame=NSRect(x:110,y:43,width:180,height:26);undoButton.frame=NSRect(x:296,y:43,width:32,height:26);redoButton.frame=NSRect(x:332,y:43,width:32,height:26);visibilityButton.frame=NSRect(x:370,y:43,width:72,height:26);zonesButton.frame=NSRect(x:448,y:43,width:58,height:26)
+        overviewButton.frame=NSRect(x:10,y:78,width:72,height:26);focus.frame=NSRect(x:88,y:78,width:58,height:26);inspect.frame=NSRect(x:152,y:78,width:76,height:26);addBus.frame=NSRect(x:234,y:78,width:62,height:26);reset.frame=NSRect(x:302,y:78,width:90,height:26)
+        return 110
+    }
+
+    override func layout() {
+        super.layout()
+        let w=bounds.width,h=bounds.height
+        let toolbarBottom=layoutToolbar(width:w),bottom:CGFloat=5
+        consoleState.density=MixerConsoleState.Density(rawValue:density.indexOfSelectedItem) ?? .regular
+        consoleState.filter=MixerConsoleState.Filter(rawValue:filter.selectedSegment) ?? .all
+        consoleState.search=search.stringValue
+        let visibleTracks = (consoleState.pinned(strips,in:.left) + consoleState.visible(strips) + consoleState.pinned(strips,in:.right)).filter { $0.kind == .track }.map(\.id)
+        linkedLevels.prune(visibleIDs:visibleTracks)
+        linkedLevels.layoutBar(width:w,top:toolbarBottom)
+        let top=toolbarBottom+linkedLevels.barHeight
+        let stripWidth=consoleState.density.width;lastStripWidth=stripWidth
+        let bridgeHeight:CGFloat=overviewVisible && h-top >= 280 ? 44:0
+        meterBridge.isHidden=bridgeHeight==0
+        let channelTop=top+bridgeHeight
+        let channelHeight=max(0,h-channelTop-bottom)
+        let useInspector=inspectorVisible && inspector != nil && w >= 1180 && channelHeight >= 360
+        var left:CGFloat=useInspector ? 210:5
+        inspector?.isHidden = !useInspector;inspectorCaption.isHidden = !useInspector
+        inspectorCaption.frame=NSRect(x:14,y:channelTop+4,width:184,height:18)
+        inspector?.frame=NSRect(x:10,y:channelTop+27,width:184,height:max(0,h-channelTop-27-bottom))
+
+        let master=strips.first{$0.kind == .master}.flatMap{stripViews[$0.id]}
+        let masterWidth:CGFloat=master == nil ? 0:max(112,stripWidth)+10
+        let leftPinned=consoleState.pinned(strips,in:.left),rightPinned=consoleState.pinned(strips,in:.right)
+        let rightSpan=rightPinned.isEmpty ? 0:CGFloat(rightPinned.count)*(stripWidth+3)
+        let masterX=w-masterWidth
+        let rightStart=masterX-rightSpan
+
+        for view in stripViews.values where view.model.kind != .master { view.isHidden=true }
+        for model in leftPinned {
+            guard let view=stripViews[model.id] else{continue};attach(view,to:self);view.isHidden=false
+            view.frame=NSRect(x:left,y:channelTop,width:stripWidth,height:channelHeight);if let meter=latestMeters[model.id]{view.updateMeter(meter)};left += stripWidth+3
+        }
+        var rightX=rightStart
+        for model in rightPinned {
+            guard let view=stripViews[model.id] else{continue};attach(view,to:self);view.isHidden=false
+            view.frame=NSRect(x:rightX,y:channelTop,width:stripWidth,height:channelHeight);if let meter=latestMeters[model.id]{view.updateMeter(meter)};rightX += stripWidth+3
+        }
+        if let master {
+            attach(master,to:self);master.isHidden=false;master.frame=NSRect(x:masterX+5,y:channelTop,width:max(1,masterWidth-10),height:channelHeight)
+            if let meter=latestMeters[master.model.id]{master.updateMeter(meter)}
+        }
+
+        let scrollRight=rightStart-4
+        scroll.frame=NSRect(x:left,y:channelTop,width:max(60,scrollRight-left),height:channelHeight)
+        meterBridge.frame=NSRect(x:useInspector ? 210:5,y:top,width:max(60,w-(useInspector ? 210:5)-masterWidth-4),height:max(0,bridgeHeight-4))
+        meterBridge.models=consoleState.overview(strips);meterBridge.leftPinned=Set(consoleState.leftPinnedIDs);meterBridge.rightPinned=Set(consoleState.rightPinnedIDs)
+
+        scrollingIDs=consoleState.visible(strips).map(\.id)
+        visibleIDs=leftPinned.map(\.id)+scrollingIDs+rightPinned.map(\.id)
+        var x:CGFloat=0;var previous:MixerStripKind?
+        for id in scrollingIDs {
+            guard let view=stripViews[id] else{continue};attach(view,to:canvas)
+            if let previous,previous != view.model.kind{x += 10}
+            view.frame=NSRect(x:x,y:0,width:stripWidth,height:max(210,scroll.contentSize.height));x += stripWidth+3;previous=view.model.kind
+        }
+        canvas.frame.size=NSSize(width:max(scroll.contentSize.width,x),height:max(210,scroll.contentSize.height))
+        virtualizeScrolledBank()
+        empty.isHidden = !visibleIDs.isEmpty
+        empty.frame=NSRect(x:left+20,y:channelTop+45,width:max(30,scroll.frame.width-40),height:24)
+    }
 }

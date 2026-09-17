@@ -173,6 +173,17 @@ class Renderer {
   std::vector<int16_t> trackOutputs, busOutputs;
   std::vector<size_t> busOrder;
   std::vector<SendRoute> sends;
+  // UI writes targets; only the render thread mutates smoothSendGains.
+  // Capacity follows 256 tracks * 8 sends. Routes/IDs change only in prepare().
+  std::array<std::atomic<float>, 256 * 8> sendGainTargets{};
+  std::array<float, 256 * 8> smoothSendGains{};
+  std::array<std::atomic<float>, 256 * 8> sendPanTargets{}, sendIndependentTargets{};
+  std::array<float, 256 * 8> smoothSendPans{}, smoothSendIndependent{};
+  std::array<float, 256> lastSendFaders{};
+  static_assert(std::atomic<float>::is_always_lock_free);
+  void processSend(size_t index,float inL,float inR,float postL,float postR,
+                   float gate,float fader,float& outL,float& outR) noexcept;
+  std::array<uint64_t, 256 * 8> sendTrackIDs{}, sendBusIDs{};
   // sendRanges[track]..sendRanges[track+1] indexes that track's sends.
   std::vector<size_t> sendRanges;
   std::vector<PdcDelay> trackMainPdc, sendPdc, busOutputPdc;

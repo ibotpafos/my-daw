@@ -737,6 +737,18 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   busOutputs = std::move(nextBusOutputs);
   busOrder = std::move(nextBusOrder);
   sends = std::move(nextSends);
+  for (size_t i = 0; i < sends.size(); ++i) {
+    sendGainTargets[i].store(sends[i].gain, std::memory_order_relaxed);
+    const auto& controls = state.tracks[sends[i].track].sends[i - nextSendRanges[sends[i].track]];
+    smoothSendGains[i] = controls.muted ? 0.0f : sends[i].gain;
+    sendGainTargets[i].store(smoothSendGains[i], std::memory_order_relaxed);
+    smoothSendPans[i] = float(controls.pan);
+    smoothSendIndependent[i] = controls.independentPan ? 1.0f : 0.0f;
+    sendPanTargets[i].store(smoothSendPans[i], std::memory_order_relaxed);
+    sendIndependentTargets[i].store(smoothSendIndependent[i], std::memory_order_relaxed);
+    sendTrackIDs[i] = state.tracks[sends[i].track].id;
+    sendBusIDs[i] = state.buses[sends[i].bus].id;
+  }
   sendRanges = std::move(nextSendRanges);
   trackMainPdc = std::move(nextTrackPdc);
   sendPdc = std::move(nextSendPdc);
@@ -790,6 +802,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   smoothLeftPan.fill(0);
   smoothRightPan.fill(0);
   smoothTrackFader.fill(0);
+  lastSendFaders.fill(0);
   smoothBusLeft.fill(0);
   smoothBusRight.fill(0);
   smoothBusFader.fill(0);
@@ -854,6 +867,19 @@ void Renderer::updateMix(const State &state) noexcept {
     busPans[i].store(float(b.pan));
     busGates[i].store(gate);
   }
+  // Lookup is control-thread-only, by stable IDs rather than labels/ordinals.
+  for (size_t i = 0; i < sends.size(); ++i) {
+    const auto track = std::find_if(state.tracks.begin(), state.tracks.end(),
+        [&](const auto& t) { return t.id == sendTrackIDs[i]; });
+    if (track == state.tracks.end()) continue;
+    const auto send = std::find_if(track->sends.begin(), track->sends.end(),
+        [&](const auto& s) { return s.bus == sendBusIDs[i]; });
+    if (send != track->sends.end() && send->preFader == sends[i].preFader) {
+      sendGainTargets[i].store(send->muted ? 0.0f : gain(send->gain), std::memory_order_relaxed);
+      sendPanTargets[i].store(float(send->pan), std::memory_order_relaxed);
+      sendIndependentTargets[i].store(send->independentPan ? 1.0f : 0.0f, std::memory_order_relaxed);
+    }
+  }
   masterGain.store(gain(state.masterGain));
 }
 
@@ -893,6 +919,30 @@ bool Renderer::busMeter(size_t preparedIndex, float &left,
 void Renderer::masterMeter(float &left, float &right) const noexcept {
   left = masterMeterLeft.load(std::memory_order_acquire);
   right = masterMeterRight.load(std::memory_order_acquire);
+}
+
+void Renderer::processSend(size_t s, float inL, float inR, float postL, float postR,
+                   float gate, float fader, float& routeL, float& routeR) noexcept {
+  const auto linkedL = sends[s].preFader ? inL * gate : postL;
+  const auto linkedR = sends[s].preFader ? inR * gate : postR;
+  constexpr float sendSmooth = 0.004166667f;
+  smoothSendPans[s] += (sendPanTargets[s].load(std::memory_order_relaxed) - smoothSendPans[s]) * sendSmooth;
+  smoothSendIndependent[s] += (sendIndependentTargets[s].load(std::memory_order_relaxed) - smoothSendIndependent[s]) * sendSmooth;
+  // Independent POST uses track fader/automation and mute/solo, but NOT
+  // track pan. Never divide postL/postR by a pan coefficient (hard pans
+  // contain zero). Crossfade mode changes to avoid discontinuities.
+  const auto tapGain = gate * (sends[s].preFader ? 1.0f : fader);
+  const auto sendPan = smoothSendPans[s];
+  const auto independentL = inL * tapGain * (sendPan > 0 ? 1 - sendPan : 1);
+  const auto independentR = inR * tapGain * (sendPan < 0 ? 1 + sendPan : 1);
+  const auto blend = smoothSendIndependent[s];
+  // Preserve the exact historic linked calculation at the default.
+  const auto sendL = blend == 0 ? linkedL : linkedL + blend * (independentL - linkedL);
+  const auto sendR = blend == 0 ? linkedR : linkedR + blend * (independentR - linkedR);
+  smoothSendGains[s] += (sendGainTargets[s].load(std::memory_order_relaxed)
+                        - smoothSendGains[s]) * 0.004166667f;
+  sendPdc[s].process(sendL * smoothSendGains[s], sendR * smoothSendGains[s],
+                     routeL, routeR);
 }
 
 void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
@@ -936,12 +986,7 @@ void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
           busBlockRight[size_t(output) * kRenderBlockFrames + f] += routeR;
         }
         for (size_t s = sendRanges[track]; s < sendRanges[track + 1]; ++s) {
-          const auto sendL = sends[s].preFader ? inL * smoothPreFaderGate[track]
-                                               : postL,
-                     sendR = sends[s].preFader ? inR * smoothPreFaderGate[track]
-                                               : postR;
-          sendPdc[s].process(sendL * sends[s].gain, sendR * sends[s].gain,
-                             routeL, routeR);
+          processSend(s,inL,inR,postL,postR,smoothPreFaderGate[track],lastSendFaders[track],routeL,routeR);
           busBlockLeft[sends[s].bus * kRenderBlockFrames + f] += routeL;
           busBlockRight[sends[s].bus * kRenderBlockFrames + f] += routeR;
         }
@@ -1119,6 +1164,7 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
                    automatedPan = !panAutomation[track].points.empty();
         const auto fader = automatedVolume ? volumeAutomationGain(track, t)
                                            : smoothTrackFader[track];
+        lastSendFaders[track] = fader;
         const auto pan = automatedPan
                              ? float(automationValue(panAutomation[track], t))
                              : 0.0f;
@@ -1149,12 +1195,7 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
           busBlockRight[size_t(output) * kRenderBlockFrames + f] += routeR;
         }
         for (size_t s = sendRanges[track]; s < sendRanges[track + 1]; ++s) {
-          const auto sendL = sends[s].preFader ? inL * smoothPreFaderGate[track]
-                                               : postL,
-                     sendR = sends[s].preFader ? inR * smoothPreFaderGate[track]
-                                               : postR;
-          sendPdc[s].process(sendL * sends[s].gain, sendR * sends[s].gain,
-                             routeL, routeR);
+          processSend(s,inL,inR,postL,postR,smoothPreFaderGate[track],fader,routeL,routeR);
           busBlockLeft[sends[s].bus * kRenderBlockFrames + f] += routeL;
           busBlockRight[sends[s].bus * kRenderBlockFrames + f] += routeR;
         }
