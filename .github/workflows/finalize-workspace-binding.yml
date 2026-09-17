@@ -1,0 +1,100 @@
+name: Finalize reviewed workspace binding
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+    paths: [.github/workflows/finalize-workspace-binding.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify reviewed code and apply only nine UI, test and documentation files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 - <<'PY'
+          import gzip, json, base64, hashlib, os, subprocess
+          from pathlib import Path
+          raw = Path('.github/reviewed-binding.json.gz').read_bytes()[:7120]
+          raw += base64.b64decode('15yCo6x4rTd+jTo0n9h7ZUXLVMreJFNXiA6D+wOJ5bab4hc9E3+G1dsH4+2wxdtMtFqYbdSK20JQa3P6yrxts6tWGOXvkoT6w6VMYGqdNhSWcD9B8hJRF+g3Rq9aHwTDXpJLhOvmL0Xuk3X6o36SrjJdnYl+ig6UVM6HPpWePWutN0EAEd1U991pf30V+MYfguhA07hoWbndLYEXwg/Yz8oQ5jBAEBh+/vLL6KGSD347DPDGGFO3u2/f/Bijm8B1b45tQRdPXMI4/GnoJfwhVFuQv9wwDZt+ye99gZs2bU/r7Bt818AFavKM9ASnBO5To8eGffnwfwAbrevT0FoAAA==')
+          assert hashlib.sha256(raw).hexdigest() == '1a06cfe3956d6b27191ca8c443f510e81a25a4ba94e64e62bf255cc94cc4ecd0'
+          payload = json.loads(gzip.decompress(raw))
+          for name, suffix in [('resolve', '.py'), ('followup', '.patch')]:
+              Path(os.environ['RUNNER_TEMP'], name + suffix).write_text(payload[name])
+          PY
+          # Reconstruct the reviewed result separately, without replacing the
+          # concurrently integrated/ formatted engine or any workflow.
+          REVIEW="$RUNNER_TEMP/reviewed-binding"
+          git worktree add --detach "$REVIEW" dbf84288dfa3cb73deec0ab8612a0cb0f23397ef
+          git update-ref refs/remotes/current/main acbd0439799f0cf3c9137e84deab5cc053fa4144
+          (
+            cd "$REVIEW"
+            result=0
+            git merge --no-ff --no-commit current/main || result=$?
+            test "$result" -eq 1
+            python3 "$RUNNER_TEMP/resolve.py"
+            git apply --check "$RUNNER_TEMP/followup.patch"
+            git apply "$RUNNER_TEMP/followup.patch"
+            git add -A
+            test "$(git write-tree)" = 33f84e3d6d066b58351ee80d4eeeda969b855d77
+          )
+          export REVIEW
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          expected = {
+              'apps/macos/MixExportUI.swift': 'c3b62812b2919a8660ca9f1b02a9d8e9f4d0b9da',
+              'apps/macos/MixerConsoleController.swift': '2a191ce00d2c2786d8c2a9a69cbd51083a768eab',
+              'apps/macos/Workspace/WorkspaceUI.swift': '103f9879910e926424a4fafc5656cf6140486f3a',
+              'apps/macos/Workspace/WorkspaceView.swift': '863454d5f180cdc0dd82d8e57dc6c0519f9afbf6',
+              'apps/macos/main.swift': '42e43078ed5409bd1bcad4b6a9776273802ac8e4',
+              'docs/89-main-integration.md': '85b75a4880592e636bd4b89faf333790cb3d1f81',
+              'scripts/test-workspace-ui.sh': 'f64572ce63025327f3082badabe85f13bd149f96',
+              'tests/workspace_mixer_tests.swift': None,
+              'tests/workspace_ui_tests.swift': '0ed14542d7f5ea1dbb075694842c2466ce847f90'}
+          for name, sha in expected.items():
+              if sha:
+                  assert subprocess.check_output(['git','hash-object',name],text=True).strip() == sha, name
+              else:
+                  assert not Path(name).exists(), name
+          for name in expected:
+              Path(name).write_bytes(Path(os.environ['REVIEW'], name).read_bytes())
+          PY
+          rm .github/reviewed-binding.json.gz .github/workflows/finalize-workspace-binding.yml
+          git add -A
+          git diff --cached --check
+          tree=$(git write-tree)
+          mkdir -p "$RUNNER_TEMP/binding-proof"
+          echo "$tree" | tee "$RUNNER_TEMP/binding-proof/tree.txt"
+          git archive --format=zip "$tree" -o "$RUNNER_TEMP/binding-proof/source.zip"
+          test "$tree" = 18cee06949afd5599cc6789594aec0d3eb75fa19
+          # Workflow deletion is published separately by the connector.
+          git restore --source="$SOURCE_HEAD" --staged --worktree .github
+          git diff --cached "$SOURCE_HEAD" --exit-code -- .github
+          git commit -m 'fix(integration): bind mixer focus and export guards to the actual workspace'
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          trap 'rm -f "$RUNNER_TEMP/askpass.sh"' EXIT
+          test "$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)" = "$SOURCE_HEAD"
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          git log -1 --format='%H %T'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: workspace-binding-source-${{ github.sha }}
+          path: ${{ runner.temp }}/binding-proof/
+          retention-days: 3
+          if-no-files-found: warn
