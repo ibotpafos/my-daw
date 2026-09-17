@@ -100,6 +100,8 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
         addButton.contentTintColor = DAWDesignTokens.Color.accent
         addFolderButton.toolTip = "Открыть явно выбранную папку WAV/AIFF в библиотеке"
         let column = NSTableColumn(identifier: .init("item")); column.width = 240
+        column.minWidth = 100; column.resizingMask = .autoresizingMask
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.addTableColumn(column); table.headerView = nil; table.rowHeight = 44
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.backgroundColor = DAWDesignTokens.Color.surface; table.style = .plain
@@ -133,6 +135,18 @@ final class LibraryBrowserView: NSView, NSTableViewDataSource, NSTableViewDelega
         rebuildFormats(); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func layout() {
+        super.layout()
+        let width = scroll.contentSize.width
+        guard width > 0 else { return }
+        // NSTableColumn starts wider than a compact sidebar. Fit the actual
+        // viewport, not its initial width, so row actions remain fully visible.
+        if abs(table.frame.width - width) > 0.5 {
+            table.setFrameSize(NSSize(width: width, height: table.frame.height))
+        }
+        table.sizeLastColumnToFit()
+    }
 
     func selectCategory(_ value: LibraryCategory) {
         guard category != value else { return }

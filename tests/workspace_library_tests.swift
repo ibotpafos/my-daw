@@ -143,6 +143,10 @@ func runLibraryBrowserTests(_ controller: DraftApp) -> Int {
         if let row = browser.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? LibraryItemCell {
             row.layoutSubtreeIfNeeded()
             expect(row.favoriteButton.frame.width >= 24 && row.nameLabel.frame.width > 45, "Native star and file title fit")
+            let star = row.favoriteButton.convert(row.favoriteButton.bounds, to: browser.table)
+            let viewport = browser.table.visibleRect
+            expect(star.minX >= viewport.minX && star.maxX <= viewport.maxX, "Entire star is inside the visible table, not clipped by the scroll viewport")
+            expect(!row.detailLabel.stringValue.contains("WAV · WAV"), "Format caption is not duplicated")
         } else { fatalError("Visible favorite cell missing") }
         guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { fatalError("Bitmap") }
         root.cacheDisplay(in: root.bounds, to: bitmap)

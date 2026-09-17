@@ -52,7 +52,7 @@ final class LibraryItemCell: NSTableCellView {
         nameLabel.stringValue = item.title
         nameLabel.textColor = DAWDesignTokens.Color.text
         let format = item.format == .unknown ? "" : item.format.title + " · "
-        detailLabel.stringValue = (item.available ? "" : "Недоступен · ") + format + item.detail
+        detailLabel.stringValue = (item.available ? "" : "Недоступен · ") + (item.detail.hasPrefix(format) ? item.detail : format + item.detail)
         detailLabel.textColor = item.available ? DAWDesignTokens.Color.secondaryText : DAWDesignTokens.Color.coral
         favoriteButton.image = NSImage(systemSymbolName: favorite ? "star.fill" : "star", accessibilityDescription: nil)
         favoriteButton.contentTintColor = favorite ? DAWDesignTokens.Color.accent : DAWDesignTokens.Color.secondaryText
