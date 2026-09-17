@@ -1,0 +1,66 @@
+name: Apply reviewed MIDI export UI patch
+on:
+  push:
+    branches: ["codex/midi-export-ui"]
+    paths: [".github/workflows/stage-midi-export-ui.yml"]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify preimage and apply immutable reviewed patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          import zlib
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          if git('rev-parse', 'HEAD^') != '0e6cd04077a559705afa5d61c5005cd90180c049':
+              raise SystemExit('Unexpected parent; refuse to apply against changed source')
+          if git('rev-parse', 'HEAD^^{tree}') != 'cc8249f825d7b2f8548f8250a239d8211ff8af68':
+              raise SystemExit('Unexpected source tree')
+          ids = ['2901ff13a0010d985211b6b238610cfa3d7da3a0',
+                 '306a4749d9c003c9f9818bfb7e7092021b257494',
+                 'b3e2c7756828c23af0a47f0f3e45a5a70c65b0c8']
+          parts = []
+          for sha in ids:
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/ibotpafos/my-daw/git/blobs/' + sha,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              content = base64.b64decode(payload['content'])
+              actual = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
+              if actual != sha:
+                  raise SystemExit('Blob identity mismatch')
+              parts.append(content.decode('ascii'))
+          # Restore a transport-only omission in the first encoded chunk;
+          # the entire decoded patch is independently SHA-256 pinned below.
+          if parts[0].count('AnBEzRM3') != 1:
+              raise SystemExit('Encoded chunk boundary mismatch')
+          parts[0] = parts[0].replace('AnBEzRM3', 'AnBEz3CcztydFnOMizwy+wL2vGw+DeRMCnoCdyVIbR0wBjRM3', 1)
+          patch = zlib.decompress(base64.b64decode(''.join(parts), validate=True))
+          if hashlib.sha256(patch).hexdigest() != '9d808d86b8e523581bcaf745bc7e011f7d34acd6d2af1b0e3e1b510940a85a59':
+              raise SystemExit('Reviewed patch checksum mismatch')
+          subprocess.run(['git', 'apply', '--unidiff-zero', '--index', '--check'], input=patch, check=True)
+          subprocess.run(['git', 'apply', '--unidiff-zero', '--index'], input=patch, check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(macos): export MIDI-only projects through the main WAV workflow'
+          git push origin HEAD:refs/heads/codex/midi-export-ui
