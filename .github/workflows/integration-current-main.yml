@@ -1,0 +1,31 @@
+name: Diagnose integration with current main
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+    paths: [.github/workflows/integration-current-main.yml]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Attempt merge and report exact conflicts
+        shell: bash
+        run: |
+          set -u
+          git config user.name integration-diagnostic
+          git config user.email integration@example.invalid
+          git fetch origin main
+          result=0
+          git merge --no-ff --no-commit acbd0439799f0cf3c9137e84deab5cc053fa4144 || result=$?
+          printf 'merge_exit=%s\n' "$result"
+          printf '%s\n' '--- unresolved paths ---'
+          git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt
+          printf '%s\n' '--- status ---'
+          git status --short
+          test "$result" -eq 0
