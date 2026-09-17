@@ -67,6 +67,8 @@ struct PlaybackPreparation {
 }
 struct daw_session {
     daw::Session model;
+    daw::AudioDeviceConfiguration audioConfiguration;
+    std::vector<daw::AudioDeviceInfo> audioDevices;
     std::unique_ptr<daw::Output> output;
     std::shared_ptr<PlaybackPreparation> playbackPreparation;
     std::unique_ptr<daw::Input> input;
@@ -210,11 +212,12 @@ void beginPlaybackPreparation(daw_session *s) {
     preparation->loopEnd = s->loopEnabled ? s->loopEnd : 0;
     preparation->permit = std::move(permit);
     auto snapshot = s->model.state();
-    std::thread worker([preparation, snapshot = std::move(snapshot)]() mutable {
+    std::thread worker([preparation, snapshot = std::move(snapshot),
+                        config = s->audioConfiguration]() mutable {
         try {
             if (preparation->cancel.load(std::memory_order_acquire))
                 return;
-            auto output = daw::makeOutput();
+            auto output = daw::makeOutput(config);
             output->prepare(snapshot, preparation->startFrame, preparation->loopStart,
                             preparation->loopEnd);
             std::lock_guard lock(preparation->publication);
@@ -536,13 +539,14 @@ void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPat
     if (path.empty())
         throw daw::Error("Missing recording recovery path");
     if (loopRecording) {
-        auto duplex = daw::makeDuplex(s->model.state(), capacity, path, startFrame, s->loopStart,
-                                      s->loopEnd, s->recordPrerollFrames, s->recordMonitor);
+        auto duplex =
+            daw::makeDuplex(s->model.state(), capacity, path, startFrame, s->loopStart, s->loopEnd,
+                            s->recordPrerollFrames, s->recordMonitor, s->audioConfiguration);
         duplex->renderer.setMetronome(s->metronomeEnabled);
         duplex->start();
         s->duplex = std::move(duplex);
     } else {
-        auto input = daw::makeInput(capacity, path, startFrame);
+        auto input = daw::makeInput(capacity, path, startFrame, s->audioConfiguration);
         input->start();
         s->input = std::move(input);
     }
@@ -836,6 +840,76 @@ void daw_destroy(daw_session *s) {
         cancelPlaybackPreparation(s);
     }
     delete s;
+}
+int daw_refresh_audio_devices(daw_session *s, uint32_t *count) {
+    return guard(s, [&] {
+        if (!count)
+            throw daw::Error("Missing audio device count");
+        auto devices = daw::enumerateAudioDevices();
+        s->audioDevices = std::move(devices);
+        *count = static_cast<uint32_t>(s->audioDevices.size());
+    });
+}
+int daw_get_audio_device(daw_session *s, uint32_t index, daw_audio_device *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(daw_audio_device) ||
+            out->version != DAW_AUDIO_DEVICE_VERSION)
+            throw daw::Error("Audio device ABI mismatch");
+        if (index >= s->audioDevices.size())
+            throw daw::Error("Audio device index out of range; refresh devices");
+        const auto &device = s->audioDevices[index];
+        daw_audio_device result{};
+        result.struct_size = sizeof(result);
+        result.version = DAW_AUDIO_DEVICE_VERSION;
+        result.device_id = device.id;
+        result.input_channels = device.inputChannels;
+        result.output_channels = device.outputChannels;
+        result.sample_rate = device.sampleRate;
+        result.buffer_frames = device.bufferFrames;
+        result.is_default_input = device.defaultInput;
+        result.is_default_output = device.defaultOutput;
+        copyText(result.uid, device.uid);
+        copyText(result.name, device.name);
+        *out = result;
+    });
+}
+int daw_set_audio_device_config(daw_session *s, const daw_audio_device_config *raw) {
+    return guard(s, [&] {
+        if (!raw || raw->struct_size != sizeof(daw_audio_device_config) ||
+            raw->version != DAW_AUDIO_DEVICE_CONFIG_VERSION)
+            throw daw::Error("Audio configuration ABI mismatch");
+        if (recordingActive(s) || s->midiRecorder || s->playbackPreparation ||
+            (s->output && s->output->renderer.playing.load(std::memory_order_acquire)))
+            throw daw::Error(
+                "Stop playback, recording and MIDI capture before changing audio devices");
+        const auto uid = [](const auto &bytes) {
+            const auto end = static_cast<const char *>(std::memchr(bytes, 0, sizeof(bytes)));
+            if (!end)
+                throw daw::Error("Unterminated audio device UID");
+            return std::string(bytes, end);
+        };
+        daw::AudioDeviceConfiguration config{uid(raw->input_uid), uid(raw->output_uid),
+                                             raw->input_channel, raw->output_left,
+                                             raw->output_right};
+        daw::validateAudioDeviceConfiguration(config);
+        s->audioConfiguration = std::move(config);
+    });
+}
+int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(daw_audio_device_config) ||
+            out->version != DAW_AUDIO_DEVICE_CONFIG_VERSION)
+            throw daw::Error("Audio configuration ABI mismatch");
+        daw_audio_device_config result{};
+        result.struct_size = sizeof(result);
+        result.version = DAW_AUDIO_DEVICE_CONFIG_VERSION;
+        result.input_channel = s->audioConfiguration.inputChannel;
+        result.output_left = s->audioConfiguration.outputLeft;
+        result.output_right = s->audioConfiguration.outputRight;
+        copyText(result.input_uid, s->audioConfiguration.inputUID);
+        copyText(result.output_uid, s->audioConfiguration.outputUID);
+        *out = result;
+    });
 }
 int daw_get_snapshot(daw_session *s, daw_snapshot *out) {
     return guard(s, [&] {

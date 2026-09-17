@@ -363,6 +363,7 @@ extension DraftApp {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             self.rotateRecovery(); daw_destroy(self.session); self.session = fresh
+            self.restoreAudioDeviceConfiguration(fresh)
             self.mixExportDocumentID = UUID()
             self.midiDocumentID = UUID()
             self.currentURL = nil; self.savedRevision = 0; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
