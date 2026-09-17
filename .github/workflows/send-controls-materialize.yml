@@ -19,9 +19,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      # Bounded one-time publication of an already tested, indexed patch.
-      # No external patch source, no force push; remove this workflow and payload.
-      - name: Apply exact source changes and remove temporary transport
+      # GitHub's workflow token can write code, not workflow files.
+      # Workflow-file update/removal is a separate authorized connector operation.
+      - name: Apply exact code changes and remove payload
         id: publish
         shell: bash
         run: |
@@ -41,12 +41,14 @@ jobs:
           if len(data) != 76488 or hashlib.sha256(data).hexdigest() != '9ec89272a91f33ca76c045594d3a446fee067fabae9095f4d7c50458fd221779':
               raise SystemExit('Patch checksum mismatch')
           patch = Path('/tmp/send-controls.patch'); patch.write_bytes(data)
-          subprocess.run(['git','apply','--index','--check','--unidiff-zero',str(patch)],check=True)
-          subprocess.run(['git','apply','--index','--unidiff-zero',str(patch)],check=True)
+          args = ['git','apply','--index','--unidiff-zero','--exclude=.github/workflows/mixer.yml']
+          subprocess.run(args+['--check',str(patch)],check=True)
+          subprocess.run(args+[str(patch)],check=True)
           PY
-          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 32
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 31
+          test -z "$(git diff --cached --name-only -- .github/workflows)"
           git diff --cached --check
-          git rm .github/send-controls-stage/part-*.b64 .github/workflows/send-controls-materialize.yml
+          git rm .github/send-controls-stage/part-*.b64
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat(mixer): persist send mute and independent balance with smoothed live controls'
