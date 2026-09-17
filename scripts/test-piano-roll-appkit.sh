@@ -11,6 +11,7 @@ SOURCES=(
   apps/macos/PianoRoll/PianoRollModel.swift
   apps/macos/PianoRoll/PianoRollTiming.swift
   apps/macos/PianoRoll/PianoRollEdits.swift
+  apps/macos/PianoRoll/PianoRollClipboard.swift
   apps/macos/PianoRoll/PianoRollTransforms.swift
   apps/macos/PianoRoll/PianoRollHarmony.swift
   apps/macos/PianoRoll/PianoRollNoteIndex.swift
