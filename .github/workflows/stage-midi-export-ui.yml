@@ -13,6 +13,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 3
       - name: Verify preimage and apply immutable reviewed patch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -28,10 +29,13 @@ jobs:
 
           def git(*args):
               return subprocess.check_output(['git', *args], text=True).strip()
-          if git('rev-parse', 'HEAD^') != '0e6cd04077a559705afa5d61c5005cd90180c049':
+          base = '0e6cd04077a559705afa5d61c5005cd90180c049'
+          if git('rev-parse', 'HEAD~2') != base:
               raise SystemExit('Unexpected parent; refuse to apply against changed source')
-          if git('rev-parse', 'HEAD^^{tree}') != 'cc8249f825d7b2f8548f8250a239d8211ff8af68':
+          if git('rev-parse', base + '^{tree}') != 'cc8249f825d7b2f8548f8250a239d8211ff8af68':
               raise SystemExit('Unexpected source tree')
+          subprocess.run(['git', 'diff', '--exit-code', base, 'HEAD', '--', '.',
+                          ':(exclude).github/workflows/stage-midi-export-ui.yml'], check=True)
           ids = ['2901ff13a0010d985211b6b238610cfa3d7da3a0',
                  '306a4749d9c003c9f9818bfb7e7092021b257494',
                  'b3e2c7756828c23af0a47f0f3e45a5a70c65b0c8']
