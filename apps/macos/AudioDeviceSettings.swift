@@ -89,7 +89,7 @@ final class AudioDeviceSettingsController: NSWindowController {
             control.setContentHuggingPriority(.defaultLow, for: .horizontal)
         }
         refreshButton.target = self; refreshButton.action = #selector(refreshDevices)
-        applyButton.target = self; applyButton.action = #selector(apply)
+        applyButton.target = self; applyButton.action = #selector(AudioDeviceSettingsController.apply)
         applyButton.keyEquivalent = "\r"
         refreshDevices()
     }
@@ -207,7 +207,7 @@ extension DraftApp {
         var bytes = [CChar](repeating: 0, count: 512)
         daw_error(target ?? session, &bytes, bytes.count)
         return NSError(domain: "MyDAW.AudioSettings", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: String(cString: bytes)])
+            userInfo: [NSLocalizedDescriptionKey: String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)])
     }
     func restoreAudioDeviceConfiguration(_ target: OpaquePointer) {
         do {
