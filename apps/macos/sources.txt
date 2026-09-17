@@ -15,7 +15,10 @@ apps/macos/TimelineRulerView.swift
 apps/macos/WaveformView.swift
 apps/macos/WorkflowUI.swift
 apps/macos/Workspace/ChannelRackView.swift
+apps/macos/Workspace/LibraryBrowserActions.swift
 apps/macos/Workspace/LibraryBrowserView.swift
+apps/macos/Workspace/LibraryCatalog.swift
+apps/macos/Workspace/LibraryCatalogModel.swift
 apps/macos/Workspace/MidiArrangementView.swift
 apps/macos/Workspace/TimelineNavigation.swift
 apps/macos/Workspace/TimelineRangeEditing.swift

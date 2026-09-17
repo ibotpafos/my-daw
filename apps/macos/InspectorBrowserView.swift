@@ -55,6 +55,10 @@ struct InspectorBrowserItem: Equatable, Identifiable {
     var available = true
     var category: LibraryCategory = .audio
     var sourceURL: URL?
+    var pluginResourceKey: String?
+    var pluginFormat: LibraryFormat = .unknown
+    var resourceKey: String? { sourceURL.flatMap(LibraryResourceKey.audio) ?? pluginResourceKey }
+    var format: LibraryFormat { category == .audio ? LibraryFormat.audio(sourceURL) : pluginFormat }
 }
 
 /// Selection inspector only. The original MIDI editor instance lives in the

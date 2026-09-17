@@ -313,6 +313,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         window.isReleasedWhenClosed = false
         window.backgroundColor = DAWDesignTokens.Color.canvas
         window.shouldHandleClipDelete = { [weak self] in self?.shouldHandleWorkspaceClipDelete ?? true }
+        window.onFocusedKeyDown = { [weak self] event in self?.libraryBrowser.handleFocusedKey(event) ?? false }
         window.onPlayStop = { [weak self] in guard let self else{return};self.isPlaying ? self.stopAudio():self.playAudio() }
         window.onRewind = { [weak self] in self?.rewindAudio() }
         window.onDeleteSelectedClip = { [weak self] in self?.deleteCurrentSelectedClip() }
@@ -838,14 +839,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         libraryBrowser.onScanVST3 = { [weak self] in self?.scanInstalledVST3() }
         libraryBrowser.onBrowserSelect = { [weak self] kind, item in
             guard let self else { return }
-            guard kind == .audio, let item, let url = self.browserAudioURLs[item.id] else {
+            guard !self.isRecording, !self.midiTakeArmed, kind == .audio, let item, item.available, let url = self.browserAudioURLs[item.id] else {
                 self.stopBrowserAudioPreview()
                 return
             }
-            self.audioPreview.select(url)
+            if self.audioPreview.state.selectedURL?.standardizedFileURL != url.standardizedFileURL { self.audioPreview.select(url) }
         }
         libraryBrowser.onPreview = { [weak self] item in
-            guard let self, let item, let url = self.browserAudioURLs[item.id] else { return }
+            guard let self, !self.isRecording, !self.midiTakeArmed, let item, item.available, let url = self.browserAudioURLs[item.id] else { return }
             if self.audioPreview.state.selectedURL != url { self.audioPreview.select(url) }
             self.audioPreview.play()
         }
@@ -901,22 +902,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         audioPreview.stop()
         if audioPreview.state.selectedURL != nil { audioPreview.select(nil) }
     }
-    func refreshBrowserCatalog() {
-        browserPluginTargets.removeAll();var items:[InspectorBrowserItem]=[]
-        for plugin in auCatalog {
-            let instrument = plugin.type == 0x61756D75 // kAudioUnitType_MusicDevice (aumu)
-            let item = InspectorBrowserItem(title: plugin.name, detail: instrument ? "Audio Unit · инструмент" : "Audio Unit · эффект",
-                                            available: true, category: instrument ? .instruments : .effects)
-            browserPluginTargets[item.id] = .audioUnit(type: plugin.type, subtype: plugin.subtype, manufacturer: plugin.manufacturer)
-            items.append(item)
-        }
-        for plugin in vst3Catalog {
-            let item = InspectorBrowserItem(title: plugin.name, detail: "VST3" + (plugin.vendor.isEmpty ? "" : " · " + plugin.vendor),
-                                            available: plugin.available, category: plugin.instrument ? .instruments : .effects)
-            browserPluginTargets[item.id] = .vst3(index: plugin.index); items.append(item)
-        }
-        libraryBrowser.pluginItems=items.sorted{$0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending}
-    }
     func addBrowserFolder() {
         let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.allowsMultipleSelection=false;panel.prompt="Добавить";panel.message="Выбери папку с WAV/AIFF. My DAW читает только эту явно выбранную папку и не запрашивает общий доступ к Документам."
         guard panel.runModal() == .OK,let root=panel.url else{return}
@@ -928,7 +913,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         stopBrowserAudioPreview();browserAudioURLs.removeAll();let items=urls.map{url -> InspectorBrowserItem in let item=InspectorBrowserItem(title:url.deletingPathExtension().lastPathComponent,detail:url.deletingLastPathComponent().lastPathComponent,available:true,sourceURL:url);browserAudioURLs[item.id]=url;return item};libraryBrowser.audioItems=items
     }
     func addBrowserItem(_ kind:InspectorBrowserKind,_ item:InspectorBrowserItem?) {
-        guard !isRecording,let item else{return}
+        guard !isRecording, !midiTakeArmed, let item, item.available else { return }
         if kind == .audio { guard let url = browserAudioURLs[item.id] else { return }; beginTrackImport(url); return }
         stopBrowserAudioPreview()
         guard item.available,let target=browserPluginTargets[item.id] else{return}

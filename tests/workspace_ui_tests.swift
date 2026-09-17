@@ -305,5 +305,6 @@ func runWorkspaceIntegrationTests() {
     assertions += runRackParameterTests(controller)
     settle(1536, 1000); screenshot("workspace-parameters")
     settle(1060, 700); screenshot("workspace-parameters-1060")
+    assertions += runLibraryBrowserTests(controller)
     print("PASS: \(assertions) native workspace assertions; actual AppKit composition, model commands, selection and screenshots")
 }

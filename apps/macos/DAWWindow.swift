@@ -4,6 +4,7 @@ import AppKit
 /// command implementations; this class only decides whether a key is safe to
 /// treat as a global DAW command.
 final class DAWWindow: NSWindow {
+    var onFocusedKeyDown: ((NSEvent) -> Bool)?
     var onPlayStop: (() -> Void)?
     var onRewind: (() -> Void)?
     var shouldHandleClipDelete: (() -> Bool)?
@@ -18,7 +19,7 @@ final class DAWWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown,
            !defersToTextInput,
-           handleUnmodifiedGlobalCommand(event) {
+           (onFocusedKeyDown?(event) == true || handleUnmodifiedGlobalCommand(event)) {
             return
         }
         super.sendEvent(event)
@@ -30,6 +31,7 @@ final class DAWWindow: NSWindow {
         guard !defersToTextInput else {
             return super.performKeyEquivalent(with: event)
         }
+        if onFocusedKeyDown?(event) == true { return true }
         if super.performKeyEquivalent(with: event) {
             return true
         }
