@@ -45,10 +45,12 @@ jobs:
           git add -A
           git diff --cached --check
           reviewed_tree=$(git write-tree)
+          mkdir -p "$RUNNER_TEMP/integration-proof"
+          echo "$reviewed_tree" | tee "$RUNNER_TEMP/integration-proof/tree.txt"
+          git ls-tree -r "$reviewed_tree" > "$RUNNER_TEMP/integration-proof/files.txt"
+          git archive --format=zip "$reviewed_tree" -o "$RUNNER_TEMP/integration-proof/source.zip"
           test "$reviewed_tree" = 6884fd397139ef3eeaa70e29f6ded3454347279a
           echo "Verified reviewed source tree: $reviewed_tree"
-          # Workflow changes are published separately by the authorized connector.
-          # This restricted CI token commits source/docs/scripts only.
           git restore --source="$SOURCE_HEAD" --staged --worktree .github
           git diff --cached "$SOURCE_HEAD" --exit-code -- .github
           git commit -m 'merge(integration): reconcile Piano Roll, workspace, folders and MIDI export'
@@ -60,3 +62,10 @@ jobs:
           test "$remote_head" = "$SOURCE_HEAD"
           git push origin HEAD:refs/heads/codex/midi-only-export-ui
           git log -1 --format='%H %T'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: integration-reconstruction-${{ github.sha }}
+          path: ${{ runner.temp }}/integration-proof/
+          retention-days: 3
+          if-no-files-found: warn
