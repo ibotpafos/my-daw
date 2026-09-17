@@ -59,3 +59,9 @@ exercises native stars/menus, filters, selection replacement, capture guards,
 keyboard routing, a real system-AU insertion/Undo and screenshots at two widths.
 Audition callbacks in keyboard tests are spies, not a physical audio acceptance.
 The native UI workflow runs both suites; existing Core/VST3 workflows remain.
+
+The first native compile exposed the Swift importer's inability to expose the
+4097-byte C `module_path` field. `apps/macos/DAWBridge.h` is a header-only copy
+adapter using standard C `memchr`/`memcpy`, not a new exported engine ABI or hard-
+coded layout offset. Production and UI tests import the same header; 12 C checks
+cover empty/maximum/malformed paths, buffer bounds and descriptor size.

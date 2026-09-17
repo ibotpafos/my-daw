@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/workspace-ui
+xcrun clang -std=c11 -Wall -Wextra -Werror tests/macos_bridge_tests.c -o build/workspace-ui/bridge-tests
+build/workspace-ui/bridge-tests
 xcrun swiftc -swift-version 6 -parse-as-library \
   apps/macos/Workspace/WorkspaceLayout.swift tests/workspace_layout_tests.swift \
   -o build/workspace-ui/layout-tests
@@ -26,7 +28,7 @@ while IFS= read -r source || [[ -n "$source" ]]; do
 done < apps/macos/sources.txt
 xcrun swiftc -swift-version 6 -D DAW_WORKSPACE_TESTS \
   -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header engine/bridge/daw.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift \
+  -import-objc-header apps/macos/DAWBridge.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a \
   -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers \
   -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \

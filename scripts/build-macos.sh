@@ -77,7 +77,7 @@ while IFS= read -r source || [ -n "$source" ]; do
   SWIFT_SOURCES+=("$source")
 done < apps/macos/sources.txt
 xcrun swiftc -swift-version 6 -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header engine/bridge/daw.h "${SWIFT_SOURCES[@]}" \
+  -import-objc-header apps/macos/DAWBridge.h "${SWIFT_SOURCES[@]}" \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \
   -o "$DAW_APP/Contents/MacOS/My DAW"
 # Set to an installed Apple Development/Developer ID identity to preserve the

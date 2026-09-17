@@ -20,12 +20,16 @@ extension DraftApp {
             var descriptor = daw_vst3_component()
             descriptor.struct_size = UInt32(MemoryLayout<daw_vst3_component>.size)
             let read = daw_get_installed_vst3(session, plugin.index, &descriptor) == 0
-            let path = withUnsafeBytes(of: descriptor.module_path) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+            var pathBuffer = [CChar](repeating: 0, count: Int(DAW_MACOS_VST3_PATH_CAPACITY))
+            let copied = read && pathBuffer.withUnsafeMutableBufferPointer { buffer in
+                daw_macos_copy_vst3_path(&descriptor, buffer.baseAddress, buffer.count) == 0
+            }
+            let path = pathBuffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
             let classID = withUnsafeBytes(of: descriptor.class_id) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
             let item = InspectorBrowserItem(title: plugin.name,
                 detail: "VST3" + (plugin.vendor.isEmpty ? "" : " · " + plugin.vendor),
                 available: plugin.available && read, category: plugin.instrument ? .instruments : .effects,
-                pluginResourceKey: read ? LibraryResourceKey.vst3(path: path, classID: classID) : nil,
+                pluginResourceKey: copied ? LibraryResourceKey.vst3(path: path, classID: classID) : nil,
                 pluginFormat: .vst3)
             if read { targets[item.id] = .vst3(index: plugin.index) }
             items.append(item)
