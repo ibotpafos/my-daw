@@ -23,7 +23,7 @@ struct LibraryFolderBookmark: Codable, Sendable {
 /// Immutable shared lease. The scan task and the published catalog retain it;
 /// its one successful scope acquisition is balanced exactly once on release.
 /// No mutable state crosses actors; Foundation URL scope calls are thread-safe.
-final class LibraryFolderAccess: @unchecked Sendable {
+final class LibraryFolderAccess: Sendable {
     let url: URL
     let bookmark: LibraryFolderBookmark
     private let started: Bool

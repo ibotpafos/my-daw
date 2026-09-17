@@ -91,12 +91,15 @@ final class LibraryFolderController {
         let token = UUID(); generation = token
         state = State(title: title, message: "Сканирование…", busy: true, hasFolder: true)
         let scanner = self.scanner
-        let task = Task.detached(priority: .utility) { [weak self] in
+        // Capture the weak UI owner only on its actor. The filesystem worker
+        // passes immutable values to this Sendable hop, never a shared weak var.
+        let reportProgress: @MainActor @Sendable (LibraryFolderScan.Progress) -> Void = { [weak self] progress in
+            guard let self, self.generation == token, self.worker != nil else { return }
+            self.state.message = "Найдено \(progress.found) · просмотрено \(progress.visited)"
+        }
+        let task = Task.detached(priority: .utility) {
             try await scanner.run(request) { progress in
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == token, self.worker != nil else { return }
-                    self.state.message = "Найдено \(progress.found) · просмотрено \(progress.visited)"
-                }
+                Task { await reportProgress(progress) }
             }
         }
         worker = task
