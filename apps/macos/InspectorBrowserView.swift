@@ -30,6 +30,7 @@ struct InspectorMidiModel: Equatable {
     var selectedClip: Int?
     var notes: [PianoRollNote] = []
     var editable = false
+    var context: PRClipContext?
 }
 
 /// One live CoreMIDI source the app can arm a keyboard take from. id 0 is the
@@ -75,6 +76,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
     var onMidiInputSelect: ((UInt32) -> Void)?
     var onMidiRecordToggle: (() -> Void)?
     var onMidiNotesChange: (([PianoRollNote]) -> Void)?
+    var onMidiCommitRequest: ((PRCommitRequest) -> Void)?
     var onMidiAddNote: (() -> Void)?
     var onMidiRemoveNote: ((Int) -> Void)?
     var onBrowserSelect: ((InspectorBrowserKind, InspectorBrowserItem?) -> Void)?
@@ -181,6 +183,7 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
         midiEditor.isHidden = true
         midiEditor.onClipSelect = { [weak self] index in self?.onMidiClipSelect?(index) }
         midiEditor.onNotesChange = { [weak self] notes in self?.onMidiNotesChange?(notes) }
+        midiEditor.onCommitRequest = { [weak self] request in self?.onMidiCommitRequest?(request) }
         midiEditor.onAddNote = { [weak self] in self?.onMidiAddNote?() }
         midiEditor.onAddClip = { [weak self] in self?.onMidiAddClip?() }
         midiEditor.onRemoveClip = { [weak self] index in self?.onMidiRemoveClip?(index) }
@@ -211,15 +214,12 @@ final class InspectorBrowserView: NSView, NSTableViewDataSource, NSTableViewDele
 
     private func applyMidi() {
         guard let midi, !midi.clips.isEmpty else {
-            midiEditor.editorEnabled = false
+            midiEditor.apply(model: nil)
             midiEditor.isHidden = true
             return
         }
         midiEditor.isHidden = false
-        midiEditor.editorEnabled = midi.editable
-        midiEditor.clips = midi.clips
-        midiEditor.selectedClip = midi.selectedClip
-        midiEditor.notes = midi.notes
+        midiEditor.apply(model: midi)
         applyMidiCapture()   // ряд захвата живёт по тому же условию видимости
     }
 

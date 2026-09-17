@@ -107,7 +107,7 @@ std::vector<std::shared_ptr<const Clip>> splitLoopPasses(const Clip& recording,u
     if(!loopFrames||loopFrames>48000*600)throw Error("Invalid loop pass length");
     std::vector<std::shared_ptr<const Clip>> passes;const auto frames=recording.frames();
     for(uint64_t begin=0;begin<frames;begin+=loopFrames){const auto count=std::min(loopFrames,frames-begin);std::vector<float> samples(count*2);std::copy_n(recording.samples().begin()+static_cast<std::ptrdiff_t>(begin*2),static_cast<std::ptrdiff_t>(count*2),samples.begin());passes.push_back(std::make_shared<const Clip>(std::move(samples)));}
-    if(passes.empty()) throw Error("Recording contains no audio frames");
+    if(passes.empty())throw Error("Recording contains no audio frames");
     return passes;
 }
 

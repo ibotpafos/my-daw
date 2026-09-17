@@ -479,10 +479,16 @@ enum { DAW_MIDI_CLIP_VERSION = 2 };
 typedef struct { uint32_t struct_size; uint32_t version; uint64_t start; uint64_t length; int32_t lane; uint32_t note_count; uint32_t color; } daw_midi_clip;
 /* A read of at most 8192 notes per call; note_offset pages larger clips. */
 enum { DAW_MIDI_NOTES_PER_CALL = 8192 };
+/* Full replacement is atomic, up to the project-wide note budget. It must
+ * not be split into append calls (which would create multiple Undo entries).
+ * Add/append batches and paged reads retain their 8192-note call limit. */
+enum { DAW_MIDI_NOTES_PER_REPLACEMENT = 65536 };
 /* Adds one clip (with its whole note array) to the track in one revision. */
 int daw_add_midi_clip(daw_session*, uint64_t track_id, const daw_midi_clip* clip, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
 int daw_remove_midi_clip(daw_session*, uint64_t track_id, uint32_t clip_index, uint64_t expected_revision);
-/* Replaces the full note array of one clip; empty notes clears the clip. */
+/* Replaces the full note array of one clip; empty notes clears the clip.
+ * At most DAW_MIDI_NOTES_PER_REPLACEMENT notes; the domain additionally checks
+ * the total across all clips. Oversized count is rejected before reading notes. */
 int daw_set_midi_notes(daw_session*, uint64_t track_id, uint32_t clip_index, const daw_midi_note* notes, uint32_t note_count, uint64_t expected_revision);
 /* Appends the batch after the clip's existing notes in one revision — the
  * manual-edit counterpart of the live-capture stop path. The clip window

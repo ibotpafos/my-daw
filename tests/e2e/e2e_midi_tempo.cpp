@@ -249,7 +249,7 @@ int main() {
         CHECK(meta0.color == 0x0F1E2D);
 
         // 1f. A clip with MORE notes than DAW_MIDI_NOTES_PER_CALL: 8192 written in
-        //     one add (the bridge caps every note write at 8192) + 808 appended in
+        //     one add (add/append batches are capped at 8192) + 808 appended in
         //     one revision = 9000, then paged fully back through note_offset.
         const uint64_t dense = addTrack(s, "Dense");
         {
@@ -279,6 +279,26 @@ int main() {
                 CHECK(all[index].pitch == static_cast<uint8_t>(index % 128));
                 CHECK(all[index].channel == static_cast<uint8_t>(index % 16));
                 CHECK(all[index].velocity == static_cast<uint8_t>(1 + index % 127));
+            }
+            // A piano-roll commit replaces this whole clip in ONE command,
+            // even when reading it required more than one page.
+            std::vector<daw_midi_note> replacement;
+            replacement.reserve(all.size());
+            for (const auto& note : all)
+                replacement.push_back(noteAt(note.start, note.length, note.pitch, note.channel, 100));
+            const auto beforeReplace = rev(s);
+            CHECK_OK(s, daw_set_midi_notes(s, dense, 0, replacement.data(),
+                     static_cast<uint32_t>(replacement.size()), beforeReplace));
+            CHECK(rev(s) == beforeReplace + 1);
+            const auto replaced = readAllNotes(s, dense, 0);
+            CHECK(replaced.size() == all.size());
+            for (const auto& note : replaced) CHECK(note.velocity == 100);
+            CHECK_OK(s, daw_undo(s, rev(s)));
+            const auto restored = readAllNotes(s, dense, 0);
+            CHECK(restored.size() == all.size());
+            for (size_t i = 0; i < all.size(); ++i) {
+                CHECK(restored[i].velocity == all[i].velocity);
+                CHECK(restored[i].start == all[i].start && restored[i].length == all[i].length);
             }
         }
 
