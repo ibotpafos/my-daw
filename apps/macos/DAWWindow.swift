@@ -11,6 +11,7 @@ final class DAWWindow: NSWindow {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onZoomReset: (() -> Void)?
+    private lazy var commandPalette = DAWCommandPaletteController()
 
     /// Capture unmodified transport/edit keys before focused canvas views.
     /// Command equivalents deliberately remain in AppKit's menu routing first.
@@ -23,9 +24,13 @@ final class DAWWindow: NSWindow {
         super.sendEvent(event)
     }
 
-    /// Preserve the responder chain and standard menu shortcuts.  If no menu
-    /// consumes a DAW zoom shortcut, use the closure supplied by the app.
+    /// Preserve the responder chain and standard menu shortcuts. Command-K is
+    /// the one deliberate global exception: the palette must remain reachable
+    /// even while a rename/search text field owns first responder.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleCommandPaletteCommand(event) {
+            return true
+        }
         guard !defersToTextInput else {
             return super.performKeyEquivalent(with: event)
         }
@@ -68,6 +73,17 @@ final class DAWWindow: NSWindow {
         default:
             return false
         }
+    }
+
+    private func handleCommandPaletteCommand(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers == [.command],
+              event.charactersIgnoringModifiers?.lowercased() == "k" else {
+            return false
+        }
+        commandPalette.toggle(from: self)
+        return true
     }
 
     private func handleZoomCommand(_ event: NSEvent) -> Bool {
