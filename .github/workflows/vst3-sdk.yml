@@ -1,0 +1,119 @@
+name: VST3 SDK integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Explicit bash enables -o pipefail; tee must never turn compiler/test errors
+# into successful steps.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: vst3-sdk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-host:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Capture reproducible source and toolchain
+        run: |
+          mkdir -p build/vst3-diagnostics
+          git archive --format=zip HEAD -o build/vst3-diagnostics/source.zip
+          {
+            git rev-parse HEAD
+            sw_vers
+            xcodebuild -version
+            xcrun clang++ --version
+            xcrun swiftc --version
+            cmake --version
+          } > build/vst3-diagnostics/toolchain.txt
+      - name: Test report verification rules
+        run: python3 -m unittest discover -s tests -p test_ci_reports.py -v
+      - name: Bootstrap pinned VST3 SDK
+        run: |
+          ./scripts/bootstrap-vst3-sdk.sh
+          git -C build/dependencies/vst3sdk submodule status > build/vst3-diagnostics/sdk-submodules.txt
+      - name: Build pinned Steinberg ADelay and mda instrument fixtures
+        run: |
+          cmake -S build/dependencies/vst3sdk -B build/vst3-fixtures \
+            -DCMAKE_BUILD_TYPE=Debug -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
+            -DSMTG_RUN_VST_VALIDATOR=OFF -DSMTG_CREATE_PLUGIN_LINK=OFF \
+            2>&1 | tee build/vst3-diagnostics/fixture-configure.log
+          cmake --build build/vst3-fixtures --target adelay mda-vst3 --parallel 2 \
+            2>&1 | tee build/vst3-diagnostics/fixture-build.log
+          plugin="$(find "$PWD/build/vst3-fixtures" -type d -name 'adelay.vst3' -print -quit)"
+          test -n "$plugin" && test -d "$plugin"
+          echo "DAW_VST3_TEST_PLUGIN=$plugin" >> "$GITHUB_ENV"
+          instrument="$(find "$PWD/build/vst3-fixtures" -type d -name 'mda-vst3.vst3' -print -quit)"
+          test -n "$instrument" && test -d "$instrument"
+          echo "DAW_VST3_TEST_INSTRUMENT=$instrument" >> "$GITHUB_ENV"
+      - name: Configure real SDK host and both helpers
+        run: |
+          cmake -S . -B build/vst3-ci -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DDAW_SANITIZERS=ON \
+            -DDAW_VST3_TEST_PLUGIN="$DAW_VST3_TEST_PLUGIN" \
+            -DDAW_VST3_TEST_INSTRUMENT="$DAW_VST3_TEST_INSTRUMENT" \
+            -DDAW_BUILD_VST3_SCAN_HELPER=ON -DDAW_BUILD_VST3_RUNTIME_HELPER=ON \
+            2>&1 | tee build/vst3-diagnostics/configure.log
+      - name: Build SDK host and regression suite
+        run: cmake --build build/vst3-ci --parallel 2 2>&1 | tee build/vst3-diagnostics/build.log
+      - name: Run SDK-enabled CTests including process isolation
+        run: |
+          ctest --test-dir build/vst3-ci --output-on-failure --no-tests=error \
+            --timeout 300 --output-junit ctest.xml \
+            2>&1 | tee build/vst3-diagnostics/ctest.log
+      - name: Verify actual test execution
+        run: |
+          python3 scripts/check_test_report.py build/vst3-ci/ctest.xml \
+            --require vst3_runtime_isolation --require vst3_sdk_smoke --require vst3_instrument_source
+      - name: Build native development bundle with VST3
+        run: ./scripts/build-macos.sh 2>&1 | tee build/vst3-diagnostics/app-build.log
+      - name: Verify and package SDK-enabled application
+        run: |
+          test -x 'build/My DAW.app/Contents/MacOS/daw_vst3_scan_helper'
+          test -x 'build/My DAW.app/Contents/MacOS/daw_vst3_runtime_helper'
+          test -s 'build/My DAW.app/Contents/Resources/ThirdPartyNotices/VST3-SDK.txt'
+          codesign --verify --strict 'build/My DAW.app'
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/My-DAW-macos-arm64-vst3.zip
+          (cd build && shasum -a 256 My-DAW-macos-arm64-vst3.zip > My-DAW-macos-arm64-vst3.sha256)
+      - name: Upload SDK-enabled development application
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: My-DAW-macos-arm64-vst3-${{ github.sha }}
+          path: |
+            build/My-DAW-macos-arm64-vst3.zip
+            build/My-DAW-macos-arm64-vst3.sha256
+            build/build-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload SDK build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vst3-sdk-diagnostics-${{ github.sha }}
+          path: |
+            build/vst3-diagnostics/
+            build/vst3-ci/ctest.xml
+            build/vst3-ci/Testing/Temporary/LastTest.log
+            build/vst3-ci/compile_commands.json
+            build/vst3-ci/vst3-instrument-proof.json
+            build/vst3-ci/vst3-instrument.wav
+          if-no-files-found: warn
+          retention-days: 14

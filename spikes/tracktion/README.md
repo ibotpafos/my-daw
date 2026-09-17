@@ -15,7 +15,7 @@
 
 ```sh
 git clone --no-checkout https://github.com/Tracktion/tracktion_engine.git build/spikes/tracktion_engine
-git -C build/spikes/tracktion_engine checkout ff794da4f58e732528b06d7799dad087635de0cb
+git -C build/spikes/tracktion_engine checkout 00fe42753a995c79dd857efe69dde17550e27e78
 git -C build/spikes/tracktion_engine -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --depth 1 modules/juce
 cmake -S spikes/tracktion -B build/spikes/tracktion-proof \
   -DTRACKTION_ENGINE_ROOT="$PWD/build/spikes/tracktion_engine" \

@@ -52,7 +52,6 @@ int main() { try {
     auto ready = daw::startWavImport(path.string());
     for (int i = 0; i < 1000 && ready->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Running; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-#ifdef __APPLE__
     CHECK(ready->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Ready);
     CHECK(ready->phase.load(std::memory_order_acquire) == daw::ImportJobPhase::Ready);
     CHECK(ready->progress.load(std::memory_order_acquire) == 100);
@@ -61,13 +60,6 @@ int main() { try {
     CHECK(daw::importClip(*ready)->frames() == 48000);
     daw::cancelImport(*ready);
     CHECK(ready->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Canceled && !daw::importClip(*ready));
-#else
-    // Variable-rate conversion is deliberately a macOS adapter, not a portable
-    // resampler. A non-Apple job must publish failure without a usable clip.
-    CHECK(ready->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Failed);
-    CHECK(daw::importError(*ready) == "Sample-rate conversion is available on macOS only");
-    CHECK(!daw::importClip(*ready) && !daw::markImportApplied(*ready));
-#endif
     for (int i = 0; i < 1000 && daw::backgroundJobsInFlight() != baseline; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     CHECK(daw::backgroundJobsInFlight() == baseline);
 

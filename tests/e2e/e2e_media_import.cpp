@@ -341,14 +341,13 @@ int main() {
         daw_release_import(pending);
 
         // -------------------------------------------------------------------
-        // 10. Platform import surface. macOS additionally converts foreign
-        //     rates (docs/62) and reads AIFF/AIFC (docs/67); a non-Apple build
-        //     has no converter and must say so instead of faking a pitch.
+        // 10. Shared import surface: both platforms convert supported rates
+        //     and read AIFF/AIFC through the public ABI (docs/62, 67, 83).
+        //     Use the same duration, metadata and mutation assertions.
         // -------------------------------------------------------------------
         const auto narrowPath = root / "tone-441.wav";
         writeWavFixture(narrowPath, sineInterleaved(441, 44100, 440.0, 0.5, 2), 44100, 2, "pcm16");
         Bridge platform;
-#ifdef __APPLE__
         {
             // 44.1 kHz -> 480 project frames for 441 source frames: the
             // documented round-to-nearest conversion law, through the job.
@@ -471,33 +470,12 @@ int main() {
             CHECK(trackById(platform.get(), wideId).audio_frames == 4800);
             std::vector<float> widePeaks(512, 0.0f);
             CHECK_OK(platform.get(), daw_get_waveform(platform.get(), wideId, widePeaks.data(), 512));
-            // Interior bins only: Apple's converter may settle at both edges.
+            // Interior bins only: either converter may settle at both edges.
             // The window matches the aiff_import CTest's 0.05 converter gate.
             for (size_t bin = 128; bin < 384; ++bin) expectNear(widePeaks[bin], 0.5, 0.05, "resampled DC peak");
             daw_release_import(aiffJob);
         }
-#else
-        {
-            // Non-Apple builds accept only 48 kHz PCM WAV, with a precise
-            // reason, and they never fake it by keeping the wrong frame count.
-            const auto before = snapshotOf(platform.get());
-            CHECK_REJ(platform.get(), daw_import_wav(platform.get(), narrowPath.string().c_str(), "Converted", before.revision));
-            CHECK(snapshotOf(platform.get()).revision == before.revision);
-            CHECK(snapshotOf(platform.get()).track_count == before.track_count);
-            auto* job44 = daw_begin_import_wav(platform.get(), narrowPath.string().c_str(), "Converted", before.revision);
-            CHECK(job44 != nullptr);
-            const auto refused = waitImport(job44, DAW_IMPORT_FAILED);
-            CHECK(refused.status == DAW_IMPORT_FAILED);
-            CHECK(refused.error[0] != '\0');
-            CHECK(refused.output_frames == 0);
-            CHECK_REJ(platform.get(), daw_apply_import(platform.get(), job44, rev(platform.get())));
-            CHECK(snapshotOf(platform.get()).track_count == before.track_count);
-            daw_release_import(job44);
-            // The 48 kHz backbone still works everywhere.
-            CHECK_OK(platform.get(), daw_import_wav(platform.get(), tonePath.string().c_str(), "Tone", rev(platform.get())));
-            CHECK(trackById(platform.get(), trackNamed(platform.get(), "Tone")).audio_frames == kProjectRate);
-        }
-#endif
+
 
         // -------------------------------------------------------------------
         // 11. Durability: save the draft, reopen it in a brand-new session,

@@ -203,7 +203,31 @@ struct CommandPaletteAppKitTests {
         expect(host.childWindows?.isEmpty != false, "menu action cannot interrupt marked text")
         host.makeFirstResponder(target)
         marked.removeFromSuperview()
+        // Regression for the joined workspace: ordinary editor shortcuts and
+        // Delete ownership must survive integrating the palette window boundary.
+        var editorDeletes = 0, clipDeletes = 0, focusedShortcuts = 0
+        host.onDeleteSelectedClip = { clipDeletes += 1 }
+        host.shouldHandleClipDelete = { false }
+        host.onFocusedKeyDown = { event in
+            if event.keyCode == 51 && event.modifierFlags.isEmpty { editorDeletes += 1; return true }
+            if event.keyCode == 14 && event.modifierFlags.contains(.command) { focusedShortcuts += 1; return true }
+            return false
+        }
+        host.sendEvent(key(code: 51, characters: "\u{7f}", flags: [], window: host))
+        expect(editorDeletes == 1 && clipDeletes == 0, "focused editor owns Delete without deleting a clip")
+        expect(host.performKeyEquivalent(with: key(code: 14, characters: "e", flags: .command, window: host)), "focused editor key equivalent is preserved")
+        expect(focusedShortcuts == 1, "focused key handler runs once")
+        host.onFocusedKeyDown = nil
+        host.sendEvent(key(code: 51, characters: "\u{7f}", flags: [], window: host))
+        expect(clipDeletes == 0, "clip-delete guard still prevents a stale global deletion")
+        host.shouldHandleClipDelete = { true }
+        host.sendEvent(key(code: 51, characters: "\u{7f}", flags: [], window: host))
+        expect(clipDeletes == 1, "global clip deletion remains available when explicitly owned")
+        var interceptedPalette = 0
+        host.onFocusedKeyDown = { _ in interceptedPalette += 1; return true }
         expect(host.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: host)), "main window shortcut opens palette")
+        expect(interceptedPalette == 0, "palette shortcut precedes the focused editor key handler")
+        host.onFocusedKeyDown = nil
         expect(host.childWindows?.count == 1, "one attached palette window")
         host.close()
         expect(host.childWindows?.isEmpty != false, "closing host removes owned palette")

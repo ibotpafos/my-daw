@@ -18,7 +18,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
   LINK+=("$CORE/libdaw_au_scanner.a" -Xlinker -lc++ -framework Foundation
     -framework AudioToolbox -framework CoreAudio -framework CoreMIDI -framework AVFoundation)
 else
-  LINK+=(-Xlinker -lstdc++ -Xlinker -lpthread -Xlinker -lm)
+  LINK+=(-Xlinker -lstdc++ -Xlinker -lpthread -Xlinker -lm -Xlinker -lsamplerate)
 fi
 swiftc -swift-version 6 -warnings-as-errors -O -import-objc-header engine/bridge/daw.h \
   "${SOURCES[@]}" tests/piano_roll/BridgeIntegrationTests.swift "${LINK[@]}" -o "$BUILD/bridge-tests"

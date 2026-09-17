@@ -8,13 +8,6 @@
 
 namespace daw {
 
-struct Vst3ScanCacheEntry {
-    Vst3ScannedClass plugin;
-    bool available = false;
-    std::string quarantineReason;
-    uint64_t scannedAtUnixSeconds = 0;
-};
-
 struct Vst3ScanCache {
     uint64_t createdAtUnixSeconds = 0;
     std::vector<Vst3ScanCacheEntry> entries;

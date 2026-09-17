@@ -1,5 +1,7 @@
 name: Piano roll AppKit
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - 'apps/macos/**'
@@ -21,7 +23,7 @@ jobs:
     env:
       PR_QA_DIR: ${{ github.workspace }}/build/qa-ui
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Archive exact tested source for reproduction
@@ -30,7 +32,7 @@ jobs:
           git archive --format=zip --output=build/qa-source/source.zip HEAD
           git rev-parse HEAD > build/qa-source/commit.txt
           shasum -a 256 build/qa-source/source.zip > build/qa-source/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: piano-roll-tested-source-${{ github.run_id }}
           path: build/qa-source/
@@ -42,7 +44,7 @@ jobs:
         run: bash scripts/test-piano-roll-appkit.sh
       - name: Preserve native UI screenshots
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: piano-roll-ui-${{ github.run_id }}
           path: build/qa-ui/
@@ -54,7 +56,7 @@ jobs:
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 3
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Build and verify native arm64 application
@@ -73,7 +75,7 @@ jobs:
           bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-app/midi-bridge-tests.log
       - name: Preserve build evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: piano-roll-app-${{ github.run_id }}
           path: build/qa-app/

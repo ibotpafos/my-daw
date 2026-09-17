@@ -36,14 +36,25 @@ BundleIndex bundleIndex() {
     BundleIndex result; for(const auto& root:roots) { std::error_code error; if(!std::filesystem::is_directory(root,error)) continue; std::filesystem::recursive_directory_iterator iterator(root,std::filesystem::directory_options::skip_permission_denied,error),end; while(!error&&iterator!=end) { const auto path=iterator->path(); if(path.extension()==".component") { indexBundle(path,result); iterator.disable_recursion_pending(); } iterator.increment(error); } }
     return result;
 }
-void printDescription(const AudioComponentDescription& value,const char* name,const BundleIndex& bundles) { const auto found=bundles.find(componentKey(value.componentType,value.componentSubType,value.componentManufacturer)); const BundleMetadata metadata=found==bundles.end()?BundleMetadata{}:found->second; std::printf("%08x\t%08x\t%08x\t%s\t%s\t%s\n",value.componentType,value.componentSubType,value.componentManufacturer,name,encode(metadata.path).c_str(),encode(metadata.version).c_str()); }
+void printDescription(const AudioComponentDescription& value,const char* name,const BundleIndex& bundles) {
+    const auto found=bundles.find(componentKey(value.componentType,value.componentSubType,value.componentManufacturer));
+    const BundleMetadata metadata=found==bundles.end()?BundleMetadata{}:found->second;
+    std::string displayName=name;
+    // The app's legacy browser inferred AU instruments from a couple of
+    // subtypes. The scanner now has the authoritative component type, so give
+    // MusicDevice entries the same visible keyboard badge already used by VST3
+    // instruments. Snapshot/add later re-read the component's real name, so
+    // this catalog-only prefix never pollutes durable insert state.
+    if(value.componentType==kAudioUnitType_MusicDevice&&displayName.size()<=470) displayName="🎹 "+displayName;
+    std::printf("%08x\t%08x\t%08x\t%s\t%s\t%s\n",value.componentType,value.componentSubType,value.componentManufacturer,displayName.c_str(),encode(metadata.path).c_str(),encode(metadata.version).c_str());
+}
 AudioStreamBasicDescription stereoFormat() { AudioStreamBasicDescription value{}; value.mSampleRate=48000; value.mFormatID=kAudioFormatLinearPCM; value.mFormatFlags=kAudioFormatFlagIsFloat|kAudioFormatFlagIsPacked|kAudioFormatFlagIsNonInterleaved|kAudioFormatFlagsNativeEndian; value.mBytesPerPacket=4; value.mFramesPerPacket=1; value.mBytesPerFrame=4; value.mChannelsPerFrame=2; value.mBitsPerChannel=32; return value; }
 int list() {
     AudioComponentDescription wildcard{0,0,0,0,0}; AudioComponent component=nullptr;
     const auto bundles=bundleIndex();
     while((component=AudioComponentFindNext(component,&wildcard))) {
         AudioComponentDescription description{}; if(AudioComponentGetDescription(component,&description)!=noErr) continue;
-        if(description.componentType!=kAudioUnitType_Effect&&description.componentType!=kAudioUnitType_MusicEffect) continue;
+        if(description.componentType!=kAudioUnitType_Effect&&description.componentType!=kAudioUnitType_MusicEffect&&description.componentType!=kAudioUnitType_MusicDevice) continue;
         CFStringRef name=nullptr; if(AudioComponentCopyName(component,&name)!=noErr||!name) continue;
         std::array<char,481> bytes{}; const bool converted=CFStringGetCString(name,bytes.data(),bytes.size(),kCFStringEncodingUTF8); CFRelease(name);
         if(converted&&bytes[0]&&printableName(bytes.data())) printDescription(description,bytes.data(),bundles);
@@ -56,7 +67,8 @@ int probe(uint32_t type,uint32_t subtype,uint32_t manufacturer) {
     bool initialized=false;
     const auto dispose=[&]{ if(unit) { if(initialized) AudioUnitUninitialize(unit); AudioComponentInstanceDispose(unit); unit=nullptr; } };
     const auto stream=stereoFormat(); UInt32 maximum=4096;
-    if(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum))!=noErr||AudioUnitInitialize(unit)!=noErr) { dispose(); return 12; }
+    if(type!=kAudioUnitType_MusicDevice&&AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&stream,sizeof(stream))!=noErr) { dispose(); return 12; }
+    if(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,0,&stream,sizeof(stream))!=noErr||AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum))!=noErr||AudioUnitInitialize(unit)!=noErr) { dispose(); return 12; }
     initialized=true;
     Float64 latency=0; UInt32 latencySize=sizeof(latency); if(AudioUnitGetProperty(unit,kAudioUnitProperty_Latency,kAudioUnitScope_Global,0,&latency,&latencySize)!=noErr||!std::isfinite(latency)||latency<0||latency>10) { dispose(); return 13; }
     CFPropertyListRef state=nullptr; UInt32 stateSize=sizeof(state); const auto stateStatus=AudioUnitGetProperty(unit,kAudioUnitProperty_ClassInfo,kAudioUnitScope_Global,0,&state,&stateSize); if(state) CFRelease(state); dispose();

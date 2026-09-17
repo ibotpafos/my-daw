@@ -4,13 +4,13 @@ on:
     branches: [main, 'feature/**']
   pull_request:
   workflow_dispatch:
-concurrency:
-  group: core-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 permissions:
   contents: read
+concurrency:
+  group: core-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 env:
-  CMAKE_BUILD_PARALLEL_LEVEL: 3
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
   UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 jobs:
   core:
@@ -19,38 +19,93 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install Linux audio conversion dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libsamplerate0-dev pkg-config
+          pkg-config --modversion samplerate
       - name: Configure
         run: cmake --preset sanitizers
       - name: Build
         shell: bash
         run: |
           set -o pipefail
-          cmake --build --preset sanitizers -- -k 2>&1 | tee "$RUNNER_TEMP/core-build.log"
+          cmake --build --preset sanitizers --parallel 2 -- -k 2>&1 | tee "$RUNNER_TEMP/core-build.log"
       - name: Test
         run: ctest --preset sanitizers
-      - name: Docs and contract checks
-        run: python3 scripts/check_docs.py
-      - name: E2E coverage ledger
-        run: python3 scripts/e2e_coverage.py --strict
+      - name: Install pinned documentation tools
+        id: docs-tools
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m venv build/docs-venv
+          build/docs-venv/bin/python -m pip install --disable-pip-version-check -r requirements-docs.txt
+          build/docs-venv/bin/python -m pip check
+      - name: Required schema and documentation checks
+        if: ${{ !cancelled() && steps.docs-tools.outcome == 'success' }}
+        run: build/docs-venv/bin/python scripts/check_docs.py --require-schemas
+      - name: Repository layout and E2E ledger
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m unittest discover -s tests -p test_project_layout.py -v
+          python3 scripts/e2e_coverage.py --strict
+      - name: Native Swift regression tests
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          mkdir -p build/swift-tests
+          xcrun swiftc -swift-version 6 -parse-as-library apps/macos/ProjectTime.swift tests/project_time_tests.swift -o build/swift-tests/project-time
+          build/swift-tests/project-time
+          xcrun swiftc -swift-version 6 -typecheck scripts/macos-app-control.swift
       - name: Typecheck complete AppKit UI
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
         run: bash scripts/typecheck-macos-ui.sh
       - name: Build AppKit prototype
-        if: runner.os == 'macOS'
+        id: app-build
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
         run: ./scripts/build-macos.sh
+      - name: Package development build
+        id: app-package
+        if: ${{ !cancelled() && steps.app-build.outcome == 'success' }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/My-DAW-macos-arm64.zip
+          shasum -a 256 build/My-DAW-macos-arm64.zip > build/My-DAW-macos-arm64.sha256
+      - name: Upload development application
+        if: ${{ !cancelled() && steps.app-package.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: My-DAW-macos-arm64-development-${{ github.sha }}
+          path: |
+            build/My-DAW-macos-arm64.zip
+            build/My-DAW-macos-arm64.sha256
+            build/build-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            build/sanitizers/ctest.xml
+            build/sanitizers/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
       - name: Package reproducible build input
         if: always() && runner.os == 'Linux'
         run: git archive --format=tar -o "$RUNNER_TEMP/my-daw-source.tar" HEAD
       - name: Preserve build diagnostics
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: core-build-input-${{ github.sha }}
           path: |
@@ -58,12 +113,28 @@ jobs:
             ${{ runner.temp }}/core-build.log
             build/sanitizers/Testing/Temporary/LastTest.log
           retention-days: 3
+  source-quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install standard lint tools
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18 shellcheck
+      - name: Check migrated C++ formatting
+        run: clang-format-18 --dry-run --Werror engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
+      - name: Check canonical launch scripts
+        run: |
+          shellcheck script/build_and_run.sh scripts/run-macos.sh
+          bash -n scripts/build-macos.sh
+          ./script/build_and_run.sh --help
   command-palette:
     # Independent of audio devices and the C++ build.
     runs-on: macos-15
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Command palette models and AppKit integration
@@ -72,7 +143,7 @@ jobs:
           DAW_PALETTE_EVIDENCE_DIR: ${{ runner.temp }}/command-palette-evidence
       - name: Preserve native UI evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: command-palette-ui-${{ github.sha }}
           path: ${{ runner.temp }}/command-palette-evidence

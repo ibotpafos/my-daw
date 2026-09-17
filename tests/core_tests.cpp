@@ -260,7 +260,6 @@ int main() { try {
     writeFixtureWav(rate441Path,44100);writeFixtureWav(zeroRatePath,0);writeFixtureWav(nanPath,44100,true);
     std::unique_ptr<daw_session,decltype(&daw_destroy)> rateBridge(daw_create(),daw_destroy);CHECK(rateBridge);
     daw_snapshot rateSnapshot{};rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);
-#ifdef __APPLE__
     CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"44.1 base",rateSnapshot.revision)==0);
     rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==1&&rateSnapshot.track_count==1);
     daw_track rateTrack{};rateTrack.struct_size=sizeof(rateTrack);CHECK(daw_get_track(rateBridge.get(),0,&rateTrack)==0&&rateTrack.audio_frames==480&&rateTrack.clip_count==1&&rateTrack.take_count==1);
@@ -282,11 +281,6 @@ int main() { try {
     daw_clip unchangedLeft{};unchangedLeft.struct_size=sizeof(unchangedLeft);daw_clip unchangedRight{};unchangedRight.struct_size=sizeof(unchangedRight);CHECK(daw_get_clip(rateBridge.get(),rateTrack.id,0,&unchangedLeft)==0&&daw_get_clip(rateBridge.get(),rateTrack.id,1,&unchangedRight)==0&&unchangedLeft.start==compLeft.start&&unchangedLeft.length==compLeft.length&&unchangedLeft.take_index==compLeft.take_index&&unchangedRight.start==compRight.start&&unchangedRight.length==compRight.length&&unchangedRight.take_index==compRight.take_index);
     const auto rateDraftPath=(cleanup.path/"converted-rate.mydawdraft").string();CHECK(daw_save_draft(rateBridge.get(),rateDraftPath.c_str())==0);const auto rateRoundTrip=daw::readDraft(rateDraftPath);CHECK(rateRoundTrip.tracks.size()==1&&rateRoundTrip.tracks[0].audio&&rateRoundTrip.tracks[0].audio->frames()==480&&rateRoundTrip.tracks[0].takes.size()==1&&rateRoundTrip.tracks[0].takes[0].audio->frames()==480&&rateRoundTrip.tracks[0].regions.size()==2&&rateRoundTrip.tracks[0].regions[1].take==1);
     const auto rateExportPath=(cleanup.path/"converted-rate.wav").string();daw::writeWav(rateRoundTrip,rateExportPath,daw::WavFormat::Float32);std::ifstream exported(rateExportPath,std::ios::binary);CHECK(exported.good());std::vector<unsigned char> exportedHeader(44);exported.read(reinterpret_cast<char*>(exportedHeader.data()),static_cast<std::streamsize>(exportedHeader.size()));CHECK(exported.gcount()==static_cast<std::streamsize>(exportedHeader.size())&&get32(exportedHeader,24)==48000);
-#else
-    CHECK(daw_import_wav(rateBridge.get(),rate441Path.c_str(),"unsupported non-Apple rate",rateSnapshot.revision)==1);
-    rateSnapshot.struct_size=sizeof(rateSnapshot);CHECK(daw_get_snapshot(rateBridge.get(),&rateSnapshot)==0&&rateSnapshot.revision==0&&rateSnapshot.track_count==0);
-#endif
-#ifdef __APPLE__
     // v36 keeps expensive decode/resampling off the owner thread. Begin is
     // read-only; a ready job applies once against an explicit fresh revision.
     std::unique_ptr<daw_session,decltype(&daw_destroy)> asyncBridge(daw_create(),daw_destroy);CHECK(asyncBridge);
@@ -334,7 +328,6 @@ int main() { try {
     const auto epochDraft=(cleanup.path/"async-epoch.mydawdraft").string();daw::Session epochState;epochState.add("Replacement",0);daw::writeDraft(epochState.state(),epochDraft);CHECK(daw_open_draft(asyncBridge.get(),epochDraft.c_str())==0);
     daw_snapshot epochSnapshot{};epochSnapshot.struct_size=sizeof(epochSnapshot);CHECK(daw_get_snapshot(asyncBridge.get(),&epochSnapshot)==0&&epochSnapshot.revision==1&&epochSnapshot.track_count==1);CHECK(daw_apply_import(asyncBridge.get(),epochImport,epochSnapshot.revision)==1);asyncStatus=waitForImport(epochImport);CHECK(asyncStatus.status==DAW_IMPORT_READY);daw_release_import(epochImport);
     daw_session* destroyedSession=daw_create();CHECK(destroyedSession);daw_snapshot destroyedSnapshot{};destroyedSnapshot.struct_size=sizeof(destroyedSnapshot);CHECK(daw_get_snapshot(destroyedSession,&destroyedSnapshot)==0);daw_import_job* orphanImport=daw_begin_import_wav(destroyedSession,rate441Path.c_str(),"Orphan",destroyedSnapshot.revision);CHECK(orphanImport);daw_destroy(destroyedSession);daw_release_import(orphanImport);
-#endif
     daw::Session bounded; for(int i=0;i<256;++i) bounded.add("Track",bounded.state().revision);
     rejects([&]{bounded.add("Overflow",bounded.state().revision);});
     int undos=0; while(bounded.canUndo()){ bounded.undo(bounded.state().revision); ++undos; } CHECK(undos==128);

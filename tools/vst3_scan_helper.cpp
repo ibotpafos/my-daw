@@ -164,8 +164,11 @@ int probe(std::string_view modulePath, std::string_view classId) {
     if (!module) return 10;
     const auto wanted = VST3::UID::fromString(std::string(classId));
     if (!wanted) return 2;
+    // classInfos() returns a vector by value. Keep it alive until the chosen
+    // class has been instantiated; a pointer into the range temporary dangles.
+    const auto classes = module->getFactory().classInfos();
     const VST3::Hosting::ClassInfo* info = nullptr;
-    for (const auto& candidate : module->getFactory().classInfos()) {
+    for (const auto& candidate : classes) {
         if (candidate.category() == kVstAudioEffectClass && candidate.ID() == *wanted) {
             info = &candidate;
             break;

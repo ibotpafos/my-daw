@@ -55,9 +55,6 @@ int main(){try{
     // All product-supported source rates become deterministic stereo 48 kHz frames.
     for (uint32_t rate : {44100u, 48000u, 88200u, 96000u, 192000u}) {
         const uint32_t sourceFrames = rate;
-#ifndef __APPLE__
-        if (rate != 48000) { rejects([&]{daw::decodeWav(wavAtRate(rate, sourceFrames));}); continue; }
-#endif
         auto converted = daw::decodeWav(wavAtRate(rate, sourceFrames, rate == 96000 ? 2 : 1));
         CHECK(converted->frames() == 48000);
         for (float value : converted->samples()) CHECK(std::isfinite(value) && std::abs(value) <= 16);
@@ -67,11 +64,7 @@ int main(){try{
     }
     rejects([&]{daw::decodeWav(wavAtRate(32000, 320));});
     rejects([&]{daw::decodeWav(wavAtRate(0, 1));});
-#ifdef __APPLE__
     CHECK(daw::decodeWav(wavAtRate(192000, 1))->frames() == 1);
-#else
-    rejects([&]{daw::decodeWav(wavAtRate(192000, 1));});
-#endif
     // Source duration is checked before conversion, including high-rate PCM.
     rejects([&]{daw::decodeWav(wavAtRate(44100, 44100 * 60 + 1));});
     CHECK(clip->peaks().size()==512); for(auto peak:clip->peaks()) CHECK(peak==0.25f);

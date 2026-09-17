@@ -15,7 +15,7 @@
 
 ## Воспроизводимость и стоимость
 
-Exact SHAs и SHA-256 результатов `git archive` находятся в [`dependencies.lock.json`](../dependencies.lock.json). Команды сборки — в [`spikes/tracktion/README.md`](../spikes/tracktion/README.md). На текущей arm64 машине чистый CMake configure занял 23,47 с и около 630 MB max RSS. Первый полный Release build с одной исправленной compile iteration занял 35,66 с; успешная incremental rebuild — 2,89 с. Proof executable весит 22 824 536 bytes; checkout около 229 MiB, build около 136 MiB. Эти цифры описывают один локальный запуск и не являются release benchmark.
+Exact git SHAs находятся в [`dependencies.lock.json`](../dependencies.lock.json). Для стабильных архивных зависимостей lock также хранит SHA-256 source archive; быстро меняющийся Tracktion `develop` фиксируется самим commit SHA и его upstream-pinned JUCE submodule. Команды сборки — в [`spikes/tracktion/README.md`](../spikes/tracktion/README.md). На текущей arm64 машине чистый CMake configure занял 23,47 с и около 630 MB max RSS. Первый полный Release build с одной исправленной compile iteration занял 35,66 с; успешная incremental rebuild — 2,89 с. Proof executable весит 22 824 536 bytes; checkout около 229 MiB, build около 136 MiB. Эти цифры описывают один локальный запуск и не являются release benchmark.
 
 Proof содержит 169 строк C++ и 50 строк CMake. Такое сравнение не означает, что полная миграция займёт 219 строк: model adapter, plugin scanner isolation, state migration, latency/recovery и UI contracts остаются отдельной работой.
 

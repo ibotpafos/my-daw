@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 
 @MainActor
-private final class WavExportTailDialog: NSObject {
+final class WavExportTailDialog: NSObject {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: 430, height: 84))
     private let mode = NSPopUpButton(frame: .zero, pullsDown: false)
     private let limit = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -133,7 +133,7 @@ extension DraftApp {
         if cancel { daw_cancel_import(job) }
         daw_release_import(job)
         importJob = nil; importIntent = nil; importSession = nil; importStatus = nil
-        inspectorBrowser.isImportBusy = false
+        libraryBrowser.isImportBusy = false
         cancelImportButton.isEnabled = false; cancelImportButton.isHidden = true
         resolveImportButton.isEnabled = false; resolveImportButton.isHidden = true
     }
@@ -256,44 +256,7 @@ extension DraftApp {
         if let url = currentURL { beginSave(to: url) } else { chooseSave() }
     }
     @objc func saveAs() { if isRecording { finishRecording(); guard !isRecording else{return} }; finishEditing(); chooseSave() }
-    @objc func exportMix() {
-        guard !exportBusy else { storageMessage("Экспорт уже выполняется."); return }
-        if isRecording { finishRecording(); guard !isRecording else { return } }
-        finishEditing()
-        guard hasAudio else { storageMessage("Добавь или запиши аудио перед экспортом."); return }
-        let defaults = UserDefaults.standard
-        let storedModeRaw = defaults.integer(forKey: "export.tail.mode.v1")
-        let storedLimitRaw = defaults.integer(forKey: "export.tail.limitSeconds.v1")
-        let storedMode = UInt32(max(0, storedModeRaw))
-        let storedLimit = UInt32(max(0, storedLimitRaw))
-        var initialOptions = daw_export_options(); initialOptions.struct_size = UInt32(MemoryLayout<daw_export_options>.size); initialOptions.version = UInt32(DAW_EXPORT_OPTIONS_VERSION)
-        initialOptions.tail_mode = storedMode >= UInt32(DAW_EXPORT_TAIL_AUTOMATIC) && storedMode <= UInt32(DAW_EXPORT_TAIL_MANUAL_LIMIT) ? storedMode : UInt32(DAW_EXPORT_TAIL_AUTOMATIC)
-        initialOptions.manual_tail_frames = [2, 5, 15, 30].contains(Int(storedLimit)) ? storedLimit * 48_000 : 30 * 48_000
-        var tailSummary = daw_export_tail_summary(); tailSummary.struct_size = UInt32(MemoryLayout<daw_export_tail_summary>.size)
-        guard check(daw_get_export_tail_summary(session, &initialOptions, &tailSummary)) else { return }
-        let tailDialog = WavExportTailDialog(storedMode: initialOptions.tail_mode, storedLimitSeconds: initialOptions.manual_tail_frames / 48_000, summary: tailSummary)
-        let choice = NSAlert(); choice.messageText = "Экспорт WAV"
-        let scope = rangeEnd != nil ? rangeLabel.stringValue : "весь проект"
-        choice.informativeText = "Область: \(scope). 24-bit подходит для сведения и обмена. Float32 сохраняет результат рендера без целочисленного квантования."
-        choice.accessoryView = tailDialog.view
-        choice.addButton(withTitle: "WAV 24-bit"); choice.addButton(withTitle: "WAV float32"); choice.addButton(withTitle: "Отмена")
-        let response = choice.runModal()
-        guard response != .alertThirdButtonReturn else { return }
-        let format: Int32 = response == .alertSecondButtonReturn ? 2 : 1
-        var options = tailDialog.options; tailDialog.persist()
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.wav]
-        if let currentURL { panel.directoryURL = currentURL.deletingLastPathComponent() }
-        panel.nameFieldStringValue = "\(currentURL?.deletingPathExtension().lastPathComponent ?? "Микс").wav"
-        panel.message = tailDialog.savePanelMessage
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let job: OpaquePointer?
-        if let start=rangeStart,let end=rangeEnd { job=daw_begin_export_range_with_options(session,url.path,format,start,end,&options) }
-        else { job=daw_begin_export_with_options(session,url.path,format,&options) }
-        guard let job else { _ = check(1); return }
-        exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
-        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
-        updateStorageStatus()
-    }
+    @objc func exportMix() { beginMixExport() }
     @objc func exportStems() {
         guard !exportBusy else { storageMessage("Экспорт уже выполняется."); return }
         if isRecording { finishRecording(); guard !isRecording else { return } }
@@ -347,7 +310,7 @@ extension DraftApp {
         }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
-        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
+        updateMixExportAvailability(); cancelExportButton.isEnabled = true; recordButton.isEnabled = false
         updateStorageStatus()
     }
     @objc func exportDawproject() {
@@ -365,7 +328,7 @@ extension DraftApp {
         let anchorSignature = tempoMap.signature(atFrame: 0)
         guard let job = daw_begin_dawproject_export(session,url.path,anchorTempo,UInt32(anchorSignature.numerator),UInt32(anchorSignature.denominator),title) else { _ = check(1); return }
         dawprojectJob=job;exportURL=url;exportStarted=Date();exportMessage=nil;exportMessageUntil = .distantPast
-        exportButton.isEnabled=false;dawprojectButton.isEnabled=false;cancelExportButton.isEnabled=true;recordButton.isEnabled=false
+        updateMixExportAvailability();dawprojectButton.isEnabled=false;cancelExportButton.isEnabled=true;recordButton.isEnabled=false
         updateStorageStatus()
     }
     @objc func cancelExport() {
@@ -400,6 +363,7 @@ extension DraftApp {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             self.rotateRecovery(); daw_destroy(self.session); self.session = fresh
+            self.mixExportDocumentID = UUID()
             self.midiDocumentID = UUID()
             self.currentURL = nil; self.savedRevision = 0; self.saveError = nil; self.rangeStart=nil;self.rangeEnd=nil;self.loopEnabled=false;self.armedTrackID=nil;self.selectedTakes.removeAll();self.refresh();self.updateTimelineTools()
         }
@@ -417,6 +381,7 @@ extension DraftApp {
             self.stopBrowserAudioPreview()
             self.releaseImportJob(cancel: true)
             guard self.check(daw_open_draft(self.session, url.path)) else { return }
+            self.mixExportDocumentID = UUID()
             self.midiDocumentID = UUID()
             var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
             guard self.check(daw_get_snapshot(self.session, &snapshot)) else { return }
@@ -451,6 +416,8 @@ extension DraftApp {
         }
     }
     func pollStorage() {
+        var exportFailureToReport: String?
+        defer { updateMixExportAvailability() }
         pollImport()
         if let job = exportJob {
             var result = daw_export_status(); result.struct_size = UInt32(MemoryLayout<daw_export_status>.size)
@@ -463,7 +430,7 @@ extension DraftApp {
                         if url.pathExtension.lowercased() == "wav" {
                             var report = daw_loudness_report(); report.struct_size = UInt32(MemoryLayout<daw_loudness_report>.size)
                             if daw_measure_wav(session, url.path, &report) == 0 {
-                                message += report.gated_silence != 0 ? " · тише -70 LUFS" : String(format: " · %.1f LUFS · %.1f dBTP", report.integrated_lufs, report.true_peak_db)
+                                message += report.gated_silence != 0 ? " · тишина или ниже −70 LUFS — проверьте mute и MIDI-инструменты" : String(format: " · %.1f LUFS · %.1f dBTP", report.integrated_lufs, report.true_peak_db)
                             }
                         } else if ((try? FileManager.default.contentsOfDirectory(atPath: url.path))?.contains(where: { $0.hasSuffix(".wav") }) ?? false) {
                             message += " · стемы в папке"
@@ -478,10 +445,10 @@ extension DraftApp {
                     let error = withUnsafeBytes(of: result.error) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
                     DAWLog.jobs.error("Экспорт сорвался: \(error, privacy: .public)")
                     exportMessage = "Ошибка экспорта: \(error)"
-                    storageMessage("Не удалось экспортировать WAV: \(error)")
+                    exportFailureToReport = "Не удалось экспортировать WAV: \(error)"
                 }
                 exportMessageUntil = Date().addingTimeInterval(6)
-                exportURL = nil; exportButton.isEnabled = hasAudio && !isRecording
+                exportURL = nil; updateMixExportAvailability()
             }
         }
         if let job=dawprojectJob {
@@ -499,7 +466,7 @@ extension DraftApp {
                     exportMessage="Ошибка DAWproject: \(error)";storageMessage("Не удалось экспортировать DAWproject: \(error)")
                 }
                 exportMessageUntil=Date().addingTimeInterval(8);exportURL=nil
-                exportButton.isEnabled=hasAudio && !isRecording;dawprojectButton.isEnabled = !isRecording
+                updateMixExportAvailability();dawprojectButton.isEnabled = !isRecording
             }
         }
         if let job = saveJob {
@@ -539,6 +506,9 @@ extension DraftApp {
             else { recoveryError = "Не удалось запустить резервное сохранение" }
         }
         updateStorageStatus()
+        // Reporting may enter a nested AppKit loop. Detach all old job state
+        // first, so a retry started from that dialog cannot lose its URL/status.
+        if let exportFailureToReport { mixExportInteraction.report(exportFailureToReport) }
     }
     func updateStorageStatus() {
         if importJob != nil, let result = importStatus {
@@ -594,6 +564,7 @@ extension DraftApp {
         alert.informativeText = "Можно восстановить последнюю резервную копию как новый проект. Исходный файл не будет перезаписан. История Undo не восстанавливается."
         alert.addButton(withTitle: "Восстановить"); alert.addButton(withTitle: "Позже")
         guard alert.runModal() == .alertFirstButtonReturn, check(daw_open_draft(session, url.path)) else { return }
+        mixExportDocumentID = UUID()
         midiDocumentID = UUID()
         rotateRecovery(); recoveredFrom = url; currentURL = nil; savedRevision = UInt64.max; saveError = nil;armedTrackID=nil;selectedTakes.removeAll(); refresh()
     }

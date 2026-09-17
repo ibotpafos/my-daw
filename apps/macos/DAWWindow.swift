@@ -4,6 +4,8 @@ import AppKit
 /// command implementations; this class only decides whether a key is safe to
 /// treat as a global DAW command.
 final class DAWWindow: NSWindow {
+    var onFocusedKeyDown: ((NSEvent) -> Bool)?
+    var shouldHandleClipDelete: (() -> Bool)?
     var onPlayStop: (() -> Void)?
     var onRewind: (() -> Void)?
     var onDeleteSelectedClip: (() -> Void)?
@@ -16,7 +18,7 @@ final class DAWWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown,
            !defersToTextInput,
-           handleUnmodifiedGlobalCommand(event) {
+           (onFocusedKeyDown?(event) == true || handleUnmodifiedGlobalCommand(event)) {
             return
         }
         super.sendEvent(event)
@@ -35,6 +37,7 @@ final class DAWWindow: NSWindow {
             return true
         }
         guard !defersToTextInput else { return super.performKeyEquivalent(with: event) }
+        if onFocusedKeyDown?(event) == true { return true }
         if super.performKeyEquivalent(with: event) { return true }
         if handleTrackDeleteCommand(event) { return true }
         return handleZoomCommand(event)
@@ -84,7 +87,9 @@ final class DAWWindow: NSWindow {
         switch event.keyCode {
         case 49: return invoke(onPlayStop)
         case 115: return invoke(onRewind)
-        case 51, 117: return invoke(onDeleteSelectedClip)
+        case 51, 117:
+            guard shouldHandleClipDelete?() ?? true else { return false }
+            return invoke(onDeleteSelectedClip)
         default: return false
         }
     }

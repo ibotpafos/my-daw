@@ -1,6 +1,6 @@
 #include "domain/session.hpp"
-#include <algorithm>
 #include <sqlite3.h>
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <cerrno>
@@ -629,23 +629,33 @@ State readDraft(const std::string &path) {
         }
         if (rc != SQLITE_DONE)
             throw Error("Cannot read draft buses");
-        auto sends=prepare(db.get(),formatVersion>=22
-            ? "SELECT track_id,position,bus_id,gain,pre_fader,pan,muted,independent_pan FROM sends ORDER BY track_id,position"
-            : "SELECT track_id,position,bus_id,gain,pre_fader,0,0,0 FROM sends ORDER BY track_id,position");
-        while((rc=sqlite3_step(sends.get()))==SQLITE_ROW) {
-            const auto trackID=static_cast<uint64_t>(integer(sends.get(),0));
-            auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==trackID;});
-            if(track==state.tracks.end() || track->sends.size()>=8 || integer(sends.get(),1)!=static_cast<int64_t>(track->sends.size()))
+        auto sends = prepare(
+            db.get(),
+            formatVersion >= 22
+                ? "SELECT track_id,position,bus_id,gain,pre_fader,pan,muted,independent_pan FROM sends ORDER BY track_id,position"
+                : "SELECT track_id,position,bus_id,gain,pre_fader,0,0,0 FROM sends ORDER BY track_id,position");
+        while ((rc = sqlite3_step(sends.get())) == SQLITE_ROW) {
+            const auto trackID = static_cast<uint64_t>(integer(sends.get(), 0));
+            auto track =
+                std::find_if(state.tracks.begin(), state.tracks.end(), [&](const auto &item) {
+                    return item.id == trackID;
+                });
+            if (track == state.tracks.end() || track->sends.size() >= 8 ||
+                integer(sends.get(), 1) != static_cast<int64_t>(track->sends.size()))
                 throw Error("Invalid draft send order or capacity");
-            const auto pre=integer(sends.get(),4), muted=integer(sends.get(),6), independent=integer(sends.get(),7);
-            if(pre<0 || pre>1 || muted<0 || muted>1 || independent<0 || independent>1)
+            const auto pre = integer(sends.get(), 4), muted = integer(sends.get(), 6),
+                       independent = integer(sends.get(), 7);
+            if (pre < 0 || pre > 1 || muted < 0 || muted > 1 || independent < 0 || independent > 1)
                 throw Error("Invalid send controls flag");
-            for(int column : {3,5}) {
-                const auto type=sqlite3_column_type(sends.get(),column);
-                if(type!=SQLITE_FLOAT && type!=SQLITE_INTEGER) throw Error("Invalid send numeric value");
+            for (int column : {3, 5}) {
+                const auto type = sqlite3_column_type(sends.get(), column);
+                if (type != SQLITE_FLOAT && type != SQLITE_INTEGER)
+                    throw Error("Invalid send numeric value");
             }
-            track->sends.push_back({static_cast<uint64_t>(integer(sends.get(),2)),sqlite3_column_double(sends.get(),3),
-                pre!=0,sqlite3_column_double(sends.get(),5),muted!=0,independent!=0});
+            track->sends.push_back({static_cast<uint64_t>(integer(sends.get(), 2)),
+                                    sqlite3_column_double(sends.get(), 3), pre != 0,
+                                    sqlite3_column_double(sends.get(), 5), muted != 0,
+                                    independent != 0});
         }
         if (rc != SQLITE_DONE)
             throw Error("Cannot read draft sends");

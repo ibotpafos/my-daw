@@ -6,8 +6,7 @@
       "scope": "spike-only",
       "version": "3.5.0-develop",
       "repository": "https://github.com/Tracktion/tracktion_engine.git",
-      "revision": "ff794da4f58e732528b06d7799dad087635de0cb",
-      "sourceArchiveSha256": "879f12fd2f88c0d30b68af6a39f2ccb9593e05dff4b48f98c0625b2cb698821d",
+      "revision": "00fe42753a995c79dd857efe69dde17550e27e78",
       "license": "GPL-3.0-or-later OR commercial",
       "bundledInApp": false
     },
@@ -44,6 +43,17 @@
       },
       "license": "MIT",
       "bundledInApp": true
+    },
+    {
+      "name": "libsamplerate",
+      "scope": "non-macOS offline audio import",
+      "version": "0.2.2",
+      "minimumVersion": "0.2.2",
+      "repository": "https://github.com/libsndfile/libsamplerate.git",
+      "revision": "c96f5e3de9c4488f4e6c97f59f5245f22fda22f7",
+      "resolution": "system-pkg-config; revision records audited upstream release, not the distribution package build",
+      "license": "BSD-2-Clause",
+      "bundledInApp": false
     }
   ]
 }

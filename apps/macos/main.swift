@@ -21,205 +21,6 @@ enum BackgroundImportIntent {
     case take(path: URL, name: String, trackID: UInt64, startFrame: UInt64)
 }
 
-// MARK: - Темпо-карта проекта: Swift-зеркало доменного пересчёта beats↔frames
-//
-// Домен (engine/domain/session.cpp: State::beatsAtFrame/frameAtBeats) остаётся
-// единственным источником истины; приложение только читает карту через C-ABI
-// (daw_get_tempo_count/daw_get_tempo_point, daw_get_time_signature_count/
-// daw_get_time_signature_point) и пишет её одной revision-aware командой
-// daw_set_tempo. Формулы ниже — сверенное зеркало, а не молча скопированный код:
-// на Apple arm64 `long double` — это 64-битный double, поэтому накопление
-// сегментов в Double даёт побитово тот же результат, что и домен.
-// Один бит = 60/bpm секунд при проектных 48 кГц, то есть 2 880 000 / bpm
-// кадров; 120 BPM = 24 000 кадров на бит, 60 BPM = 48 000 кадров на бит.
-
-/// Точка темпа из карты проекта (POD daw_tempo_point).
-struct ProjectTempoPoint {
-    var frame: UInt64
-    var bpm: Double
-}
-
-/// Точка размера из карты проекта (POD daw_time_signature_point).
-struct ProjectSignaturePoint {
-    var frame: UInt64
-    var numerator: UInt8
-    var denominator: UInt8
-}
-
-/// Начало такта: кадр, позиция в битах и порядковый номер для линейки.
-struct ProjectBarStart {
-    var frame: UInt64
-    var beats: Double
-    var number: Int
-}
-
-struct BeatFrameMap {
-    /// 48 000 кадров/с × 60 с — кадр/бит = framesPerMinute / bpm.
-    static let framesPerMinute = 2_880_000.0
-    static let timelineLimitFrame: UInt64 = 1 << 40
-    static let ticksPerBeat = 480
-    var tempo: [ProjectTempoPoint] = [ProjectTempoPoint(frame: 0, bpm: 120)]
-    var signatures: [ProjectSignaturePoint] = [ProjectSignaturePoint(frame: 0, numerator: 4, denominator: 8)]
-
-    /// Темп на позиции: последняя точка не позже кадра (карта действует last-holds).
-    func tempoPoint(atFrame frame: UInt64) -> ProjectTempoPoint {
-        var chosen = tempo[0]
-        for candidate in tempo where candidate.frame <= frame { chosen = candidate }
-        return chosen
-    }
-    func bpm(atFrame frame: UInt64) -> Double { tempoPoint(atFrame: frame).bpm }
-    func framesPerBeat(atFrame frame: UInt64) -> Double { Self.framesPerMinute / bpm(atFrame: frame) }
-    func signature(atFrame frame: UInt64) -> ProjectSignaturePoint {
-        var chosen = signatures[0]
-        for candidate in signatures where candidate.frame <= frame { chosen = candidate }
-        return chosen
-    }
-
-    /// Зеркало State::beatsAtFrame: сумма целых сегментов, одно округление в конце.
-    func beats(atFrame frame: UInt64) -> Double {
-        let lane = tempo.sorted { $0.frame < $1.frame }
-        var beats = 0.0
-        var index = 0
-        while index + 1 < lane.count, lane[index + 1].frame <= frame {
-            beats += Double(lane[index + 1].frame - lane[index].frame) * lane[index].bpm / Self.framesPerMinute
-            index += 1
-        }
-        beats += (frame > lane[index].frame ? Double(frame - lane[index].frame) : 0) * lane[index].bpm / Self.framesPerMinute
-        return beats
-    }
-
-    /// Зеркало State::frameAtBeats: обратный ход по тем же сегментам.
-    func frame(atBeats beats: Double) -> UInt64 {
-        let lane = tempo.sorted { $0.frame < $1.frame }
-        guard beats.isFinite, beats >= 0 else { return lane[0].frame }
-        var remaining = beats
-        var index = 0
-        while true {
-            let perBeat = Self.framesPerMinute / lane[index].bpm
-            if index + 1 < lane.count {
-                let segment = Double(lane[index + 1].frame - lane[index].frame) / perBeat
-                if remaining == segment { return lane[index + 1].frame }
-                if remaining > segment { remaining -= segment; index += 1; continue }
-            }
-            let value = Double(lane[index].frame) + remaining * perBeat
-            guard value >= 0 else { return 0 }
-            guard value < Double(Self.timelineLimitFrame) else { return Self.timelineLimitFrame }
-            return UInt64(value.rounded())
-        }
-    }
-
-    /// Такты: длина такта = numerator × 4 / denominator четвертных бит (бит домена — всегда
-    /// четвертная): 4/8 → 2 бита, 4/4 → 4, 3/4 → 3. Размер читается из карты на кадре
-    /// текущей границы, а сама точка смены размера всегда становится началом такта —
-    /// при смене размера сетка тактов двигается.
-    func barStarts(upToFrame limit: UInt64) -> [ProjectBarStart] {
-        var marks: [ProjectBarStart] = []
-        let changes = signatures.sorted { $0.frame < $1.frame }
-        var beats = 0.0
-        var frame: UInt64 = 0
-        var number = 1
-        while marks.count < 4096 {
-            if frame > limit { break }
-            marks.append(ProjectBarStart(frame: frame, beats: beats, number: number))
-            let signature = self.signature(atFrame: frame)
-            var nextBeats = beats + Double(max(1, Int(signature.numerator))) * 4 / Double(max(1, Int(signature.denominator)))
-            var nextFrame = self.frame(atBeats: nextBeats)
-            if let change = changes.first(where: { $0.frame > frame && $0.frame <= nextFrame }) {
-                nextBeats = self.beats(atFrame: change.frame)
-                nextFrame = change.frame
-            }
-            guard nextFrame > frame else { break }
-            beats = nextBeats
-            frame = nextFrame
-            number += 1
-        }
-        return marks
-    }
-
-    /// 'такт.бит.тики' по позиции; тики — доли бита (480 на бит).
-    func barBeatTick(atFrame frame: UInt64, bars: [ProjectBarStart]) -> String {
-        let beats = max(0, self.beats(atFrame: frame))
-        var anchor = ProjectBarStart(frame: 0, beats: 0, number: 1)
-        for mark in bars where mark.beats <= beats + 1e-9 { anchor = mark }
-        let offset = max(0, beats - anchor.beats)
-        let whole = floor(offset)
-        let tick = min(Self.ticksPerBeat - 1, Int((offset - whole) * Double(Self.ticksPerBeat)))
-        return String(format: "%d.%d.%03d", anchor.number, Int(whole) + 1, max(0, tick))
-    }
-}
-
-@MainActor
-final class DraftCanvas: NSView { override var isFlipped: Bool { true } }
-
-@MainActor
-final class AutomationSlider: NSSlider {
-    var automationBegin: (() -> Void)?
-    var automationEnd: (() -> Void)?
-    override func mouseDown(with event: NSEvent) {
-        automationBegin?()
-        super.mouseDown(with: event)
-        automationEnd?()
-    }
-}
-
-@MainActor
-/// Маркер-локатор проекта (POD daw_marker): позиция на общей шкале 48 кГц и имя.
-struct ProjectMarker {
-    let frame: UInt64
-    let name: String
-}
-
-final class TimelineRulerView: NSView {
-    var projectFrames: UInt64 = 48000 * 12 { didSet { needsDisplay = true } }
-    var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
-    /// Тактовые метки из темпо-карты проекта; пустой массив — прежняя секундная шкала без второго слоя.
-    var barMarks: [ProjectBarStart] = [] { didSet { needsDisplay = true } }
-    /// Маркеры-локаторы: отдельная верхняя полоса флажков (домен v18, мост v1).
-    var markers: [ProjectMarker] = [] { didSet { needsDisplay = true } }
-    var onMarkerSeek: ((UInt64) -> Void)?
-    var onMarkerAdd: ((UInt64) -> Void)?
-    var onMarkerMenu: ((ProjectMarker) -> NSMenu?)?
-    /// Высота верхней полосы под номера тактов; секундная шкала остаётся ниже.
-    static let barBand: CGFloat = 14
-    /// Полоса флажков маркеров над тактовой полосой.
-    static let markerBand: CGFloat = 16
-    override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0.07, alpha: 1).setFill();bounds.fill();let frames=max(UInt64(1),projectFrames);let seconds=Double(frames)/48000;let raw=max(1,seconds/Double(max(1,Int(bounds.width/110))));let step:Double=raw <= 1 ? 1:(raw <= 2 ? 2:(raw <= 5 ? 5:10));let attributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:10,weight:.regular),.foregroundColor:NSColor.secondaryLabelColor]
-        // Второй слой: номера тактов из темпо-карты в верхней полосе. Горизонтальный
-        // маппинг кадр↔пиксель тот же, что у секундной шкалы; меняется только то,
-        // что метки приходят из карты, а не из локального темпа.
-        // Верхняя полоса: флажки маркеров с именами и вертикальная линия на всю линейку.
-        if !markers.isEmpty {
-            NSColor(white:1,alpha:0.05).setFill();NSBezierPath(rect:NSRect(x:0,y:0,width:bounds.width,height:Self.markerBand)).fill()
-            let markerAttributes:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:9,weight:.medium),.foregroundColor:NSColor.systemYellow.withAlphaComponent(0.92)]
-            for marker in markers {
-                if marker.frame > frames { continue }
-                let x=CGFloat(Double(marker.frame)/Double(frames))*bounds.width
-                NSColor.systemYellow.withAlphaComponent(0.45).setStroke();let drop=NSBezierPath();drop.move(to:NSPoint(x:x,y:7));drop.line(to:NSPoint(x:x,y:bounds.height));drop.lineWidth=1;drop.stroke()
-                NSColor.systemYellow.setFill();let flag=NSBezierPath();flag.move(to:NSPoint(x:x-4,y:0));flag.line(to:NSPoint(x:x+4,y:0));flag.line(to:NSPoint(x:x,y:7));flag.close();flag.fill()
-                marker.name.draw(at:NSPoint(x:x+6,y:6),withAttributes:markerAttributes)
-            }
-        }
-        if !barMarks.isEmpty {
-            let barAttributes:[NSAttributedString.Key:Any]=[.font:NSFont.monospacedDigitSystemFont(ofSize:9,weight:.medium),.foregroundColor:NSColor.systemMint.withAlphaComponent(0.86)]
-            NSColor(white:1,alpha:0.08).setFill();NSBezierPath(rect:NSRect(x:0,y:Self.markerBand,width:bounds.width,height:Self.barBand)).fill()
-            NSColor(white:1,alpha:0.14).setStroke();let divider=NSBezierPath();divider.move(to:NSPoint(x:0,y:Self.markerBand+Self.barBand));divider.line(to:NSPoint(x:bounds.width,y:Self.markerBand+Self.barBand));divider.stroke()
-            var lastLabelX:CGFloat = -60
-            for mark in barMarks {
-                if mark.frame > frames { break }
-                let x=CGFloat(Double(mark.frame)/Double(frames))*bounds.width
-                NSColor(white:1,alpha:0.26).setStroke();let tick=NSBezierPath();tick.move(to:NSPoint(x:x,y:Self.markerBand+Self.barBand-9));tick.line(to:NSPoint(x:x,y:Self.markerBand+Self.barBand));tick.stroke()
-                guard x-lastLabelX >= 20 else { continue }
-                lastLabelX=x
-                String(mark.number).draw(at:NSPoint(x:x+3,y:Self.markerBand+1),withAttributes:barAttributes)
-            }
-        }
-        let baseline=Self.markerBand+Self.barBand
-        var second:Double=0;while second<=seconds {let x=CGFloat(second/seconds)*bounds.width;NSColor(white:1,alpha:0.16).setStroke();let line=NSBezierPath();line.move(to:NSPoint(x:x,y:bounds.height-8));line.line(to:NSPoint(x:x,y:bounds.height));line.stroke();String(format:"%.0f",second).draw(at:NSPoint(x:x+3,y:baseline+2),withAttributes:attributes);second+=step};let cursor=CGFloat(Double(min(playhead,frames))/Double(frames))*bounds.width;NSColor.systemMint.setStroke();let cursorLine=NSBezierPath();cursorLine.move(to:NSPoint(x:cursor,y:0));cursorLine.line(to:NSPoint(x:cursor,y:bounds.height));cursorLine.stroke()
-    }
-}
-
 @MainActor
 final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate, NSSplitViewDelegate {
     var session: OpaquePointer!
@@ -235,6 +36,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var saveCompletion: (() -> Void)?
     var saveStarted = Date()
     var saveError: String?
+    var mixExportInteraction: any MixExportInteraction = AppKitMixExportInteraction()
+    var mixExportDialogToken: UUID?
+    var mixExportDocumentID = UUID()
     var exportJob: OpaquePointer?
     var dawprojectJob: OpaquePointer?
     var exportURL: URL?
@@ -281,6 +85,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var synchronizingArrangementScroll = false
     var timelineWidthConstraint: NSLayoutConstraint?
     var timelineZoom: CGFloat = 1
+    var midiArrangementViews: [MidiArrangementView] = []
     weak var trackTimelineSplit: NSSplitView?
     weak var arrangementInspectorSplit: NSSplitView?
     weak var arrangementConsoleSplit: NSSplitView?
@@ -290,6 +95,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var restoringWorkspaceLayout = false
     var workspaceLayoutReady = false
     let inspectorBrowser = InspectorBrowserView(frame: .zero)
+    let libraryBrowser = LibraryBrowserView(frame: .zero)
+    let channelRack = ChannelRackView(frame: .zero)
+    var workspace: WorkspaceView?
+    var workspaceDock: WorkspaceDockView?
+    let projectTitleLabel = NSTextField(labelWithString: "Новый черновик")
+    let projectStateLabel = NSTextField(labelWithString: "My DAW")
+    let clockLabel = NSTextField(labelWithString: "00:00.000")
+    let signatureLabel = NSTextField(labelWithString: "4/4")
+    var workspaceToggleButtons: [WorkspaceLayout.Pane: NSButton] = [:]
     var inspectorTrackID: UInt64?
     var inspectorClipIndex: Int?
     var midiClipIndex: Int?
@@ -303,7 +117,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let status = NSTextField(labelWithString: "")
     let summary = NSTextField(labelWithString: "")
     let transportLabel = NSTextField(labelWithString: "Импортируй WAV/AIFF, чтобы услышать проект")
-    let workspaceMode = NSSegmentedControl(labels: ["Создание", "Запись", "Сведение", "Мастеринг"], trackingMode: .selectOne, target: nil, action: nil)
+    let workspaceMode = NSSegmentedControl(labels: ["Проект", "Запись", "Микс", "Мастер"], trackingMode: .selectOne, target: nil, action: nil)
     let playButton = NSButton(title: "▶ Играть", target: nil, action: nil)
     let stopButton = NSButton(title: "■ Стоп", target: nil, action: nil)
     let recordButton = NSButton(title: "● Запись", target: nil, action: nil)
@@ -329,7 +143,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let automationArmPopup = NSPopUpButton()
     var automationMode: Int32 = 0 // 0 Read, 1 Touch, 2 Latch
     var automationArm: (target: Int32, id: UInt64)?
-    var consoleGesture: (automation: Bool, revision: UInt64)?
+    var consoleGesture: (automation: Bool, revision: UInt64)? {
+        didSet { updateMixExportAvailability() }
+    }
     var automationGesture: (target: Int32, id: UInt64)?
     var automationTargets: [(target: Int32, id: UInt64, title: String)] = []
     var rangeStart: UInt64?
@@ -463,7 +279,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     /// Durable v19 color wins; the positional palette remains the fallback.
     func durableTrackColor(_ hex:UInt64,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(UInt32(hex)) : trackAccent(index) }
     func durableTrackColor(_ hex:UInt32,_ index:Int) -> NSColor { hex != 0 ? dawColorFromHex(hex) : trackAccent(index) }
-    func setTimelineZoom(_ zoom:CGFloat){timelineZoom=min(8,max(1,zoom));timelineWidthConstraint?.constant=1400*timelineZoom;UserDefaults.standard.set(Double(timelineZoom),forKey:"timelineZoom");timelineDocument?.needsLayout=true;timelineRuler.needsDisplay=true}
     @objc func zoomIn(){setTimelineZoom(timelineZoom*2)}
     @objc func zoomOut(){setTimelineZoom(timelineZoom/2)}
     @objc func resetZoom(){setTimelineZoom(1)}
@@ -488,43 +303,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         arrangementConsoleSplit?.adjustSubviews()
         window.contentView?.layoutSubtreeIfNeeded()
     }
-    func applyWorkspaceMode(_ mode: Int) {
-        mixerWorkspace.resetFocus()
-        arrangementInspectorSplit?.isHidden = false
-        guard let arrangementInspectorSplit, let arrangementConsoleSplit else { return }
-        restoringWorkspaceLayout = true
-        defer { restoringWorkspaceLayout = false }
-        let arrangementFirst = mode < 2
-        inspectorBrowser.isHidden = arrangementFirst
-        consoleView?.isHidden = arrangementFirst
-        arrangementInspectorSplit.adjustSubviews()
-        arrangementConsoleSplit.adjustSubviews()
-        window.contentView?.layoutSubtreeIfNeeded()
-        guard !arrangementFirst else { fitTrackHeaderWidth(); return }
-        let height = arrangementConsoleSplit.bounds.height
-        let modeKey = mode == 3 ? "mastering" : "mixing"
-        let savedHeightRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementHeightRatio"))
-        let heightRatio: CGFloat = savedHeightRatio > 0.25 && savedHeightRatio < 0.75 ? savedHeightRatio : 0.50
-        let arrangementHeight = min(max(220, height - 250), max(220, height * heightRatio))
-        arrangementConsoleSplit.setPosition(arrangementHeight, ofDividerAt: 0)
-        let savedArrangementRatio = CGFloat(UserDefaults.standard.double(forKey: "workspace.\(modeKey).arrangementRatio"))
-        let arrangementRatio: CGFloat = savedArrangementRatio > 0.5 && savedArrangementRatio < 0.9 ? savedArrangementRatio : (mode == 3 ? 0.70 : 0.73)
-        arrangementInspectorSplit.setPosition(max(420, arrangementInspectorSplit.bounds.width * arrangementRatio), ofDividerAt: 0)
-        fitTrackHeaderWidth()
-        if mode == 2, selectedMixerID == nil || selectedMixerID == 0 {
-            if let firstTrackID = trackIDs[0] {
-                selectedMixerID = firstTrackID; inspectorTrackID = firstTrackID; inspectorClipIndex = nil
-                refresh(); updateMixerInspector(firstTrackID)
-            } else {
-                selectedMixerID = nil; inspectorTrackID = nil; inspectorClipIndex = nil
-                inspectorBrowser.channel = nil; inspectorBrowser.clip = nil
-            }
-        }
-        if mode == 3 {
-            selectedMixerID = 0; inspectorTrackID = nil; inspectorClipIndex = nil
-            refresh(); updateMixerInspector(0)
-        }
-    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         DAWLog.lifecycle.info("Запуск My DAW \(DAWLog.buildStamp, privacy: .public)")
         guard let core = daw_create() else {
@@ -535,25 +313,29 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         session = core
         NSApp.appearance = NSAppearance(named: .darkAqua)
         installMenu()
-        window = DAWWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800),
+        window = DAWWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 940),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.minSize = NSSize(width: 1060, height: 620)
+        window.minSize = NSSize(width: 1060, height: 700)
         window.delegate = self
         window.isReleasedWhenClosed = false
         window.backgroundColor = DAWDesignTokens.Color.canvas
+        window.shouldHandleClipDelete = { [weak self] in self?.shouldHandleWorkspaceClipDelete ?? true }
+        window.onFocusedKeyDown = { [weak self] event in self?.libraryBrowser.handleFocusedKey(event) ?? false }
         window.onPlayStop = { [weak self] in guard let self else{return};self.isPlaying ? self.stopAudio():self.playAudio() }
         window.onRewind = { [weak self] in self?.rewindAudio() }
         window.onDeleteSelectedClip = { [weak self] in self?.deleteCurrentSelectedClip() }
         window.onDeleteSelectedTrack = { [weak self] in self?.deleteCurrentSelectedTrack() }
         window.onZoomIn = { [weak self] in self?.zoomIn() };window.onZoomOut = { [weak self] in self?.zoomOut() };window.onZoomReset = { [weak self] in self?.resetZoom() }
-        let root = NSView(); window.contentView = root
-        let content = NSStackView(); content.orientation = .vertical; content.alignment = .leading; content.spacing = DAWDesignTokens.Space.sm
+        let root = NSView(); root.wantsLayer = true
+        root.layer?.backgroundColor = DAWDesignTokens.Color.canvas.cgColor
+        window.contentView = root
+        let content = NSStackView(); content.orientation = .vertical; content.alignment = .leading; content.spacing = 6
         content.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(content)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: DAWDesignTokens.Space.md),
-            content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -DAWDesignTokens.Space.md),
-            content.topAnchor.constraint(equalTo: root.topAnchor, constant: DAWDesignTokens.Space.sm),
-            content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -DAWDesignTokens.Space.sm)
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+            content.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6)
         ])
         summary.font = .monospacedSystemFont(ofSize: 10, weight: .medium); summary.textColor = DAWDesignTokens.Color.secondaryText
         workspaceMode.selectedSegment = max(0, min(3, UserDefaults.standard.integer(forKey: "workspace.mode"))); workspaceMode.target = self; workspaceMode.action = #selector(changeWorkspaceMode); workspaceMode.controlSize = .small
@@ -616,9 +398,17 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let openButton=button("Открыть…",#selector(openDraft));styleIconButton(openButton,icon:.openProject)
         let saveButton=button("Сохранить",#selector(saveDraft));styleIconButton(saveButton,icon:.saveProject)
         styleIconButton(exportButton,icon:.exportAudio);styleIconButton(dawprojectButton,icon:.exportProject);styleIconButton(cancelExportButton,icon:.cancel)
-        let toolbar=NSStackView(views:[workspaceMode,importButton,addTrackButton,addMidiTrackButton,addBusButton,workflowButton,undoButton,redoButton,label("RANGE",size:9,color:.tertiaryLabelColor),rangeStartButton,rangeEndButton,clearRangeButton,flexibleSpace(),tempoLabel,tempoStepper,tempoField,gridPopup,openButton,saveButton,exportButton,dawprojectButton,cancelExportButton,resolveImportButton,cancelImportButton]);toolbar.alignment = .centerY;toolbar.spacing=5;toolbar.edgeInsets=NSEdgeInsets(top:6,left:8,bottom:6,right:8);toolbar.wantsLayer=true;toolbar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;toolbar.layer?.cornerRadius=DAWDesignTokens.Radius.card
-        rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
-        content.addArrangedSubview(toolbar);toolbar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
+        let toolbar = makeWorkspaceHeader()
+        content.addArrangedSubview(toolbar)
+        toolbar.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        toolbar.heightAnchor.constraint(equalToConstant: 68).isActive = true
+        let editBar = WorkspaceCommandBar(
+            importButton: importButton, add: [addTrackButton, addMidiTrackButton, addBusButton],
+            history: [undoButton, redoButton], grid: gridPopup,
+            zoom: [button("−", #selector(zoomOut)), button("1×", #selector(resetZoom)), button("＋", #selector(zoomIn))],
+            more: [rangeStartButton, rangeEndButton, clearRangeButton, openButton, saveButton,
+                   exportButton, dawprojectButton, workflowButton],
+            transient: [resolveImportButton, cancelImportButton, cancelExportButton])
         playButton.target = self; playButton.action = #selector(playAudio)
         stopButton.target = self; stopButton.action = #selector(stopAudio); stopButton.isEnabled = false
         recordButton.target = self; recordButton.action = #selector(toggleRecording)
@@ -632,22 +422,22 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         transportLabel.textColor = DAWDesignTokens.Color.mint
         let scroll = NSScrollView();timelineScroll=scroll;scroll.hasVerticalScroller = true;scroll.hasHorizontalScroller=true; scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 8
+        rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 2
         rows.translatesAutoresizingMaskIntoConstraints = false
         let document = DraftCanvas(); timelineDocument=document;document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(timelineRuler);document.addSubview(rows); scroll.documentView = document
         timelineZoom=CGFloat(UserDefaults.standard.double(forKey:"timelineZoom"));if timelineZoom < 1{timelineZoom=1}
         timelineWidthConstraint=document.widthAnchor.constraint(equalToConstant:1400*timelineZoom);timelineWidthConstraint?.isActive=true
-        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28).isActive=true
+        timelineRuler.translatesAutoresizingMaskIntoConstraints=false;timelineRuler.heightAnchor.constraint(equalToConstant:TimelineRulerView.preferredHeight).isActive=true
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),timelineRuler.leadingAnchor.constraint(equalTo:document.leadingAnchor),timelineRuler.trailingAnchor.constraint(equalTo:document.trailingAnchor),timelineRuler.topAnchor.constraint(equalTo:document.topAnchor),
             rows.leadingAnchor.constraint(equalTo: document.leadingAnchor), rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
             rows.topAnchor.constraint(equalTo: timelineRuler.bottomAnchor), rows.bottomAnchor.constraint(equalTo: document.bottomAnchor)
         ])
         let headerScroll=NSScrollView();trackHeaderScroll=headerScroll;headerScroll.hasVerticalScroller=false;headerScroll.hasHorizontalScroller=false;headerScroll.drawsBackground=false
-        trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=8;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
+        trackHeaderRows.orientation = .vertical;trackHeaderRows.alignment = .leading;trackHeaderRows.spacing=2;trackHeaderRows.translatesAutoresizingMaskIntoConstraints=false
         let headerDocument=DraftCanvas();headerDocument.translatesAutoresizingMaskIntoConstraints=false;let tracksHeading=label("TRACKS",size:10,color:.tertiaryLabelColor);tracksHeading.font = .systemFont(ofSize:10,weight:.semibold);tracksHeading.translatesAutoresizingMaskIntoConstraints=false;headerDocument.addSubview(tracksHeading);headerDocument.addSubview(trackHeaderRows);headerScroll.documentView=headerDocument
-        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.markerBand+TimelineRulerView.barBand+28),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
+        NSLayoutConstraint.activate([headerDocument.widthAnchor.constraint(equalTo:headerScroll.contentView.widthAnchor),tracksHeading.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor,constant:10),tracksHeading.trailingAnchor.constraint(lessThanOrEqualTo:headerDocument.trailingAnchor,constant:-8),tracksHeading.topAnchor.constraint(equalTo:headerDocument.topAnchor),tracksHeading.heightAnchor.constraint(equalToConstant:TimelineRulerView.preferredHeight),trackHeaderRows.leadingAnchor.constraint(equalTo:headerDocument.leadingAnchor),trackHeaderRows.trailingAnchor.constraint(equalTo:headerDocument.trailingAnchor),trackHeaderRows.topAnchor.constraint(equalTo:tracksHeading.bottomAnchor),trackHeaderRows.bottomAnchor.constraint(equalTo:headerDocument.bottomAnchor)])
         scroll.contentView.postsBoundsChangedNotifications=true;headerScroll.contentView.postsBoundsChangedNotifications=true
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:scroll.contentView)
         NotificationCenter.default.addObserver(self,selector:#selector(syncArrangementScroll(_:)),name:NSView.boundsDidChangeNotification,object:headerScroll.contentView)
@@ -668,19 +458,30 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.toolTip="Горизонтальная консоль: inserts, sends, routing, pan, meter и fader. Выбери канал для Inspector; используй горизонтальную прокрутку для остальных полос."
         mixerWorkspace.setAccessibilityLabel("Консоль микшера: горизонтальные полосы каналов")
         mixerWorkspace.setAccessibilityHelp("Каждая полоса содержит inserts, sends, выход, панораму, meter и fader. Track, bus и master визуально разделены.")
-        inspectorBrowser.translatesAutoresizingMaskIntoConstraints=false
-        inspectorBrowser.widthAnchor.constraint(greaterThanOrEqualToConstant:240).isActive=true
-        inspectorBrowser.widthAnchor.constraint(lessThanOrEqualToConstant:380).isActive=true
-        let arrangementSplit=NSSplitView();self.arrangementInspectorSplit=arrangementSplit;arrangementSplit.delegate=self;arrangementSplit.isVertical=true;arrangementSplit.dividerStyle = .thin;arrangementSplit.addArrangedSubview(trackTimelineSplit);arrangementSplit.addArrangedSubview(inspectorBrowser)
-        let split=NSSplitView();self.arrangementConsoleSplit=split;split.delegate=self;split.isVertical=false;split.dividerStyle = .thin;split.addArrangedSubview(arrangementSplit);split.addArrangedSubview(console);content.addArrangedSubview(split);split.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true;split.heightAnchor.constraint(greaterThanOrEqualToConstant:430).isActive=true
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail
-        let transportControls=NSStackView(views:[recordButton,iconButton(.rewind,#selector(rewindAudio)),stopButton,playButton,loopButton,metronomeButton,recordMonitorButton,autoMonitorButton]);transportControls.spacing=4;transportControls.alignment = .centerY
-        let statusBar=NSStackView(views:[summary,status,gridLabel,flexibleSpace(),transportControls,transportLabel,positionLabel,flexibleSpace(),rangeLabel]);statusBar.spacing=8;statusBar.alignment = .centerY;statusBar.edgeInsets=NSEdgeInsets(top:4,left:6,bottom:4,right:6);statusBar.wantsLayer=true;statusBar.layer?.backgroundColor=DAWDesignTokens.Color.surface.cgColor;statusBar.layer?.cornerRadius=DAWDesignTokens.Radius.control;content.addArrangedSubview(statusBar);statusBar.widthAnchor.constraint(equalTo:content.widthAnchor).isActive=true
-        summary.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);status.setContentCompressionResistancePriority(.defaultLow,for:.horizontal);transportLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal);rangeLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
-        gridLabel.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
-        positionLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); positionLabel.textColor = DAWDesignTokens.Color.secondaryText
-        positionLabel.setAccessibilityLabel("Позиция воспроизведения: такт.бит.тики"); positionLabel.setAccessibilityHelp("Формат такт.бит.тики по темпо-карте проекта, 480 тиков на бит")
-        positionLabel.setContentCompressionResistancePriority(.defaultHigh,for:.horizontal)
+        let arrangement = NSStackView(views: [editBar, trackTimelineSplit])
+        arrangement.orientation = .vertical; arrangement.alignment = .leading; arrangement.spacing = 0
+        editBar.widthAnchor.constraint(equalTo: arrangement.widthAnchor).isActive = true
+        editBar.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        trackTimelineSplit.widthAnchor.constraint(equalTo: arrangement.widthAnchor).isActive = true
+        trackTimelineSplit.setContentHuggingPriority(.defaultLow, for: .vertical)
+        let dock = WorkspaceDockView(devices: channelRack, midi: inspectorBrowser.midiEditor, mixer: console)
+        workspaceDock = dock
+        let workspace = WorkspaceView(library: libraryBrowser, arrangement: arrangement, inspector: inspectorBrowser, dock: dock)
+        self.workspace = workspace
+        content.addArrangedSubview(workspace)
+        workspace.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        workspace.heightAnchor.constraint(greaterThanOrEqualToConstant: 470).isActive = true
+        workspace.setContentHuggingPriority(.defaultLow, for: .vertical)
+        status.font = .systemFont(ofSize: 11); status.textColor = DAWDesignTokens.Color.secondaryText
+        status.lineBreakMode = .byTruncatingTail
+        positionLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        positionLabel.textColor = DAWDesignTokens.Color.secondaryText
+        positionLabel.setAccessibilityLabel("Позиция: такт, бит, тики")
+        let statusBar = makeWorkspaceStatusBar()
+        content.addArrangedSubview(statusBar)
+        statusBar.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        statusBar.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        wireWorkspace()
         mixerWorkspace.onSelect = { [weak self] id in guard let self else{return};self.selectedMixerID=id;self.refresh();self.updateMixerInspector(id) }
         mixerWorkspace.onArm = { [weak self] id,armed in guard let self, self.mixerKinds[id] == .track else{return};self.armedTrackID=armed ? id:nil;self.refresh() }
         mixerWorkspace.onMute = { [weak self] id,muted in self?.mixerSetMute(id,muted) }
@@ -692,68 +493,28 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.onDeleteBus = { [weak self] id in self?.deleteBusWithConfirmation(id) }
         configureMixerConsole()
         wireInspectorBrowser()
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         setupRecovery()
         loadSupportedAudioUnits()
         loadInstalledVST3()
+#endif
         refreshBrowserCatalog()
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         transportTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             // Дрен MIDI-ring живёт в этом же цикле: транспорт, метры и тейк
             // опрашиваются одной 10 Гц-проверкой, отдельного таймера нет.
             MainActor.assumeIsolated { self?.pollTransport(); self?.pollMeters(); self?.pollMidiCapture(); self?.refreshMidiEditorBinding(); self?.pollStorage() }
         }
         if let timer = transportTimer { RunLoop.main.add(timer, forMode: .common) }
-        refresh(); window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+#endif
+        refresh()
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
+        window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in self?.restoreWorkspaceLayout() }
         DispatchQueue.main.async { [weak self] in self?.offerRecovery() }
+#endif
     }
 
-    func restoreWorkspaceLayout() {
-        guard let trackTimelineSplit,let arrangementInspectorSplit,let arrangementConsoleSplit else{return}
-        window.contentView?.layoutSubtreeIfNeeded();restoringWorkspaceLayout=true;defer{restoringWorkspaceLayout=false}
-        func ratio(_ key:String,_ fallback:CGFloat)->CGFloat { let value=CGFloat(UserDefaults.standard.double(forKey:key));return value > 0.05 && value < 0.95 ? value:fallback }
-        let headerWidth=min(260,max(195,trackTimelineSplit.bounds.width*ratio("workspace.trackHeaderRatio.v3",0.16)))
-        trackTimelineSplit.setPosition(headerWidth,ofDividerAt:0)
-        let inspectorWidth=min(360,max(260,arrangementInspectorSplit.bounds.width*(1-ratio("workspace.arrangementRatio",0.75))))
-        arrangementInspectorSplit.setPosition(max(420,arrangementInspectorSplit.bounds.width-inspectorWidth),ofDividerAt:0)
-        let arrangementHeight=min(max(220,arrangementConsoleSplit.bounds.height-250),max(220,arrangementConsoleSplit.bounds.height*ratio("workspace.arrangementHeightRatio",0.50)))
-        arrangementConsoleSplit.setPosition(arrangementHeight,ofDividerAt:0)
-        applyWorkspaceMode(workspaceMode.selectedSegment)
-        workspaceLayoutReady = true
-        layoutAudit("restore")
-    }
-
-    func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard workspaceLayoutReady,!restoringWorkspaceLayout,let split=notification.object as? NSSplitView,split.arrangedSubviews.count>1 else{return}
-        let total=split.isVertical ? split.bounds.width:split.bounds.height;guard total>1 else{return}
-        let first=split.arrangedSubviews[0].frame
-        let ratio=(split.isVertical ? first.maxX:first.maxY)/total
-        if split === trackTimelineSplit { UserDefaults.standard.set(Double(ratio),forKey:"workspace.trackHeaderRatio.v3") }
-        else if split === arrangementInspectorSplit, workspaceMode.selectedSegment >= 2 {
-            let modeKey = workspaceMode.selectedSegment == 3 ? "mastering" : "mixing"
-            UserDefaults.standard.set(Double(ratio),forKey:"workspace.\(modeKey).arrangementRatio")
-        }
-        else if split === arrangementConsoleSplit, workspaceMode.selectedSegment >= 2 {
-            let modeKey = workspaceMode.selectedSegment == 3 ? "mastering" : "mixing"
-            UserDefaults.standard.set(Double(ratio),forKey:"workspace.\(modeKey).arrangementHeightRatio")
-        }
-        layoutAudit("divider")
-    }
-
-    func windowDidResize(_ notification: Notification) { layoutAudit("resize") }
-
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if splitView === trackTimelineSplit{return 195}
-        if splitView === arrangementInspectorSplit{return 420}
-        if splitView === arrangementConsoleSplit{return 220}
-        return proposedMinimumPosition
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        if splitView === trackTimelineSplit{return min(260,splitView.bounds.width-420)}
-        if splitView === arrangementInspectorSplit{return splitView.bounds.width-240}
-        if splitView === arrangementConsoleSplit{return splitView.bounds.height-250}
-        return proposedMaximumPosition
-    }
     func installMenu() {
         let main = NSMenu()
         func menu(_ title: String, _ items: [(String, Selector, String, Bool)]) {
@@ -803,7 +564,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             projectMenu.removeItem(at: 5); projectMenu.removeItem(at: 4)
             projectMenu.insertItem(up, at: 4); projectMenu.insertItem(down, at: 5)
         }
-        menu("Вид", [("Увеличить timeline", #selector(zoomIn), "+", false), ("Уменьшить timeline", #selector(zoomOut), "-", false), ("Timeline 1×", #selector(resetZoom), "0", false)])
+        menu("Вид", [("Показать / скрыть библиотеку", #selector(toggleWorkspaceLibrary), "1", true), ("Показать / скрыть инспектор", #selector(toggleWorkspaceInspector), "2", true), ("Показать / скрыть нижнюю панель", #selector(toggleWorkspaceDock), "3", true), ("Восстановить раскладку", #selector(resetWorkspaceLayout), "0", true), ("Увеличить timeline", #selector(zoomIn), "+", false), ("Уменьшить timeline", #selector(zoomOut), "-", false), ("Timeline 1×", #selector(resetZoom), "0", false)])
         if let viewMenu = main.items.last?.submenu {
             viewMenu.insertItem(.separator(), at: 0)
             viewMenu.insertItem(DAWWindow.makeCommandPaletteMenuItem(), at: 0)
@@ -824,6 +585,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return false
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(exportMix) { return mixExportPolicy().canExport }
         if menuItem.action == #selector(togglePlayStop) || menuItem.action == #selector(soloSelectedTrack)
             || menuItem.action == #selector(muteSelectedTrack) || menuItem.action == #selector(armSelectedTrack) {
             if isEditingText { return false }
@@ -883,6 +645,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         inspectorBrowser.clip=nil
         inspectorBrowser.channel=InspectorChannelModel(title:strip.title,kind:kind,renameable:strip.kind != .master,volumeDb:strip.volumeDb,pan:strip.pan,muted:strip.isMuted,solo:strip.isSolo,inserts:strip.inserts.map{$0.bypassed ? "⊘ \($0.name)":$0.name},sends:strip.sends.map{"→ \($0.destination)  \(String(format:"%+.1f dB",$0.gainDb)) \($0.preFader ? "PRE":"POST")"},accent:strip.color ?? .systemBlue)
         if strip.kind == .track { loadMidiInspector(id) } else { inspectorBrowser.midi = nil }
+        refreshDeviceRack()
     }
     func loadMidiInspector(_ trackID: UInt64) {
         do {
@@ -992,6 +755,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     /// одну точку (см. v0-оценку кадра в daw.h).
     @objc func toggleMidiRecording() {
         if midiTakeArmed { stopMidiTake(); return }
+        guard !exportBusy, mixExportDialogToken == nil else { storageMessage("Сначала завершите или отмените экспорт."); return }
         guard !isRecording else { storageMessage("Сначала заверши аудиозапись."); return }
         guard midiInputID != 0 else { storageMessage("Выбери MIDI-вход в инспекторе дорожки."); return }
         guard let track = inspectorTrackID, let clip = midiClipIndex else { storageMessage("Выбери MIDI-дорожку с клипом — в него лягут ноты."); return }
@@ -1023,7 +787,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             loadMidiInspector(midiTakeTrackID ?? inspectorTrackID ?? 0)
             status.stringValue = "Пустой тейк · нот 0, отброшено \(lost) · проект не изменён"
         }
-        status.stringValue = revision != before ? "Тейк записано в клип · нот \(counters.recorded), отброшено \(counters.dropped + counters.unmatched)" : "Пустой тейк · проект не изменён"
         setProjectMessage("Запись с клавиатуры v0: кадр ноты считается в момент дрена ring (±интервал таймера 100 мс), без привязки к доле.")
         midiTakeTrackID = nil
         refreshMidiCapture(); pollTransport()
@@ -1094,25 +857,25 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             self.finishEditing();_=daw_stop(self.session)
             if self.check(daw_edit_clip_full(self.session,track,UInt32(clip),model.startFrames,model.sourceOffsetFrames,model.lengthFrames,model.fadeInFrames,model.fadeOutFrames,self.revision)){self.refresh();self.pollTransport();self.updateClipInspector(track,clip)}
         }
-        inspectorBrowser.onAddFolder = { [weak self] in self?.addBrowserFolder() }
-        inspectorBrowser.onImport = { [weak self] in self?.importWav() }
-        inspectorBrowser.onAdd = { [weak self] kind,item in self?.addBrowserItem(kind,item) }
-        inspectorBrowser.onScanAU = { [weak self] in self?.scanInstalledAudioUnits() }
-        inspectorBrowser.onScanVST3 = { [weak self] in self?.scanInstalledVST3() }
-        inspectorBrowser.onBrowserSelect = { [weak self] kind, item in
+        libraryBrowser.onAddFolder = { [weak self] in self?.addBrowserFolder() }
+        libraryBrowser.onImport = { [weak self] in self?.importWav() }
+        libraryBrowser.onAdd = { [weak self] kind,item in self?.addBrowserItem(kind,item) }
+        libraryBrowser.onScanAU = { [weak self] in self?.scanInstalledAudioUnits() }
+        libraryBrowser.onScanVST3 = { [weak self] in self?.scanInstalledVST3() }
+        libraryBrowser.onBrowserSelect = { [weak self] kind, item in
             guard let self else { return }
-            guard kind == .audio, let item, let url = self.browserAudioURLs[item.id] else {
+            guard !self.isRecording, !self.midiTakeArmed, kind == .audio, let item, item.available, let url = self.browserAudioURLs[item.id] else {
                 self.stopBrowserAudioPreview()
                 return
             }
-            self.audioPreview.select(url)
+            if self.audioPreview.state.selectedURL?.standardizedFileURL != url.standardizedFileURL { self.audioPreview.select(url) }
         }
-        inspectorBrowser.onPreview = { [weak self] item in
-            guard let self, let item, let url = self.browserAudioURLs[item.id] else { return }
+        libraryBrowser.onPreview = { [weak self] item in
+            guard let self, !self.isRecording, !self.midiTakeArmed, let item, item.available, let url = self.browserAudioURLs[item.id] else { return }
             if self.audioPreview.state.selectedURL != url { self.audioPreview.select(url) }
             self.audioPreview.play()
         }
-        inspectorBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
+        libraryBrowser.onStopPreview = { [weak self] in self?.stopBrowserAudioPreview() }
         inspectorBrowser.onMidiClipSelect = { [weak self] index in guard let self, let track = self.inspectorTrackID else { return }; self.midiClipIndex = index; self.loadMidiInspector(track) }
         inspectorBrowser.onMidiAddClip = { [weak self] in
             guard let self, let track = self.inspectorTrackID, !self.isRecording else { return }
@@ -1134,6 +897,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         inspectorBrowser.onMidiInputSelect = { [weak self] id in self?.selectMidiInput(id) }
         inspectorBrowser.onMidiRecordToggle = { [weak self] in self?.toggleMidiRecording() }
         inspectorBrowser.onMidiCommitRequest = { [weak self] request in self?.commitMidiEdit(request) }
+        inspectorBrowser.midiEditor.onEditStateChange = { [weak self] in self?.updateMixExportAvailability() }
         inspectorBrowser.onMidiNotesChange = { [weak self] notes in guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex else { return }; self.commitMidiNotes(track: track, clip: clip, notes: notes) }
         inspectorBrowser.onMidiAddNote = { [weak self] in
             guard let self, let track = self.inspectorTrackID, let clip = self.midiClipIndex, !self.isRecording else { return }
@@ -1158,31 +922,25 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let selectedID = state.selectedURL.flatMap { url in
             browserAudioURLs.first { $0.value.standardizedFileURL == url.standardizedFileURL }?.key
         }
-        inspectorBrowser.updateAudioPreview(isPlaying: state.isPlaying, selectedID: selectedID, error: state.errorMessage)
+        libraryBrowser.updateAudioPreview(isPlaying: state.isPlaying, selectedID: selectedID, error: state.errorMessage)
     }
 
     func stopBrowserAudioPreview() {
         audioPreview.stop()
         if audioPreview.state.selectedURL != nil { audioPreview.select(nil) }
     }
-    func refreshBrowserCatalog() {
-        browserPluginTargets.removeAll();var items:[InspectorBrowserItem]=[]
-        for plugin in auCatalog {let isInstrument = plugin.subtype == 0x61616D69 || plugin.subtype == 0x61756961 /* aami, auia */;let item=InspectorBrowserItem(title:plugin.name,detail:isInstrument ? "Audio Unit · инструмент · experimental":"Audio Unit",available:true);browserPluginTargets[item.id] = .audioUnit(type:plugin.type,subtype:plugin.subtype,manufacturer:plugin.manufacturer);items.append(item)}
-        for plugin in vst3Catalog {let kind=plugin.instrument ? "VST3 · инструмент":"VST3";let item=InspectorBrowserItem(title:plugin.name,detail:plugin.vendor.isEmpty ? kind:"\(kind) · \(plugin.vendor)",available:plugin.available);browserPluginTargets[item.id] = .vst3(index:plugin.index);items.append(item)}
-        inspectorBrowser.pluginItems=items.sorted{$0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending}
-    }
     func addBrowserFolder() {
-        let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.allowsMultipleSelection=false;panel.prompt="Добавить";panel.message="Выбери папку с WAV. My DAW читает только эту явно выбранную папку и не запрашивает общий доступ к Документам."
+        let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.allowsMultipleSelection=false;panel.prompt="Добавить";panel.message="Выбери папку с WAV/AIFF. My DAW читает только эту явно выбранную папку и не запрашивает общий доступ к Документам."
         guard panel.runModal() == .OK,let root=panel.url else{return}
         let keys:[URLResourceKey]=[.isRegularFileKey,.isHiddenKey]
         guard let enumerator=FileManager.default.enumerator(at:root,includingPropertiesForKeys:keys,options:[.skipsHiddenFiles,.skipsPackageDescendants]) else{return}
         var urls:[URL]=[]
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "wav" {urls.append(url);if urls.count>=1000{break}}
+        for case let url as URL in enumerator where ["wav", "aif", "aiff", "aifc"].contains(url.pathExtension.lowercased()) {urls.append(url);if urls.count>=1000{break}}
         urls.sort{$0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending}
-        stopBrowserAudioPreview();browserAudioURLs.removeAll();let items=urls.map{url -> InspectorBrowserItem in let item=InspectorBrowserItem(title:url.deletingPathExtension().lastPathComponent,detail:url.deletingLastPathComponent().lastPathComponent,available:true);browserAudioURLs[item.id]=url;return item};inspectorBrowser.audioItems=items
+        stopBrowserAudioPreview();browserAudioURLs.removeAll();let items=urls.map{url -> InspectorBrowserItem in let item=InspectorBrowserItem(title:url.deletingPathExtension().lastPathComponent,detail:url.deletingLastPathComponent().lastPathComponent,available:true,sourceURL:url);browserAudioURLs[item.id]=url;return item};libraryBrowser.audioItems=items
     }
     func addBrowserItem(_ kind:InspectorBrowserKind,_ item:InspectorBrowserItem?) {
-        guard !isRecording,let item else{return}
+        guard !isRecording, !midiTakeArmed, let item, item.available else { return }
         if kind == .audio { guard let url = browserAudioURLs[item.id] else { return }; beginTrackImport(url); return }
         stopBrowserAudioPreview()
         guard item.available,let target=browserPluginTargets[item.id] else{return}
@@ -1232,6 +990,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func loadInstalledVST3(){let helper=Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/daw_vst3_scan_helper").path;var available:UInt32=0;var quarantined:UInt32=0;var invalidated:UInt32=0;if let cache=vst3CacheURL,daw_load_installed_vst3_scan_cache(session,helper,cache.path,&available,&quarantined,&invalidated)==0{reloadVST3Popup();let stale=invalidated>0 ? ", обновить \(invalidated)":"";scanVST3Button.title=quarantined==0 ? "VST3: \(available)\(stale)":"VST3: \(available), карантин \(quarantined)\(stale)"}}
     func reloadVST3Popup(){vst3Catalog.removeAll();while masterVST3Popup.numberOfItems>1{masterVST3Popup.removeItem(at:1)};var count:UInt32=0;guard daw_get_installed_vst3_count(session,&count)==0 else{return};for index in 0..<count{var item=daw_vst3_component();item.struct_size=UInt32(MemoryLayout<daw_vst3_component>.size);guard daw_get_installed_vst3(session,index,&item)==0 else{return};let name=withUnsafeBytes(of:item.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let vendor=withUnsafeBytes(of:item.vendor){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let instrument=item.available != 0 && (item.flags & UInt32(DAW_VST3_FLAG_INSTRUMENT)) != 0;/* flags осмысленны только при available != 0 — контракт моста */vst3Catalog.append((index,name,vendor,item.available != 0,instrument));if item.available != 0{masterVST3Popup.addItem(withTitle:(instrument ? "🎹 " : "") + (vendor.isEmpty ? name:"\(name) — \(vendor)"));masterVST3Popup.lastItem?.representedObject=NSNumber(value:index)}};masterVST3Popup.isEnabled = masterVST3Popup.numberOfItems>1;refreshBrowserCatalog()}
     func refresh() {
+        let previousViewport = timelineScroll?.contentView.bounds.origin
+        defer { restoreArrangementViewport(previousViewport) }
         var snapshot = daw_snapshot(); snapshot.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
         guard check(daw_get_snapshot(session, &snapshot)) else { return }
         revision = snapshot.revision
@@ -1251,7 +1011,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         for view in consoleRows.arrangedSubviews { consoleRows.removeArrangedSubview(view); view.removeFromSuperview() }
         mixerKinds.removeAll()
         trackNames.removeAll()
-        laneViews.removeAll()
+        laneViews.removeAll(); midiArrangementViews.removeAll()
         var mixerStrips:[MixerStripModel]=[]
         trackIDs.removeAll();takePopups.removeAll();orderedBuses.removeAll();outputTargets.removeAll();busControlTargets.removeAll();busAutomationTargets.removeAll();busNameTargets.removeAll();newSendTargets.removeAll();sendControlTargets.removeAll();pluginControlTargets.removeAll();pluginEditorTargets.removeAll();pluginParameterTargets.removeAll();insertRuntimeBadges.removeAll();automationTargets=[(automationMasterGain,0,"Master · Volume")];hasAudio = false; hasMidiContent = false; waveforms.removeAll()
         for busIndex in 0..<snapshot.bus_count {var bus=daw_bus();bus.struct_size=UInt32(MemoryLayout<daw_bus>.size);guard check(daw_get_bus(session,busIndex,&bus))else{return};let name=withUnsafeBytes(of:bus.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};orderedBuses.append((bus.id,name))}
@@ -1362,14 +1122,18 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 wave.onSeek = { [weak self] frame in self?.seekAudio(frame) }
                 wave.onToggle = { [weak self] in guard let self else { return }; if self.isPlaying { self.stopAudio() } else { self.playAudio() } }
                 timelineGroup.addArrangedSubview(wave)
-                wave.heightAnchor.constraint(equalToConstant: 92).isActive = true
+                wave.heightAnchor.constraint(equalToConstant: PinnedTrackHeaderView.laneHeight).isActive = true
                 wave.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true
                 waveforms.append(wave)
-            } else {let empty=EmptyTimelineLaneView(message:"Import WAV or start recording",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:92).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
+            } else if midiClipCount > 0 {
+                let midi = makeMidiArrangement(trackID: track.id, title: name, color: accent, count: midiClipCount, duration: transport.duration)
+                timelineGroup.addArrangedSubview(midi); midi.heightAnchor.constraint(equalToConstant: PinnedTrackHeaderView.laneHeight).isActive = true
+                midi.widthAnchor.constraint(equalTo: timelineGroup.widthAnchor).isActive = true; midiArrangementViews.append(midi)
+            } else {let empty=EmptyTimelineLaneView(message:"Импортируйте WAV/AIFF или начните запись",accent:accent);timelineGroup.addArrangedSubview(empty);empty.heightAnchor.constraint(equalToConstant:PinnedTrackHeaderView.laneHeight).isActive=true;empty.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}
             if track.take_count>1 {for takeIndex in 0..<track.take_count{var take=daw_take();take.struct_size=UInt32(MemoryLayout<daw_take>.size);var takePeaks=[Float](repeating:0,count:512);guard check(daw_get_take(session,track.id,takeIndex,&take)),check(daw_get_take_waveform(session,track.id,takeIndex,&takePeaks,512))else{return};let takeName=withUnsafeBytes(of:take.name){String(decoding:$0.prefix(while:{$0 != 0}),as:UTF8.self)};let lane=TakeLaneView(frame:.zero);lane.title=takeIndex==0 ? "Основной":takeName;lane.peaks=takePeaks;lane.takeStart=take.start;lane.takeFrames=take.frames;lane.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));lane.selected=selectedTake==Int(takeIndex);lane.setAccessibilityLabel("Дубль \(lane.title)");let laneIndex=Int(takeIndex);lane.onSelect={[weak self]in self?.selectedTakes[track.id]=laneIndex;self?.refresh()};timelineGroup.addArrangedSubview(lane);lane.heightAnchor.constraint(equalToConstant:46).isActive=true;lane.widthAnchor.constraint(equalTo:timelineGroup.widthAnchor).isActive=true}}
-            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=CGFloat(92+laneCount*48)
+            let laneCount=track.take_count>1 ? Int(track.take_count):0;let groupHeight=PinnedTrackHeaderView.laneHeight+CGFloat(laneCount*48)
             rows.addArrangedSubview(timelineGroup);timelineGroup.widthAnchor.constraint(equalTo:rows.widthAnchor).isActive=true;timelineGroup.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
-            let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,selected:selectedMixerID==track.id || inspectorTrackID==track.id))
+            let header=PinnedTrackHeaderView(model:PinnedTrackHeaderModel(id:track.id,index:Int(index),name:name,accent:accent,gainDb:track.gain_db,pan:track.pan,armed:armedTrackID==track.id,muted:track.muted != 0,solo:track.solo != 0,takeCount:Int(track.take_count),hasAudio:track.audio_frames>0,hasMidi:midiClipCount>0,selected:(selectedMixerID ?? inspectorTrackID)==track.id))
             header.onSelect={[weak self] id in self?.selectedMixerID=id;self?.inspectorTrackID=id;self?.inspectorClipIndex=nil;self?.refresh()};header.onRename={[weak self] id,name in guard let self else{return};if self.check(daw_rename_track(self.session,id,name,self.revision)){self.refresh()}};header.onArm={[weak self] id,armed in self?.armedTrackID=armed ? id:nil;if armed{var auto:Int32=0;if daw_get_auto_monitor_on_arm(self?.session,&auto)==0,auto==1{var mon:Int32=0;if daw_get_record_monitor(self?.session,&mon)==0,mon==0{_=daw_set_record_monitor(self?.session,1)}}};self?.refresh()};header.onMute={[weak self] id,value in self?.mixerSetMute(id,value)};header.onSolo={[weak self] id,value in self?.mixerSetSolo(id,value)};header.onGain={[weak self] id,value in self?.mixerSetVolume(id,value)};header.onPan={[weak self] id,value in self?.mixerSetPan(id,value)}
             header.onImportTake={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.importTake(_:)))};header.onComp={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.applyComp(_:)))};header.onSplit={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.splitClipAtCursor(_:)))};header.onDuplicate={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.duplicateSelectedClip(_:)))};header.onDelete={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.deleteSelectedClip(_:)))};header.onCrossfade={[weak self] id in self?.performTrackAction(id,#selector(DraftApp.toggleSelectedCrossfade(_:)))};header.onDeleteTrack={[weak self] id in self?.deleteTrack(id)};header.onMoveToIndex={[weak self] id,insertionIndex in self?.moveTrack(id, toInsertionIndex: insertionIndex)};header.onDuplicateTrack={[weak self] id in self?.duplicateTrackNow(id)};header.onGroupMenu={[weak self] id in self?.showTrackGroupMenu(id)};header.onTrackColor={[weak self] id in self?.showTrackPalette(id)};header.onMidiTranspose={[weak self] id in self?.showMidiTranspose(id)};header.onMidiQuantize={[weak self] id in self?.showMidiQuantize(id)};header.onMidiColor={[weak self] id in self?.showMidiClipColor(id)};header.onMidiMove={[weak self] id in self?.showMidiMovePalette(id)};header.onMidiCopy={[weak self] id in self?.copyMidiClipNow(id)};header.onExportTrackWav={[weak self] id in self?.exportTrackAsWav(id)}
             trackHeaderRows.addArrangedSubview(header);header.widthAnchor.constraint(equalTo:trackHeaderRows.widthAnchor).isActive=true;header.heightAnchor.constraint(equalToConstant:groupHeight).isActive=true
@@ -1419,15 +1183,17 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let inserts=insertPanel(owner:Int32(DAW_INSERT_OWNER_BUS),ownerID:bus.id,title:name);group.addArrangedSubview(inserts);inserts.widthAnchor.constraint(equalTo:group.widthAnchor).isActive=true
             consoleRows.addArrangedSubview(group);group.widthAnchor.constraint(equalTo:consoleRows.widthAnchor).isActive=true
         }
-        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording;mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
+        mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0,automationLabel:consoleAutomationLabel(.master,id:0)));mixerWorkspace.editingEnabled = !isRecording && !midiTakeArmed;mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
-        exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
+        updateMixExportAvailability()
         dawprojectButton.isEnabled = !exportBusy && !isRecording
         cancelExportButton.isEnabled = exportBusy
         cancelExportButton.isHidden = !exportBusy
         updateTimelineTools()
         if let track=inspectorTrackID,let clip=inspectorClipIndex {updateClipInspector(track,clip)}
         else if let selected=selectedMixerID,mixerKinds[selected] != nil {updateMixerInspector(selected)}
+        refreshWorkspaceSelection()
+        updateWorkspaceChrome()
     }
     func insertOwnerKey(_ owner: Int32, _ ownerID: UInt64) -> String { "\(owner):\(ownerID)" }
     func hostingModeTitle(_ mode: UInt32) -> String {
@@ -1631,9 +1397,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func mixerSetVolume(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};let target:Int32;let targetID:UInt64;switch kind{case .track:target=automationTrackVolume;targetID=id;case .bus:target=automationBusGain;targetID=id;case .master:target=automationMasterGain;targetID=0};if automationWrites(target:target,id:targetID){_ = writeAutomation(target:target,id:targetID,value:value);return};let result:Int32;switch kind{case .track:result=daw_set_gain(session,id,value,revision);case .bus:result=daw_set_bus_gain(session,id,value,revision);case .master:result=daw_set_master_gain(session,value,revision)};if check(result){syncRevision()}}
     func mixerEndVolume(){if automationGesture != nil{endAutomationGesture()}else{refresh()}}
     func mixerSetPan(_ id:UInt64,_ value:Double){guard !isRecording,let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_pan(session,id,value,revision)){syncRevision()};case .bus:if check(daw_set_bus_pan(session,id,value,revision)){syncRevision()};case .master:return}}
-    func mixerSetMute(_ id:UInt64,_ muted:Bool){guard let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
+    func mixerSetMute(_ id:UInt64,_ muted:Bool){guard !isRecording, !midiTakeArmed, consoleGesture == nil, let kind=mixerKinds[id]else{return};switch kind{case .track:if check(daw_set_mute(session,id,muted ? 1:0,revision)){refresh()};case .bus:if check(daw_set_bus_mute(session,id,muted ? 1:0,revision)){refresh()};case .master:return}}
     func mixerSetSolo(_ id:UInt64,_ solo:Bool) {
-        guard !isRecording,mixerKinds[id] == .track else { return }
+        guard !isRecording, !midiTakeArmed, consoleGesture == nil, mixerKinds[id] == .track else { return }
         let result = NSEvent.modifierFlags.contains(.option)
             ? daw_set_solo_exclusive(session,id,solo ? 1:0,revision)
             : daw_set_solo(session,id,solo ? 1:0,revision)
@@ -1643,7 +1409,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.editingEnabled = enabled
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
-            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton { button.isEnabled = enabled }
+            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== exportButton { button.isEnabled = enabled }
             if let popup = view as? NSPopUpButton { popup.isEnabled = enabled }
             if let slider = view as? NSSlider { slider.isEnabled = enabled }
             if let field = view as? NSTextField, field.isEditable { field.isEnabled = enabled }
@@ -1651,6 +1417,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if let contentView = window.contentView { visit(contentView) }
         recordButton.isEnabled = true
+        updateMixExportAvailability()
     }
     func recordingAlert(_ message: String) {
         DAWLog.audio.error("Запись недоступна: \(message, privacy: .public)")
@@ -1715,9 +1482,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         exportButton.title = rangeEnd != nil ? "Экспорт диапазона WAV…" : "Экспорт WAV…"
         loopButton.title=loopEnabled ? "↻ Цикл вкл." : "↻ Цикл"
         loopButton.state=loopEnabled ? .on:.off
-        loopButton.isEnabled=rangeStart != nil && rangeEnd != nil && !isRecording
+        loopButton.isEnabled=rangeStart != nil && rangeEnd != nil && !isRecording && !midiTakeArmed
         for wave in waveforms { wave.snapFrames=gridFrames; wave.snapGrid={[weak self] frame in self?.gridSnap(atFrame: frame) ?? (anchor:0,quantum:0)}; wave.rangeStart=rangeStart; wave.rangeEnd=rangeEnd;wave.loopEnabled=loopEnabled }
         refreshBarMarks()
+        syncTimelineRange()
         positionLabel.stringValue = tempoMap.barBeatTick(atFrame: playheadFrame, bars: tempoBars)
     }
     /// Читает темпо-карту и карту размеров из сессии (единственный источник истины).
@@ -1774,25 +1542,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func currentTransportFrame() -> UInt64? {
         var value=daw_transport();value.struct_size=UInt32(MemoryLayout<daw_transport>.size)
         return check(daw_get_transport(session,&value)) ? value.frame : nil
-    }
-    @objc func setRangeStart() {
-        disableLoop()
-        guard let frame=currentTransportFrame() else{return};rangeStart=frame
-        if let end=rangeEnd,end<=frame { rangeEnd=nil };updateTimelineTools()
-    }
-    @objc func setRangeEnd() {
-        disableLoop()
-        guard let frame=currentTransportFrame() else{return};let start=rangeStart ?? 0
-        guard frame>start else{storageMessage("Конец диапазона должен быть позже начала.");return}
-        rangeStart=start;rangeEnd=frame;updateTimelineTools()
-    }
-    @objc func clearRange() { disableLoop();rangeStart=nil;rangeEnd=nil;updateTimelineTools() }
-    func disableLoop(){guard loopEnabled else{return};if check(daw_set_loop(session,0,0,0)){loopEnabled=false}}
-    @objc func toggleLoop(){
-        guard !isRecording else{return}
-        if loopEnabled { disableLoop();updateTimelineTools();pollTransport();return }
-        guard let start=rangeStart,let end=rangeEnd,end>start else{storageMessage("Сначала задай начало и конец диапазона.");return}
-        if check(daw_set_loop(session,1,start,end)){loopEnabled=true;updateTimelineTools();pollTransport()}
     }
     /// Тактовые метки линейки: пересчитываются из карты при каждом изменении темпа,
     /// размера, позиции или длины проекта.
@@ -1895,6 +1644,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func pollTransport() {
         guard session != nil else { return }
+        defer { updateWorkspaceChrome(); updateMixExportAvailability(); for view in midiArrangementViews { view.playhead = playheadFrame } }
         updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard check(daw_get_recording(session,&recording)) else {
@@ -1944,11 +1694,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let job: OpaquePointer?
         switch intent {
         case let .track(path, name):
-            job = (path.pathExtension.lowercased() == "aif" || path.pathExtension.lowercased() == "aiff")
+            job = ["aif", "aiff", "aifc"].contains(path.pathExtension.lowercased())
                 ? daw_begin_import_aiff(session, path.path, name, revision)
                 : daw_begin_import_wav(session, path.path, name, revision)
         case let .take(path, name, trackID, startFrame):
-            job = (path.pathExtension.lowercased() == "aif" || path.pathExtension.lowercased() == "aiff")
+            job = ["aif", "aiff", "aifc"].contains(path.pathExtension.lowercased())
                 ? daw_begin_import_take_aiff(session, trackID, path.path, name, startFrame, revision)
                 : daw_begin_import_take_wav(session, trackID, path.path, name, startFrame, revision)
         }
@@ -1957,7 +1707,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         importJob = job; importIntent = intent; importSession = session; importBaseRevision = revision; importStatus = startingStatus; importExistingTrackIDs = Set(trackIDs.values); importMessage = nil; importMessageUntil = .distantPast
         cancelImportButton.isHidden = false; cancelImportButton.isEnabled = true
         resolveImportButton.isHidden = true; resolveImportButton.isEnabled = false
-        inspectorBrowser.isImportBusy = true
+        libraryBrowser.isImportBusy = true
         updateStorageStatus()
     }
     func beginTrackImport(_ url: URL) {
@@ -2212,7 +1962,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let job = ids.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, UInt32(ids.count)) }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
-        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
+        updateMixExportAvailability(); cancelExportButton.isEnabled = true; recordButton.isEnabled = false
         updateStorageStatus()
     }
     /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
@@ -2419,6 +2169,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             inspectorBrowser.channel=InspectorChannelModel(title:strip.title,kind:"TRACK · CLIP \(clipIndex + 1)",renameable:true,volumeDb:strip.volumeDb,pan:strip.pan,muted:strip.isMuted,solo:strip.isSolo,inserts:strip.inserts.map{$0.bypassed ? "⊘ \($0.name)":$0.name},sends:strip.sends.map{"→ \($0.destination)  \(String(format:"%+.1f dB",$0.gainDb))"},accent:strip.color ?? .systemBlue)
         }
         inspectorBrowser.clip=InspectorClipModel(title:"Clip \(clipIndex + 1)",startFrames:clip.start,sourceOffsetFrames:clip.source_offset,lengthFrames:clip.length,fadeInFrames:clip.fade_in,fadeOutFrames:clip.fade_out)
+        loadMidiInspector(trackID); refreshDeviceRack()
     }
     func applyClipFades(_ id: UInt64, _ clipIndex: Int, _ fadeIn: UInt64, _ fadeOut: UInt64) {
         guard !isRecording else{return};_ = daw_stop(session);if check(daw_set_clip_fades(session,id,UInt32(clipIndex),fadeIn,fadeOut,revision)){refresh();pollTransport()}
@@ -2632,8 +2383,14 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
+#if DAW_WORKSPACE_TESTS
+runWorkspaceIntegrationTests()
+#elseif DAW_MIX_EXPORT_TESTS
+runMixExportIntegrationTests()
+#else
 let app = NSApplication.shared
 let delegate = DraftApp()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()
+#endif

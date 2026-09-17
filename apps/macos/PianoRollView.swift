@@ -105,6 +105,13 @@ final class PianoRollEditorView: NSView {
     var onPlayToggle: (() -> Void)?
 
     private let state = PRProState()
+    /// Project-level operations must not silently ignore an uncommitted note preview.
+    var hasUncommittedEdit: Bool { state.isGesturing || state.awaitingCommit }
+    var onEditStateChange: (() -> Void)?
+#if DAW_MIX_EXPORT_TESTS
+    // Observe the same state used by the production view; no second test model.
+    var integrationEditState: PRProState { state }
+#endif
     private lazy var preview = PRMiniPreviewView(state: state)
     private let clipPopup = NSPopUpButton()
     private let gridPopup = NSPopUpButton()
@@ -234,6 +241,7 @@ final class PianoRollEditorView: NSView {
 
     private func refreshFromState() {
         applyEnabled()
+        onEditStateChange?()
         statusLabel.stringValue = state.status
         preview.needsDisplay = true
         windowController?.workspace.refreshFromState()

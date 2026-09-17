@@ -12,6 +12,7 @@ struct PinnedTrackHeaderModel: Equatable, Identifiable {
     var solo: Bool
     var takeCount: Int
     var hasAudio: Bool
+    var hasMidi: Bool
     var selected: Bool
 
     init(
@@ -26,6 +27,7 @@ struct PinnedTrackHeaderModel: Equatable, Identifiable {
         solo: Bool = false,
         takeCount: Int = 0,
         hasAudio: Bool = false,
+        hasMidi: Bool = false,
         selected: Bool = false
     ) {
         self.id = id
@@ -39,12 +41,14 @@ struct PinnedTrackHeaderModel: Equatable, Identifiable {
         self.solo = solo
         self.takeCount = takeCount
         self.hasAudio = hasAudio
+        self.hasMidi = hasMidi
         self.selected = selected
     }
 }
 
 @MainActor
 final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource {
+    static let laneHeight: CGFloat = 56
     var model: PinnedTrackHeaderModel { didSet { renderModel() } }
     var onSelect: ((UInt64) -> Void)?
     var onRename: ((UInt64, String) -> Void)?
@@ -77,6 +81,7 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
 
     private let accentBar = NSView()
     private let numberLabel = NSTextField(labelWithString: "")
+    private let mediaIcon = NSImageView()
     private let nameField = NSTextField(string: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let gain = NSSlider(value: 0, minValue: -120, maxValue: 24, target: nil, action: nil)
@@ -110,7 +115,8 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         nameField.isBordered = false
         nameField.focusRingType = .none
         nameField.delegate = self
-        statusLabel.font = DAWDesignTokens.Typography.caption
+        statusLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.textColor = DAWDesignTokens.Color.secondaryText
 
         gain.isContinuous = true
@@ -142,26 +148,25 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         actionMenu.setAccessibilityLabel("Действия дорожки \(model.name)")
         actionMenu.setAccessibilityHelp("Перемещает дорожку выше или ниже, либо перетащи её за заголовок. Содержит обратимое удаление дорожки.")
 
-        let titleRow = NSStackView(views: [numberLabel, nameField])
-        titleRow.orientation = .horizontal
-        titleRow.alignment = .centerY
-        titleRow.spacing = 6
-        let controls = NSStackView(views: [arm, mute, solo])
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.spacing = 2
-        let sliders = NSStackView(views: [gain, pan])
-        sliders.orientation = .vertical
-        sliders.spacing = 0
-        let row = NSStackView(views: [titleRow, controls, actionMenu])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 5
-        row.setHuggingPriority(.required, for: .horizontal)
-        let content = NSStackView(views: [row, sliders, statusLabel])
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 2
+        nameField.font = .systemFont(ofSize: 12, weight: .medium)
+        nameField.lineBreakMode = .byTruncatingTail
+        nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        gain.controlSize = .mini; pan.controlSize = .mini
+        gain.setAccessibilityLabel("Громкость дорожки, dB")
+        pan.setAccessibilityLabel("Панорама дорожки")
+        arm.setAccessibilityLabel("Подготовить дорожку к записи")
+        mute.setAccessibilityLabel("Mute дорожки")
+        solo.setAccessibilityLabel("Solo дорожки")
+        gain.isContinuous = false; pan.isContinuous = false
+        mediaIcon.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        mediaIcon.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        let row = NSStackView(views: [numberLabel, mediaIcon, nameField, actionMenu]); row.spacing = 4
+        let controls = NSStackView(views: [arm, mute, solo, gain, pan]); controls.spacing = 3
+        pan.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        let content = NSStackView(views: [row, controls])
+        content.orientation = .vertical; content.alignment = .leading; content.spacing = 2
+        row.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        controls.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.translatesAutoresizingMaskIntoConstraints = false
 
         [accentBar, content].forEach(addSubview)
@@ -175,19 +180,20 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
             content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             content.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             content.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
-            nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-            gain.widthAnchor.constraint(equalTo: content.widthAnchor),
-            pan.widthAnchor.constraint(equalTo: content.widthAnchor)
+            nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 40),
+            gain.widthAnchor.constraint(greaterThanOrEqualToConstant: 45)
         ])
     }
 
     private func renderModel() {
         layer?.backgroundColor = (model.selected
-            ? model.accent.withAlphaComponent(0.17)
+            ? (model.accent.blended(withFraction: 0.84, of: DAWDesignTokens.Color.surface) ?? DAWDesignTokens.Color.surface)
             : DAWDesignTokens.Color.surface).cgColor
         accentBar.layer?.backgroundColor = model.accent.cgColor
         numberLabel.stringValue = String(format: "%02d", model.index + 1)
         nameField.stringValue = model.name
+        mediaIcon.image = (model.hasMidi ? DAWIcon.instrumentTrack : DAWIcon.audioTrack).symbol
+        mediaIcon.contentTintColor = model.accent
         gain.doubleValue = model.gainDb
         pan.doubleValue = model.pan
         arm.state = model.armed ? .on : .off
@@ -196,9 +202,10 @@ final class PinnedTrackHeaderView: NSView, NSTextFieldDelegate, NSDraggingSource
         arm.contentTintColor = model.armed ? NSColor.systemRed : .secondaryLabelColor
         mute.contentTintColor = model.muted ? model.accent : .secondaryLabelColor
         solo.contentTintColor = model.solo ? NSColor.systemYellow : .secondaryLabelColor
-        let media = model.hasAudio ? "AUDIO" : "EMPTY"
+        let media = model.hasAudio ? "AUDIO" : (model.hasMidi ? "MIDI" : "EMPTY")
         let takes = model.takeCount > 0 ? " · \(model.takeCount) TAKE\(model.takeCount == 1 ? "" : "S")" : ""
         statusLabel.stringValue = "\(media) · \(String(format: "%+.1f", model.gainDb)) dB · P \(String(format: "%+.2f", model.pan))\(takes)"
+        toolTip = statusLabel.stringValue
         setAccessibilityLabel("Дорожка \(model.index + 1): \(model.name)")
         setAccessibilityHelp("Перетащи заголовок, чтобы изменить порядок. Меню действий содержит команды перемещения.")
     }
