@@ -1,4 +1,5 @@
 #include "audio/input.hpp"
+#include "platform/macos/audio_device.hpp"
 #include "audio/recording.hpp"
 #include "domain/session.hpp"
 #include <AudioToolbox/AudioToolbox.h>
@@ -14,25 +15,12 @@ void checkedInput(OSStatus status,const char* action) {
     if(status!=noErr) throw Error(std::string(action)+" (Core Audio "+std::to_string(status)+")");
 }
 
-AudioDeviceID defaultInputDevice() {
-    AudioDeviceID id=0; UInt32 size=sizeof(id);
-    AudioObjectPropertyAddress property{kAudioHardwarePropertyDefaultInputDevice,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
-    checkedInput(AudioObjectGetPropertyData(kAudioObjectSystemObject,&property,0,nullptr,&size,&id),"Find input device");
-    if(!id) throw Error("No default input device");
-    return id;
-}
-
-double nominalRate(AudioDeviceID device) {
-    Float64 rate=0; UInt32 size=sizeof(rate);
-    AudioObjectPropertyAddress property{kAudioDevicePropertyNominalSampleRate,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
-    checkedInput(AudioObjectGetPropertyData(device,&property,0,nullptr,&size,&rate),"Read input sample rate");
-    return rate;
-}
-
 class MacInput final:public Input {
     static constexpr UInt32 maxSlice=4096;
     AudioUnit unit=nullptr;
     AudioDeviceID device=0;
+    AudioDeviceConfiguration configuration;
+    AudioDeviceInfo openedDevice;
     std::unique_ptr<RecordingWriter> capture;
     std::string recoveryPath;
     uint64_t capacityFrames=0,startFrame=0;
@@ -67,14 +55,14 @@ class MacInput final:public Input {
         device=0;
     }
 public:
-    MacInput(uint64_t capacity,std::string path,uint64_t start):recoveryPath(std::move(path)),capacityFrames(capacity),startFrame(start) {}
+    MacInput(uint64_t capacity,std::string path,uint64_t start,const AudioDeviceConfiguration& config):configuration(config),recoveryPath(std::move(path)),capacityFrames(capacity),startFrame(start) {}
     ~MacInput() override { shutdown(); }
     void start() override {
         if(active) throw Error("Recording is already active");
         try {
+            openedDevice=openAudioDevice(configuration,AudioDeviceDirection::Input);
+            device=openedDevice.id;
             capture=std::make_unique<RecordingWriter>(recoveryPath,startFrame,capacityFrames);
-            device=defaultInputDevice();
-            if(std::abs(nominalRate(device)-48000.0)>0.5) throw Error("Set the input device to 48 kHz in Audio MIDI Setup before recording");
             AudioComponentDescription description{kAudioUnitType_Output,kAudioUnitSubType_HALOutput,kAudioUnitManufacturer_Apple,0,0};
             auto component=AudioComponentFindNext(nullptr,&description);
             if(!component) throw Error("Core Audio HAL input unavailable");
@@ -88,6 +76,7 @@ public:
             format.mFormatFlags=UInt32(kAudioFormatFlagsNativeFloatPacked)|UInt32(kAudioFormatFlagIsNonInterleaved);
             format.mBytesPerPacket=4; format.mFramesPerPacket=1; format.mBytesPerFrame=4; format.mChannelsPerFrame=1; format.mBitsPerChannel=32;
             checkedInput(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,1,&format,sizeof(format)),"Configure mono input");
+            mapAudioInput(unit,configuration.inputChannel);
             UInt32 maximum=maxSlice;
             checkedInput(AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum)),"Limit input callback size");
             AURenderCallbackStruct inputCallback{callback,this};
@@ -108,10 +97,7 @@ public:
     void checkDevice() override {
         if(!active) return;
         try {
-            UInt32 alive=0,size=sizeof(alive);
-            AudioObjectPropertyAddress property{kAudioDevicePropertyDeviceIsAlive,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
-            checkedInput(AudioObjectGetPropertyData(device,&property,0,nullptr,&size,&alive),"Check input device");
-            if(!alive || defaultInputDevice()!=device) throw Error("Input device changed or disconnected. Start a new recording with the current input.");
+            checkAudioDevice(openedDevice,configuration.inputUID.empty(),AudioDeviceDirection::Input);
         } catch(...) { shutdown(); throw; }
     }
     uint64_t frames() const noexcept override { return capture?capture->frames():0; }
@@ -121,5 +107,5 @@ public:
 };
 }
 
-std::unique_ptr<Input> makeInput(uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame) { return std::make_unique<MacInput>(capacityFrames,recoveryPath,startFrame); }
+std::unique_ptr<Input> makeInput(uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,const AudioDeviceConfiguration& config) { return std::make_unique<MacInput>(capacityFrames,recoveryPath,startFrame,config); }
 }

@@ -1,17 +1,14 @@
 #include "audio/output.hpp"
+#include "platform/macos/audio_device.hpp"
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
 #include <cstring>
 namespace daw {
 namespace {
 void checked(OSStatus status,const char* action) { if(status!=noErr) throw Error(std::string(action)+" (Core Audio "+std::to_string(status)+")"); }
-AudioDeviceID defaultDevice() {
-    AudioDeviceID id=0; UInt32 size=sizeof(id);
-    AudioObjectPropertyAddress p{kAudioHardwarePropertyDefaultOutputDevice,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
-    checked(AudioObjectGetPropertyData(kAudioObjectSystemObject,&p,0,nullptr,&size,&id),"Find output device");
-    if(!id) throw Error("No default output device"); return id;
-}
 class MacOutput final:public Output {
+    AudioDeviceConfiguration configuration;
+    AudioDeviceInfo openedDevice;
     AudioUnit unit=nullptr;
     std::atomic<uint32_t> device{0};
     std::atomic<uint32_t> state{static_cast<uint32_t>(OutputState::idle)};
@@ -34,6 +31,7 @@ class MacOutput final:public Output {
         self.renderer.render(static_cast<float*>(data->mBuffers[0].mData),static_cast<float*>(data->mBuffers[1].mData),frames); return noErr;
     }
 public:
+    explicit MacOutput(const AudioDeviceConfiguration& config): configuration(config) {}
     ~MacOutput() override { stop(); }
     void stop() noexcept override { teardown(OutputState::stopped); }
     void markStalled() noexcept override { teardown(OutputState::stalled); }
@@ -47,7 +45,8 @@ public:
         if(renderer.playing.load(std::memory_order_acquire)) throw Error("Audio output is already running");
         if(renderer.duration()==0) throw Error("Audio output has no prepared render graph");
         try {
-            auto selected=defaultDevice();device.store(selected);
+            openedDevice=openAudioDevice(configuration,AudioDeviceDirection::Output);
+            auto selected=openedDevice.id;device.store(selected);
             AudioComponentDescription description{kAudioUnitType_Output,kAudioUnitSubType_HALOutput,kAudioUnitManufacturer_Apple,0,0};
             auto component=AudioComponentFindNext(nullptr,&description);
             if(!component) throw Error("Core Audio HAL output unavailable");
@@ -57,6 +56,9 @@ public:
             format.mFormatFlags=UInt32(kAudioFormatFlagsNativeFloatPacked)|UInt32(kAudioFormatFlagIsNonInterleaved);
             format.mBytesPerPacket=4; format.mFramesPerPacket=1; format.mBytesPerFrame=4; format.mChannelsPerFrame=2; format.mBitsPerChannel=32;
             checked(AudioUnitSetProperty(unit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&format,sizeof(format)),"Configure stereo output");
+            mapAudioOutput(unit,openedDevice,configuration.outputLeft,configuration.outputRight);
+            UInt32 maximum=audioDeviceMaximumFrames;
+            checked(AudioUnitSetProperty(unit,kAudioUnitProperty_MaximumFramesPerSlice,kAudioUnitScope_Global,0,&maximum,sizeof(maximum)),"Limit output callback size");
             AURenderCallbackStruct render{callback,this};
             checked(AudioUnitSetProperty(unit,kAudioUnitProperty_SetRenderCallback,kAudioUnitScope_Input,0,&render,sizeof(render)),"Install render callback");
             checked(AudioUnitInitialize(unit),"Initialize output");
@@ -73,14 +75,10 @@ public:
         if(!unit) return;
         if(callbackErrors.load()) { teardown(OutputState::callbackError); throw Error("Output callback received an invalid audio buffer. Press Play to retry."); }
         try {
-            UInt32 alive=0,size=sizeof(alive);
-            AudioObjectPropertyAddress p{kAudioDevicePropertyDeviceIsAlive,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
-            auto selected=static_cast<AudioDeviceID>(device.load());
-            checked(AudioObjectGetPropertyData(selected,&p,0,nullptr,&size,&alive),"Check output device");
-            if(!alive || defaultDevice()!=selected) throw Error("Output device changed or disconnected. Press Play to use the current output.");
+            checkAudioDevice(openedDevice,configuration.outputUID.empty(),AudioDeviceDirection::Output);
         } catch(...) { teardown(OutputState::deviceLost); throw; }
     }
 };
 }
-std::unique_ptr<Output> makeOutput() { return std::make_unique<MacOutput>(); }
+std::unique_ptr<Output> makeOutput(const AudioDeviceConfiguration& config) { return std::make_unique<MacOutput>(config); }
 }

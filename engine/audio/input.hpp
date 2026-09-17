@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/device.hpp"
 #include "audio/clip.hpp"
 #include <atomic>
 #include <cstdint>
@@ -35,5 +36,5 @@ public:
     virtual void discardRecovery() noexcept = 0;
 };
 
-std::unique_ptr<Input> makeInput(uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame);
+std::unique_ptr<Input> makeInput(uint64_t capacityFrames,const std::string& recoveryPath,uint64_t startFrame,const AudioDeviceConfiguration& configuration = {});
 }

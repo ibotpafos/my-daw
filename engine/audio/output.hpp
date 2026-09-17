@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/device.hpp"
 #include "audio/renderer.hpp"
 #include <memory>
 namespace daw {
@@ -20,5 +21,5 @@ public:
     virtual void markStalled() noexcept = 0;
     virtual OutputTelemetry telemetry() const noexcept = 0;
 };
-std::unique_ptr<Output> makeOutput();
+std::unique_ptr<Output> makeOutput(const AudioDeviceConfiguration& configuration = {});
 }

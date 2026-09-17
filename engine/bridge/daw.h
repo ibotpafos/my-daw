@@ -17,6 +17,31 @@ extern "C" {
  * Snapshot sizes must equal sizeof(struct). All mutations use expected_revision.
  */
 typedef struct daw_session daw_session;
+enum { DAW_AUDIO_DEVICE_VERSION = 1, DAW_AUDIO_DEVICE_CONFIG_VERSION = 1 };
+typedef struct {
+    uint32_t struct_size, version, device_id, input_channels, output_channels, buffer_frames;
+    double sample_rate;
+    int32_t is_default_input, is_default_output;
+    char uid[481], name[481];
+} daw_audio_device;
+typedef struct {
+    uint32_t struct_size, version, input_channel, output_left, output_right;
+    char input_uid[481], output_uid[481];
+} daw_audio_device_config;
+/* Owner-thread, read-only hardware discovery. Refresh atomically replaces the
+ * enumeration snapshot used by get; indices are not persistent identities.
+ * Non-Apple: empty catalog. No microphone is opened and no TCC prompt requested. */
+int daw_refresh_audio_devices(daw_session*, uint32_t* count);
+int daw_get_audio_device(daw_session*, uint32_t index, daw_audio_device*);
+/* Machine/session preference, not project/Undo state. Zero-based channels.
+ * Empty UID follows system default; explicit missing UID MUST NOT fall back.
+ * Set validates syntax without opening hardware (offline preferences allowed).
+ * Start re-resolves UID and validates channels/48 kHz/buffer <=4096. Configuration
+ * changes are rejected during playback/preparation/recording/MIDI capture.
+ * This version reports hardware rate/buffer; it does not change either. */
+int daw_set_audio_device_config(daw_session*, const daw_audio_device_config*);
+int daw_get_audio_device_config(daw_session*, daw_audio_device_config*);
+
 typedef struct daw_save_job daw_save_job;
 typedef struct daw_export_job daw_export_job;
 typedef struct daw_dawproject_job daw_dawproject_job;

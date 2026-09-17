@@ -2,7 +2,7 @@ if(APPLE)
   enable_language(OBJCXX)
   target_sources(daw_core PRIVATE engine/audio/clip_resampler.cpp)
   set_property(TARGET daw_core PROPERTY OBJCXX_STANDARD 20)
-  target_sources(daw_core PRIVATE engine/platform/macos/input.cpp engine/platform/macos/midi_input.cpp engine/platform/macos/output.cpp engine/platform/macos/duplex.cpp engine/platform/macos/storage.mm)
+  target_sources(daw_core PRIVATE engine/platform/macos/audio_device.cpp engine/platform/macos/input.cpp engine/platform/macos/midi_input.cpp engine/platform/macos/output.cpp engine/platform/macos/duplex.cpp engine/platform/macos/storage.mm)
   target_sources(daw_core PRIVATE engine/platform/macos/effect.mm engine/platform/macos/plugin_parameters.cpp)
   if(EXISTS "${DAW_VST3_SDK_DIR}/CMakeLists.txt")
     # AppleClang does not support every upstream Clang warning. Probe the
