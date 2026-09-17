@@ -1,0 +1,106 @@
+name: Validate MIDI-only export candidate
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+concurrency:
+  group: midi-export-candidate-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/midi-only-export-ui'
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Verify exact base and prepare coherent candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/mix-export-ui
+          python3 - <<'PY'
+          import base64, gzip, hashlib, pathlib, subprocess
+          expected = {
+            'apps/macos/main.swift': 'f473b661e4cd3930d42ff95c329dff49b0708e25',
+            'apps/macos/StorageUI.swift': '3379f7e80973e98d14800a03c9ab9f0f4e329c84',
+            'apps/macos/sources.txt': '746c46bce8cc7c23a56c0e6453a91d1d8da20c6a',
+            'apps/macos/WaveformView.swift': '8b9c11779312a5cb46501a4a1522107ccc07efed',
+            'apps/macos/Workspace/TimelineRangeView.swift': '05fb071020dc896a87d9f9fe2973b7bc53c64e1a',
+            '.github/workflows/workspace-ui.yml': '82b79ec8e247a16aac810076c4d0b0b7e1374524',
+            'docs/70-instrument-source.md': 'a5fbbe1bbc96d9c4bfc75e4ef68d158bc013c7e1',
+          }
+          subprocess.run(['git', 'merge-base', '--is-ancestor', '0e6cd04077a559705afa5d61c5005cd90180c049', 'HEAD'], check=True)
+          for name, sha in expected.items():
+              actual = subprocess.check_output(['git', 'hash-object', name], text=True).strip()
+              if actual != sha: raise SystemExit('Refuse changed base: ' + name)
+          encoded = ''.join(pathlib.Path(f'.github/midi-export-{i}.part').read_text() for i in range(4))
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          if hashlib.sha256(patch).hexdigest() != 'a1702504724a86b4e876afe87b85bc224f2a5a1a2d913b907cfcfcdc7a321348':
+              raise SystemExit('Patch checksum mismatch')
+          path = pathlib.Path('build/mix-export-ui/candidate.patch')
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--index', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+          PY
+          git rm .github/midi-export-{0,1,2,3}.part .github/workflows/midi-export-candidate.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(macos): export MIDI-only projects through guarded native WAV action'
+          git rev-parse HEAD > build/mix-export-ui/commit.txt
+          git archive --format=zip HEAD > build/mix-export-ui/source.zip
+      - name: Build and verify native arm64 application
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-macos.sh 2>&1 | tee build/mix-export-ui/app-build.log
+      - name: Real application action and Apple AU to WAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-mix-export-ui.sh 2>&1 | tee build/mix-export-ui/tests.log
+      - name: Existing workspace native regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-workspace-ui.sh 2>&1 | tee build/mix-export-ui/workspace.log
+      - name: Debug CTest regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build --preset debug 2>&1 | tee build/mix-export-ui/core-build.log
+          ctest --test-dir build/debug --output-on-failure --no-tests=error --output-junit ../mix-export-ui/ctest.xml 2>&1 | tee build/mix-export-ui/ctest.log
+      - name: Documentation and source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv build/mix-export-docs
+          build/mix-export-docs/bin/pip install -r requirements-docs.txt
+          build/mix-export-docs/bin/python scripts/check_docs.py --require-schemas 2>&1 | tee build/mix-export-ui/docs.log
+          python3 scripts/e2e_coverage.py --strict 2>&1 | tee build/mix-export-ui/coverage.log
+          python3 -m unittest discover -s tests -p 'test_project_layout.py' -v 2>&1 | tee build/mix-export-ui/layout.log
+      - name: Publish only validated commit to this feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual=$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)
+          test "$actual" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          git rev-parse HEAD > build/mix-export-ui/published.txt
+      - name: Preserve exact source and native proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: midi-export-candidate-${{ github.run_id }}
+          path: |
+            build/mix-export-ui/
+            build/build-manifest.json
+            build/debug/Testing/Temporary/LastTest.log
+          retention-days: 14
