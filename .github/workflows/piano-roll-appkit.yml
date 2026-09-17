@@ -18,6 +18,8 @@ jobs:
   typecheck-and-smoke:
     runs-on: macos-15
     timeout-minutes: 15
+    env:
+      PR_QA_DIR: ${{ github.workspace }}/build/qa-ui
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -38,6 +40,14 @@ jobs:
         run: bash scripts/typecheck-macos-ui.sh
       - name: Run native Piano Roll AppKit smoke checks
         run: bash scripts/test-piano-roll-appkit.sh
+      - name: Preserve native UI screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: piano-roll-ui-${{ github.run_id }}
+          path: build/qa-ui/
+          retention-days: 7
+          if-no-files-found: warn
   app-build:
     runs-on: macos-15
     timeout-minutes: 20
@@ -56,6 +66,11 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/qa-app/My-DAW-arm64.zip
           cp build/build-manifest.json build/qa-app/
           shasum -a 256 build/qa-app/My-DAW-arm64.zip > build/qa-app/SHA256SUMS
+      - name: Verify real MIDI edit persistence and project Undo
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-app/midi-bridge-tests.log
       - name: Preserve build evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

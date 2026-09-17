@@ -1,0 +1,102 @@
+name: Validate piano roll candidate before publication
+on:
+  push:
+    branches: [codex/pro-piano-roll]
+    paths:
+      - '.github/piano-roll-candidate.part*'
+      - '.github/workflows/piano-roll-candidate.yml'
+concurrency:
+  group: piano-roll-candidate
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/pro-piano-roll'
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      PR_QA_DIR: ${{ github.workspace }}/build/qa-candidate/ui
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Verify anchored patch and prepare a coherent candidate commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/qa-candidate
+          python3 - <<'PY'
+          import base64, hashlib, lzma, pathlib, subprocess
+          base = '07faebdb494aa6ac8c32ed88da691f441655c8e1'
+          allowed = {'.github/piano-roll-candidate.part1', '.github/piano-roll-candidate.part2', '.github/piano-roll-candidate.part3', '.github/workflows/piano-roll-candidate.yml', '.github/workflows/piano-roll-appkit.yml', '.github/workflows/core.yml'}
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD'], text=True).splitlines())
+          if not changed <= allowed: raise SystemExit('Source moved beyond reviewed base: ' + repr(changed - allowed))
+          encoded = ''.join(pathlib.Path(f'.github/piano-roll-candidate.part{i}').read_text() for i in (1, 2, 3))
+          compressed = base64.b64decode(encoded, validate=True)
+          if hashlib.sha256(compressed).hexdigest() != '4d0f137a0bade6c3f063aa8adbaae19f4682a4fd65e0bf2928469333c14a7fbe': raise SystemExit('Patch digest mismatch')
+          patch = pathlib.Path('/tmp/piano-roll-candidate.patch')
+          patch.write_bytes(lzma.decompress(compressed))
+          subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(patch)], check=True)
+          subprocess.run(['git', 'apply', '--unidiff-zero', str(patch)], check=True)
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          if any(not p.startswith(('apps/', 'docs/', 'engine/', 'scripts/', 'tests/')) for p in changed): raise SystemExit('Patch changed an unexpected path')
+          PY
+          git diff --check
+          git add apps docs engine scripts tests
+          git diff --cached --stat
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(piano-roll): make edits revision-safe, support full-size clips and validate native interactions'
+          git rev-parse HEAD > build/qa-candidate/commit.txt
+          git archive --format=zip --output=build/qa-candidate/source.zip HEAD
+      - name: Typecheck the complete native application
+        shell: bash
+        run: bash scripts/typecheck-macos-ui.sh 2>&1 | tee build/qa-candidate/typecheck.log
+      - name: Optimized Swift transform and transaction regressions
+        shell: bash
+        run: bash scripts/test-piano-roll-transforms.sh 2>&1 | tee build/qa-candidate/swift-tests.log
+      - name: Native AppKit input, preview, scrolling and screenshots
+        shell: bash
+        run: bash scripts/test-piano-roll-appkit.sh 2>&1 | tee build/qa-candidate/appkit-tests.log
+      - name: Build and verify native arm64 application
+        shell: bash
+        run: |
+          bash scripts/build-macos.sh 2>&1 | tee build/qa-candidate/app-build.log
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' build/qa-candidate/My-DAW-arm64.zip
+          cp build/build-manifest.json build/qa-candidate/
+          shasum -a 256 build/qa-candidate/My-DAW-arm64.zip > build/qa-candidate/SHA256SUMS
+      - name: MIDI edits through the actual C ABI, save-open and Undo-Redo
+        shell: bash
+        run: bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-candidate/bridge-tests.log
+      - name: Build and run all macOS Debug CTest targets
+        shell: bash
+        run: |
+          cmake --build --preset debug 2>&1 | tee build/qa-candidate/core-build.log
+          ctest --preset debug --output-on-failure --no-tests=error 2>&1 | tee build/qa-candidate/ctest.log
+      - name: Documentation contracts and ABI coverage
+        shell: bash
+        run: |
+          python3 -m venv /tmp/piano-roll-docs
+          /tmp/piano-roll-docs/bin/pip install -r requirements-docs.txt > build/qa-candidate/docs-install.log
+          /tmp/piano-roll-docs/bin/python scripts/check_docs.py --require-schemas 2>&1 | tee build/qa-candidate/docs.log
+          python3 scripts/e2e_coverage.py --strict 2>&1 | tee build/qa-candidate/coverage.log
+      - name: Publish only the validated coherent commit, without force
+        shell: bash
+        run: |
+          git diff --exit-code
+          git fetch origin codex/pro-piano-roll
+          test "$(git rev-parse FETCH_HEAD)" = '${{ github.sha }}'
+          git push origin HEAD:refs/heads/codex/pro-piano-roll
+          printf 'Validated and published %s\n' "$(git rev-parse HEAD)" > build/qa-candidate/publication.txt
+      - name: Preserve candidate source, logs and native artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: piano-roll-candidate-${{ github.run_id }}
+          path: build/qa-candidate/
+          retention-days: 7
+          if-no-files-found: error
