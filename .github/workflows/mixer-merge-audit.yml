@@ -1,0 +1,27 @@
+name: Mixer merge audit
+on:
+  push:
+    branches: [codex/mixer-console]
+    paths: ['.github/workflows/mixer-merge-audit.yml']
+permissions:
+  contents: read
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Archive exact histories without publishing code
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD refs/remotes/origin/main > validation/revisions.txt
+          git bundle create validation/repository.bundle HEAD refs/remotes/origin/main
+          git bundle verify validation/repository.bundle
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mixer-merge-history-${{ github.sha }}
+          path: validation/
+          retention-days: 2
