@@ -1,0 +1,127 @@
+name: Reproduce reviewed palette integration
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+    paths: [.github/workflows/finish-palette-integration.yml]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproduce exact reviewed source tree, test, and publish only this feature branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          test "$(git rev-parse HEAD^)" = 4b91b93a10bb7108dac2d600e4c8f305c1dfaed3
+          test "$(git rev-parse origin/main)" = fdcd21842c017257e1b41ce47eaa7445af590c0d
+          result=0
+          git merge --no-ff --no-commit fdcd21842c017257e1b41ce47eaa7445af590c0d || result=$?
+          test "$result" -eq 1
+          python3 - <<'PY'
+          import subprocess
+          expected={'.github/workflows/core.yml','CMakeLists.txt','apps/macos/DAWWindow.swift','apps/macos/main.swift','scripts/build-macos.sh','scripts/typecheck-macos-ui.sh','tests/aiff_import_tests.cpp'}
+          actual=set(subprocess.check_output(['git','diff','--name-only','--diff-filter=U'],text=True).splitlines())
+          assert actual==expected,(actual,expected)
+          subprocess.run(['git','checkout','--ours','--',*sorted(expected)],check=True)
+          subprocess.run(['git','checkout','f95a8c9b62a91c3ba01eff1892f8c7e2c65f0603','--','tests/import_jobs.cpp'],check=True)
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          # Keep the new palette window and restore the existing focused-editor
+          # keyboard boundary, without replacing the workspace by the old host.
+          p=Path('apps/macos/DAWWindow.swift')
+          s=subprocess.check_output(['git','show','fdcd21842c017257e1b41ce47eaa7445af590c0d:apps/macos/DAWWindow.swift'],text=True)
+          s=s.replace('    var onPlayStop:', '    var onFocusedKeyDown: ((NSEvent) -> Bool)?\n    var shouldHandleClipDelete: (() -> Bool)?\n    var onPlayStop:',1)
+          s=s.replace('           handleUnmodifiedGlobalCommand(event) {','           (onFocusedKeyDown?(event) == true || handleUnmodifiedGlobalCommand(event)) {',1)
+          s=s.replace('        if super.performKeyEquivalent(with: event) { return true }','        if onFocusedKeyDown?(event) == true { return true }\n        if super.performKeyEquivalent(with: event) { return true }',1)
+          s=s.replace('        case 51, 117: return invoke(onDeleteSelectedClip)','        case 51, 117:\n            guard shouldHandleClipDelete?() ?? true else { return false }\n            return invoke(onDeleteSelectedClip)',1)
+          p.write_text(s)
+          p=Path('apps/macos/main.swift');s=p.read_text()
+          marker='        let edit = NSMenuItem(); edit.title = "Текст"; let submenu = NSMenu(title: "Текст")\n'
+          assert s.count(marker)==1
+          s=s.replace(marker,'''        if let viewMenu = main.items.last?.submenu {
+                      viewMenu.insertItem(.separator(), at: 0)
+                      viewMenu.insertItem(DAWWindow.makeCommandPaletteMenuItem(), at: 0)
+                  }
+          '''.replace('                      ','            ').replace('                  }','        }').replace('\n          ','\n')+marker)
+          p.write_text(s)
+          p=Path('apps/macos/sources.txt');s=p.read_text()
+          p.write_text(s+'apps/macos/CommandPaletteSearch.swift\napps/macos/CommandPalette.swift\n')
+          # New libsamplerate adapter makes successful conversion mandatory on
+          # Linux too. Keep the extra cancellation/frame checks from main.
+          p=Path('tests/import_jobs.cpp');s=p.read_text()
+          marker='    daw::cancelImport(*projectRate);\n'
+          assert s.count(marker)==1
+          s=s.replace(marker,'    CHECK(daw::importClip(*projectRate)->frames() == 44100);\n'+marker+'    CHECK(projectRate->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Canceled && !daw::importClip(*projectRate));\n',1)
+          p.write_text(s)
+          p=Path('tests/macos_command_palette_appkit_tests.swift');s=p.read_text()
+          marker='        expect(host.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: host)), "main window shortcut opens palette")\n'
+          assert s.count(marker)==1
+          block='''        // Regression for the joined workspace: ordinary editor shortcuts and
+                  // Delete ownership must survive integrating the palette window boundary.
+                  var editorDeletes = 0, clipDeletes = 0, focusedShortcuts = 0
+                  host.onDeleteSelectedClip = { clipDeletes += 1 }
+                  host.shouldHandleClipDelete = { false }
+                  host.onFocusedKeyDown = { event in
+                      if event.keyCode == 51 && event.modifierFlags.isEmpty { editorDeletes += 1; return true }
+                      if event.keyCode == 14 && event.modifierFlags.contains(.command) { focusedShortcuts += 1; return true }
+                      return false
+                  }
+                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
+                  expect(editorDeletes == 1 && clipDeletes == 0, "focused editor owns Delete without deleting a clip")
+                  expect(host.performKeyEquivalent(with: key(code: 14, characters: "e", flags: .command, window: host)), "focused editor key equivalent is preserved")
+                  expect(focusedShortcuts == 1, "focused key handler runs once")
+                  host.onFocusedKeyDown = nil
+                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
+                  expect(clipDeletes == 0, "clip-delete guard still prevents a stale global deletion")
+                  host.shouldHandleClipDelete = { true }
+                  host.sendEvent(key(code: 51, characters: "\\u{7f}", flags: [], window: host))
+                  expect(clipDeletes == 1, "global clip deletion remains available when explicitly owned")
+                  var interceptedPalette = 0
+                  host.onFocusedKeyDown = { _ in interceptedPalette += 1; return true }
+          '''
+          block=block.splitlines(keepends=True)
+          block=''.join(line[10:] if i>0 and line.startswith('          ') else line for i,line in enumerate(block))
+          s=s.replace(marker,block+marker+'        expect(interceptedPalette == 0, "palette shortcut precedes the focused editor key handler")\n        host.onFocusedKeyDown = nil\n')
+          p.write_text(s)
+          p=Path('docs/89-main-integration.md');s=p.read_text()
+          s=s.replace('Отдельная Command Palette (#8) этим срезом не включена.','Перед финальным merge main снова продвинулся до `fdcd218` (Command Palette #8,\nверсия 1.74.0). Палитра сохранена: Cmd-K, меню, история и native тесты входят\nв совместную сборку. Из исходной ветки палитры не перенесены устаревшие\nожидания отказа Linux-ресемплинга: теперь обе платформы обязаны успешно\nконвертировать WAV/AIFF через уже подключённые native/libsamplerate адаптеры.')
+          s=s.replace('## Не является релизной приёмкой','## Command Palette и клавиатурные границы\n\nПалитра открывается до focused-editor обработчика по Cmd-K; остальные shortcuts\nсначала получает активный Piano Roll. Принадлежность Delete редактору и guard\nудаления клипа сохранены. Native palette harness дополнен проверками этих\nстыков. Общий Swift manifest включает обе palette реализации; source-quality,\nполный typecheck, schema validation и отдельный native palette job остаются\nв CI одновременно, а не заменяют друг друга.\n\n## Не является релизной приёмкой')
+          p.write_text(s)
+          Path('scripts/typecheck-macos-ui.sh').chmod(0o755)
+          PY
+          git add -A
+          git rm --cached .github/workflows/finish-palette-integration.yml
+          reviewed_tree=$(git write-tree)
+          echo "Reviewed tree: $reviewed_tree"
+          test "$reviewed_tree" = b0d361a7d238d21e4b0e1f73df85783bfc20b943
+          git restore --source="$SOURCE_HEAD" --staged .github/workflows/finish-palette-integration.yml
+          git diff --cached "$SOURCE_HEAD" --exit-code -- .github
+          git diff --cached --check
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsamplerate0-dev pkg-config
+          cmake --preset sanitizers
+          cmake --build --preset sanitizers --parallel 2
+          ctest --preset sanitizers --output-on-failure
+          test "$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)" = "$SOURCE_HEAD"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = fdcd21842c017257e1b41ce47eaa7445af590c0d
+          git commit -m 'merge(integration): retain command palette with workspace, MIDI export and portable resampling'
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          trap 'rm -f "$RUNNER_TEMP/askpass.sh"' EXIT
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          git log -1 --format='%H %T'
