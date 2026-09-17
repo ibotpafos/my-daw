@@ -68,3 +68,5 @@ apps/macos/MixerRoutingMatrixView.swift
 apps/macos/MixerRoutingPresenter.swift
 apps/macos/MixerScale.swift
 apps/macos/MixerStripView.swift
+apps/macos/CommandPaletteSearch.swift
+apps/macos/CommandPalette.swift

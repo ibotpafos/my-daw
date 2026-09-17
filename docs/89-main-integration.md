@@ -6,7 +6,11 @@ main с Piano Roll (#4), инфраструктуру/AU (#1), VST3 SDK (#5), wo
 Общий интеграционный PR — #12. Во время интеграции main продвинулся от
 `176aeb3` к `acbd043` (уже merged Mixer Console #3). Новая база учтена:
 микшер, маршрутизация, send controls v22 и связанные фейдеры сохранены.
-Отдельная Command Palette (#8) этим срезом не включена.
+Перед финальным merge main снова продвинулся до `fdcd218` (Command Palette #8,
+версия 1.74.0). Палитра сохранена: Cmd-K, меню, история и native тесты входят
+в совместную сборку. Из исходной ветки палитры не перенесены устаревшие
+ожидания отказа Linux-ресемплинга: теперь обе платформы обязаны успешно
+конвертировать WAV/AIFF через уже подключённые native/libsamplerate адаптеры.
 
 ## Согласованные границы
 
@@ -67,6 +71,15 @@ preview/pending guard → commit/Undo → equal-revision reopen → AU/WAV actio
 `scripts/test-mixer-groups.sh`; CTest debug/sanitizers и SDK workflow.
 Результаты конкретного commit, source archives и downloadable .app фиксируются
 в PR #12. Наличие проверки в workflow не считается её успешным выполнением.
+
+## Command Palette и клавиатурные границы
+
+Палитра открывается до focused-editor обработчика по Cmd-K; остальные shortcuts
+сначала получает активный Piano Roll. Принадлежность Delete редактору и guard
+удаления клипа сохранены. Native palette harness дополнен проверками этих
+стыков. Общий Swift manifest включает обе palette реализации; source-quality,
+полный typecheck, schema validation и отдельный native palette job остаются
+в CI одновременно, а не заменяют друг друга.
 
 ## Не является релизной приёмкой
 

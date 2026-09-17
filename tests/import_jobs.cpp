@@ -76,7 +76,9 @@ int main() { try {
     CHECK(projectRate->sourceSampleRate.load(std::memory_order_acquire) == 48000 &&
           projectRate->outputFrames.load(std::memory_order_acquire) == 44100 &&
           projectRate->progress.load(std::memory_order_acquire) == 100);
+    CHECK(daw::importClip(*projectRate)->frames() == 44100);
     daw::cancelImport(*projectRate);
+    CHECK(projectRate->status.load(std::memory_order_acquire) == daw::ImportJobStatus::Canceled && !daw::importClip(*projectRate));
     for (int i = 0; i < 1000 && daw::backgroundJobsInFlight() != baseline; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     CHECK(daw::backgroundJobsInFlight() == baseline);
 
