@@ -1,6 +1,6 @@
 # Professional Mixer Console — integrated implementation
 
-16 September 2026. This console extends the existing AppKit/Session/C ABI/renderer.
+Updated 17 September 2026. This console extends the existing AppKit/Session/C ABI/renderer.
 It does not introduce a second routing graph or change the project file format.
 See [mixer semantics](30-mixer.md), [routing](35-routing-buses-sends.md),
 [automation/PDC](38-volume-automation-pdc.md), and [multi-target automation](39-multi-automation-workflow.md).
@@ -101,6 +101,93 @@ Click a send for exact dB entry and use its context menu for PRE/POST or removal
 The numeric fader field accepts decimal comma; double-clicking the fader resets
 it to 0 dB. Structural routing/tap changes still stop/rebuild transport by design;
 only existing-send gain changes use the non-stopping live-target path.
+
+## Routing and large-session UI — 17 September 2026
+
+The console also has a sample-peak overview, visibility controls, up to three
+left/right pinned channels, and Full/Inserts/Sends/Faders section focus. These
+are presentation settings, not audio groups or VCA controls. The scrolling bank
+culls offscreen strips from compositing but retains their control instances.
+The Undo/Redo buttons use the existing Session history, not a second mixer history.
+
+Open **Микшер → Матрица маршрутизации…** (**Command-Option-R**). The matrix uses
+native view-based `NSTableView` cells, a fixed channel-name table, synchronized
+vertical scrolling and fixed destination headers. Destination columns resize;
+their widths and the focused row/destination IDs survive bus renaming/reordering.
+Search matches channel and output names. The two modes remain distinct:
+
+- **Main outputs:** choose one main destination per track/bus. Re-selecting the
+  existing route is a no-op. Self-routing, indirect feedback, and broken/cyclic
+  destination chains are disabled with a reason. This is UI preflight only:
+  Session remains the final authority on every mutation.
+- **Sends:** clicking an empty cell adds a post-fader send at -12 dB. Clicking an
+  existing send opens its exact level editor; it no longer deletes that send.
+  The context menu exposes PRE/POST and explicit removal. The eight-send add
+  limit does not prevent editing/removing an existing send.
+
+With a routing table focused, arrow keys navigate; Return/Space activates the
+focused cell, and Delete/Forward Delete removes only an existing send. Command-F
+focuses search. Native cells expose source/destination, value, help and enabled
+state to accessibility. A main connection is announced separately from a send
+level even when both target the same bus. Full VoiceOver interaction remains a
+manual acceptance task, not implied by metadata assertions.
+
+The non-modal window refreshes UI snapshots at 4 Hz while visible and not
+minimized. Identical snapshots do not rebuild tables. Each edit also refreshes
+synchronously and checks recording/active-gesture locks before emitting a callback.
+Actions from menus/cells opened against a changed snapshot are rejected rather
+than replayed on stale routing data. Closing the window releases its timer and
+providers; reopening an existing window preserves its geometry instead of
+recentering it. The providers read UI-owned snapshots on the main thread, never
+the audio callback. This iteration changes no engine, C ABI, storage format or
+real-time processing code. Structural routing/tap changes retain the existing
+stop/rebuild behavior.
+
+`tests/mixer_routing_tests.swift` is compiled into the existing AppKit harness.
+It exercises native cell clicks, synthesized key events, menu actions, stale
+snapshots, dynamic read-only guards, direct/indirect feedback, missing destinations,
+capacity limits, search/empty states, stable focus, column widths, accessibility
+metadata and presenter close/reopen cleanup. A 256-track by 16-destination fixture
+checks that the table does not instantiate all 4096 logical buttons at once.
+This is a UI allocation/compositing check, not a DSP throughput benchmark.
+
+Visual inspection caught an initially invisible channel-name column despite the
+first action tests passing. Its document/cell geometry is now explicit and covered
+by visible-frame assertions. The harness emits `build/mixer-routing-ui.png` and
+`build/mixer-ui.png` from real AppKit offscreen rendering with synthetic fixtures.
+The read-only native workflow retains both PNGs, logs and a tracked-source archive.
+
+## Latest native validation — 17 September 2026
+
+Verified code: `5ed6eacc6a1aaf744a3f1a4e9dbb2d9e9043a161`.
+[Native run 35225797150](https://github.com/ibotpafos/my-daw/actions/runs/35225797150)
+completed successfully in both jobs. A following documentation-only commit does
+not change the source used for this candidate.
+
+- **32/32 core tests PASS** with ASan/UBSan, total 62.88 seconds. This includes
+  mixer gestures, routing, automation, project persistence and Undo/Redo.
+- **AppKit harness PASS**, including the routing tests above and all pre-existing
+  mixer checks. The 4096-cell fixture instantiated **240 buttons** at the tested
+  viewport, not all 4096. Both offscreen PNGs were downloaded and visually checked.
+  This validates component rendering and event dispatch, not physical playback.
+- **Complete arm64 application PASS**, including the existing strict codesign
+  verification. Bundle version is 1.73.0, `DAWBuildCommit=5ed6eac`, minimum macOS
+  14.0. Manifest: Apple Swift 6.1.2, SDK 15.5, macOS runner 15.7.9.
+- The candidate is **ad-hoc signed, not notarized**. The optional VST3 SDK was not
+  bootstrapped: this artifact has the AU scan helper and VST3 fallback, not VST3
+  runtime helpers. Normal developer packaging remains unchanged.
+- Native documentation, SQL, version and script checks passed. Full JSON Schema
+  validation was skipped on the runner because `jsonschema` was absent. Separately,
+  local `python3 scripts/check_docs.py --require-schemas` passed all three schemas,
+  three examples, ten negative schema cases and the remaining documentation checks.
+- The generic Ubuntu workflow still fails on existing GCC misleading-indentation
+  errors in `engine/domain/session.cpp`. No all-platform green-CI claim is made;
+  tests and warning gates were not disabled.
+
+Run artifacts are `mixer-appkit-5ed6eacc...` (PNGs, harness log, source archive)
+and `mixer-core-app-5ed6eacc...` (application ZIP, CTest/build/docs logs, manifest),
+with seven-day retention. SHA-256 of the inner `My-DAW-app.zip`:
+`2a41faf8cd1c85662b1b49b43baed373f86e3643ca9fa6f0e7ac9bace6478632`.
 
 ## Remaining acceptance / explicit limitations
 
