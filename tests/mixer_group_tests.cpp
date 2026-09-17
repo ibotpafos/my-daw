@@ -55,6 +55,9 @@ static void bridgeAndStorage() {
     CHECK_OK(s,daw_begin_track_gain_group(s,ids.data(),2,rev(s)));
     CHECK_OK(s,daw_write_mixer_gesture(s,-100)); daw_cancel_mixer_gesture(s); daw_cancel_mixer_gesture(s);
     CHECK(rev(s)==undoRevision);
+    CHECK_OK(s,daw_begin_track_gain_group(s,ids.data(),2,rev(s)));
+    CHECK_OK(s,daw_write_mixer_gesture(s,1e-300));
+    CHECK_OK(s,daw_end_mixer_gesture(s,rev(s))); CHECK(rev(s)==undoRevision);
     CHECK_OK(s,daw_redo(s,rev(s))); CHECK(trackById(s,a).gain_db==-3 && trackById(s,b).gain_db==-9);
     CHECK_OK(s,daw_save_draft(s,(root/"committed.daw").c_str()));
     CHECK_OK(opened.get(),daw_open_draft(opened.get(),(root/"committed.daw").c_str()));

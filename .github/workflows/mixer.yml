@@ -39,6 +39,7 @@ jobs:
             build/mixer-ui.png
             build/mixer-routing-ui.png
             build/mixer-send-ui.png
+            build/mixer-group-ui.png
           retention-days: 7
   core-and-app:
     runs-on: macos-15
@@ -70,6 +71,12 @@ jobs:
           mkdir -p validation
           bash scripts/build-macos.sh 2>&1 | tee validation/app-build.log
           ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' validation/My-DAW-app.zip
+      - name: Native group UI to real C ABI
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/test-mixer-groups.sh 2>&1 | tee validation/group-integration.log
       - name: Documentation contracts
         if: always()
         shell: bash

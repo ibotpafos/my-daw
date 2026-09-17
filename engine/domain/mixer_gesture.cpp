@@ -113,7 +113,9 @@ void Session::endMixerGesture(uint64_t expected) {
         throw Error("Revision conflict: refresh the project");
     const bool changed = g.group.empty()
         ? mixerValue(g.working, g.target, g.targetID, g.sendBusID) != g.initialValue
-        : g.delta != 0;
+        : std::any_of(g.group.begin(), g.group.end(), [&](const auto& member) {
+              return g.working.tracks[member.trackIndex].gain != member.initialGain;
+          });
     // Keep the preview cancelable if validation/history allocation throws.
     if (changed) commit(g.working);
     mixerGesture.reset();
