@@ -126,7 +126,7 @@ int main(){try{
         auto stamped=openDb(path);
         sqlite3_stmt* version=nullptr;
         CHECK(sqlite3_prepare_v2(stamped,"PRAGMA user_version",-1,&version,nullptr)==SQLITE_OK);
-        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==21);
+        CHECK(sqlite3_step(version)==SQLITE_ROW&&sqlite3_column_int(version,0)==22);
         sqlite3_finalize(version);
         CHECK(sqlite3_exec(stamped,"INSERT INTO markers VALUES(480000,'dup');",nullptr,nullptr,nullptr)!=SQLITE_OK);  // the key itself blocks a duplicate
         CHECK(sqlite3_exec(stamped,"PRAGMA user_version=17;",nullptr,nullptr,nullptr)==SQLITE_OK);

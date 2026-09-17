@@ -545,8 +545,11 @@ struct DumpSend {
     uint64_t busId = 0;
     double gainDb = 0.0;
     int preFader = 0;
+    double pan = 0;
+    int muted = 0, independentPan = 0;
     bool operator==(const DumpSend& other) const {
-        return std::tie(busId, gainDb, preFader) == std::tie(other.busId, other.gainDb, other.preFader);
+        return std::tie(busId, gainDb, preFader, pan, muted, independentPan) ==
+               std::tie(other.busId, other.gainDb, other.preFader, other.pan, other.muted, other.independentPan);
     }
 };
 struct DumpNote {
@@ -787,6 +790,11 @@ inline Dump dumpOf(daw_session* session) {
             entry.busId = route.bus_id;
             entry.gainDb = route.gain_db;
             entry.preFader = route.pre_fader;
+            auto controls = abi<daw_send_controls>();
+            CHECK_OK(session, daw_get_send_controls(session, raw.id, route.bus_id, &controls));
+            entry.pan = controls.pan;
+            entry.muted = controls.muted;
+            entry.independentPan = controls.independent_pan;
             track.sends.push_back(entry);
         }
         track.volumeAutomation = volumePoints(session, raw.id);

@@ -62,8 +62,19 @@ ExportModel makeExportModel(const State& state, const ExportOptions& options) {
                                     region.sourceOffset, region.length, region.fadeIn,
                                     region.fadeOut, mediaID(track.id, region.take)});
         }
-        for (const auto& send : track.sends)
+        for (const auto& send : track.sends) {
+            const auto objectID="send-"+item.id+"-"+decimalID(send.bus);
+            if(send.muted) {
+                // Omit instead of exporting an audible route. A loss report
+                // explains why this muted connection cannot later be re-enabled.
+                losses.items.push_back({LossSeverity::Warning,"muted-send-omitted",objectID,
+                    "A muted send is omitted from interchange to preserve silence; its saved level and routing remain in the native project."});
+                continue;
+            }
             item.sends.push_back({decimalID(send.bus), send.gain, send.preFader});
+            if(send.independentPan) losses.items.push_back({LossSeverity::Warning,"independent-send-pan-omitted",objectID,
+                "Independent send balance is not represented by this DAWproject exporter; the importing host may use channel panning."});
+        }
         if (!track.takes.empty())
             losses.items.push_back({LossSeverity::Warning, "comp-provenance-flattened", item.id,
                 "The audible comp regions are preserved, but take-lane grouping and unused takes are omitted."});

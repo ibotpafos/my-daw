@@ -312,9 +312,27 @@ int daw_remove_track(daw_session*, uint64_t track_id, uint64_t expected_revision
  * successful no-op and does not advance the revision. */
 int daw_move_track(daw_session*, uint64_t track_id, uint32_t new_index, uint64_t expected_revision);
 int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expected_revision);
+/* Scalar mixer gesture; one history entry at end, zero at cancel/no-op.
+ * begin/end take the same revision. Snapshot/save read committed state during
+ * preview. Mutations and nested gestures reject until end/cancel. Main-thread
+ * API: previews publish atomic targets to an already prepared renderer. */
+enum { DAW_MIXER_TRACK_GAIN=1, DAW_MIXER_TRACK_PAN=2, DAW_MIXER_BUS_GAIN=3,
+       DAW_MIXER_MASTER_GAIN=4, DAW_MIXER_BUS_PAN=5, DAW_MIXER_SEND_GAIN=6, DAW_MIXER_SEND_PAN=7 };
+int daw_begin_mixer_gesture(daw_session*,int32_t target,uint64_t id,uint64_t send_bus_id,uint64_t expected_revision);
+/* Linked static track faders: 2..256 unique existing IDs, no volume automation.
+ * The input array is copied; no pointer is retained. Master and buses reject.
+ * After this begin, daw_write_mixer_gesture takes a dB DELTA from gesture start
+ * (not an incremental delta or an absolute level). One common clamp preserves
+ * relative gains. Use existing end/cancel; no project format change. */
+int daw_begin_track_gain_group(daw_session*,const uint64_t* track_ids,uint32_t count,uint64_t expected_revision);
+int daw_write_mixer_gesture(daw_session*,double value);
+int daw_end_mixer_gesture(daw_session*,uint64_t expected_revision);
+void daw_cancel_mixer_gesture(daw_session*);
 int daw_set_gain(daw_session*, uint64_t id, double gain_db, uint64_t expected_revision);
 int daw_set_pan(daw_session*,uint64_t id,double pan,uint64_t expected_revision);
 int daw_set_mute(daw_session*,uint64_t id,int32_t muted,uint64_t expected_revision);
+/* Exclusive solo (id=0,solo=0 clears all): one revision, one Undo entry. */
+int daw_set_solo_exclusive(daw_session*,uint64_t id,int32_t solo,uint64_t expected_revision);
 int daw_set_solo(daw_session*,uint64_t id,int32_t solo,uint64_t expected_revision);
 int daw_set_master_gain(daw_session*,double gain_db,uint64_t expected_revision);
 int daw_add_bus(daw_session*,const char* name,uint64_t expected_revision);
@@ -332,6 +350,20 @@ int daw_get_bus_count(daw_session*,uint32_t* count);
 int daw_delete_bus(daw_session*,uint64_t bus_id,uint64_t expected_revision);
 int daw_set_bus_output(daw_session*,uint64_t bus_id,uint64_t output_bus_id,uint64_t expected_revision);
 int daw_get_send(daw_session*,uint64_t track_id,uint32_t index,daw_send*);
+/* Additive send-controls ABI. Get by stable bus ID, not a visible row index.
+ * Callers set struct_size; version is returned. No borrowed memory escapes.
+ * pan is unity-center stereo balance -1..+1, not an equal-power mono panner.
+ * independent_pan=0 preserves historic PRE/POST behavior; =1 bypasses track
+ * balance on this send only (POST still follows track fader automation).
+ * Muting preserves the send level/route/tap/pan. Setters require existing sends,
+ * reject non-boolean flags, stale revisions and active recording, commit one
+ * Undo entry or no-op, and publish smoothed targets without stopping playback.
+ * The legacy upsert API preserves these controls on an existing send. */
+enum { DAW_SEND_CONTROLS_VERSION=1 };
+typedef struct { uint32_t struct_size; uint32_t version; double pan; int32_t muted; int32_t independent_pan; } daw_send_controls;
+int daw_get_send_controls(daw_session*,uint64_t track_id,uint64_t bus_id,daw_send_controls*);
+int daw_set_send_muted(daw_session*,uint64_t track_id,uint64_t bus_id,int32_t muted,uint64_t expected_revision);
+int daw_set_send_pan(daw_session*,uint64_t track_id,uint64_t bus_id,double pan,int32_t independent_pan,uint64_t expected_revision);
 int daw_upsert_send(daw_session*,uint64_t track_id,uint64_t bus_id,double gain_db,int32_t pre_fader,uint64_t expected_revision);
 int daw_remove_send(daw_session*,uint64_t track_id,uint64_t bus_id,uint64_t expected_revision);
 /* Automation points are ordered 48 kHz project-frame fader values. Upsert

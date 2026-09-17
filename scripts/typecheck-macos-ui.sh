@@ -5,13 +5,14 @@ cd "$ROOT"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 SDK="$(xcrun --show-sdk-path)"
 PIANO_ROLL_SOURCES=(apps/macos/PianoRoll/*.swift)
+MIXER_SOURCES=(apps/macos/Mixer*.swift)
 APP_SOURCES=(
   apps/macos/Diagnostics.swift
   apps/macos/main.swift
   apps/macos/DAWWindow.swift
   apps/macos/WaveformView.swift
   apps/macos/PinnedTrackHeaderView.swift
-  apps/macos/MixerWorkspaceView.swift
+  "${MIXER_SOURCES[@]}"
   apps/macos/InspectorBrowserView.swift
   apps/macos/AudioPreviewController.swift
   apps/macos/StorageUI.swift
