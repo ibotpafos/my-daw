@@ -23,6 +23,9 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           python3 .github/maintenance/apply_reviewed_edits.py
+          # GITHUB_TOKEN cannot edit workflows. Leave that reviewed edit to the
+          # authorized repository connector in the subsequent cleanup commit.
+          git restore --source=HEAD --staged --worktree -- .github/workflows/core.yml
       - name: Rebuild the offline handbook
         run: |
           python3 -m pip install Markdown==3.8.2
