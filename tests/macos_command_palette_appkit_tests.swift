@@ -55,14 +55,14 @@ struct CommandPaletteAppKitTests {
         menu.addItem(alpha)
         menu.addItem(beta)
         host.makeKeyAndOrderFront(nil)
-        host.makeMainWindow()
+        host.makeMain()
         NSApp.activate()
         host.makeFirstResponder(target)
         drain()
 
         func openPalette() -> (NSWindow, NSSearchField, NSTableView, NSSegmentedControl) {
             host.makeKeyAndOrderFront(nil)
-            host.makeMainWindow()
+            host.makeMain()
             host.makeFirstResponder(target)
             drain()
             expect(host.firstResponder === target, "fixture restores source responder")
