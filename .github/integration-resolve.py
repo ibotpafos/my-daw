@@ -22,7 +22,7 @@ b='''        var model = midi
 assert a in s;s=s.replace(a,b,1);p.write_text(s)
 p=root/'apps/macos/sources.txt';s=p.read_text();names=[str(x.relative_to(root)) for x in sorted((root/'apps/macos/PianoRoll').glob('*.swift'))];s+='\n'.join(names)+'\n';p.write_text(s)
 p=root/'scripts/typecheck-macos-ui.sh';s=p.read_text();start=s.index('PIANO_ROLL_SOURCES=');end=s.index('xcrun swiftc',start)
-s=s[:start]+'''APP_SOURCES=()
+s=s[:start]+r'''APP_SOURCES=()
 while IFS= read -r source || [[ -n "$source" ]]; do
   case "$source" in ''|\#*) continue ;; esac
   [[ -f "$source" ]] || { printf 'Missing Swift source: %s\n' "$source" >&2; exit 1; }
