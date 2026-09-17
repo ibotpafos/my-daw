@@ -1,7 +1,7 @@
 name: Core and macOS prototype
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   pull_request:
   workflow_dispatch:
 concurrency:
@@ -9,6 +9,9 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 3
+  UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 jobs:
   core:
     strategy:
@@ -26,13 +29,52 @@ jobs:
       - name: Configure
         run: cmake --preset sanitizers
       - name: Build
-        run: cmake --build --preset sanitizers
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build --preset sanitizers -- -k 2>&1 | tee "$RUNNER_TEMP/core-build.log"
       - name: Test
         run: ctest --preset sanitizers
       - name: Docs and contract checks
         run: python3 scripts/check_docs.py
       - name: E2E coverage ledger
         run: python3 scripts/e2e_coverage.py --strict
+      - name: Typecheck complete AppKit UI
+        if: runner.os == 'macOS'
+        run: bash scripts/typecheck-macos-ui.sh
       - name: Build AppKit prototype
         if: runner.os == 'macOS'
         run: ./scripts/build-macos.sh
+      - name: Package reproducible build input
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=tar -o "$RUNNER_TEMP/my-daw-source.tar" HEAD
+      - name: Preserve build diagnostics
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-build-input-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/my-daw-source.tar
+            ${{ runner.temp }}/core-build.log
+            build/sanitizers/Testing/Temporary/LastTest.log
+          retention-days: 3
+  command-palette:
+    # Independent of audio devices and the C++ build.
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Command palette models and AppKit integration
+        run: bash scripts/test-command-palette.sh
+        env:
+          DAW_PALETTE_EVIDENCE_DIR: ${{ runner.temp }}/command-palette-evidence
+      - name: Preserve native UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: command-palette-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/command-palette-evidence
+          if-no-files-found: error
+          retention-days: 3

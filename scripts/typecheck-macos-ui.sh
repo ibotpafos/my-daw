@@ -9,6 +9,8 @@ MIXER_SOURCES=(apps/macos/Mixer*.swift)
 APP_SOURCES=(
   apps/macos/Diagnostics.swift
   apps/macos/main.swift
+  apps/macos/CommandPaletteSearch.swift
+  apps/macos/CommandPalette.swift
   apps/macos/DAWWindow.swift
   apps/macos/WaveformView.swift
   apps/macos/PinnedTrackHeaderView.swift

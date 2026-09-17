@@ -804,6 +804,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             projectMenu.insertItem(up, at: 4); projectMenu.insertItem(down, at: 5)
         }
         menu("Вид", [("Увеличить timeline", #selector(zoomIn), "+", false), ("Уменьшить timeline", #selector(zoomOut), "-", false), ("Timeline 1×", #selector(resetZoom), "0", false)])
+        if let viewMenu = main.items.last?.submenu {
+            viewMenu.insertItem(.separator(), at: 0)
+            viewMenu.insertItem(DAWWindow.makeCommandPaletteMenuItem(), at: 0)
+        }
         let edit = NSMenuItem(); edit.title = "Текст"; let submenu = NSMenu(title: "Текст")
         for (title, selector, key) in [("Вырезать", "cut:", "x"), ("Копировать", "copy:", "c"), ("Вставить", "paste:", "v"), ("Выбрать всё", "selectAll:", "a")] {
             submenu.addItem(NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key))
