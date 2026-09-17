@@ -14,7 +14,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Attempt merge and report exact conflicts
+      - name: Resolve structural files with ours and probe mixer UI patch
         shell: bash
         run: |
           set -u
@@ -23,9 +23,20 @@ jobs:
           git fetch origin main
           result=0
           git merge --no-ff --no-commit acbd0439799f0cf3c9137e84deab5cc053fa4144 || result=$?
-          printf 'merge_exit=%s\n' "$result"
-          printf '%s\n' '--- unresolved paths ---'
-          git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt
-          printf '%s\n' '--- status ---'
+          test "$result" -eq 1
+          for path in CMakeLists.txt apps/macos/main.swift scripts/build-macos.sh scripts/typecheck-macos-ui.sh; do
+            git checkout --ours -- "$path"
+            git add "$path"
+          done
+          git diff 176aeb314983295fcf234915ac97de362d567607 acbd0439799f0cf3c9137e84deab5cc053fa4144 -- apps/macos/main.swift > /tmp/mixer-main.patch
+          set +e
+          git apply --reject --whitespace=nowarn /tmp/mixer-main.patch
+          apply_result=$?
+          set -e
+          printf 'main_patch_exit=%s\n' "$apply_result"
+          find apps/macos -name '*.rej' -print -exec cat {} \;
+          printf '%s\n' '--- remaining conflict markers ---'
+          grep -R -n '^<<<<<<<\|^=======\|^>>>>>>>' CMakeLists.txt apps/macos/main.swift scripts/build-macos.sh scripts/typecheck-macos-ui.sh || true
+          printf '%s\n' '--- resulting status ---'
           git status --short
-          test "$result" -eq 0
+          test "$apply_result" -eq 0
