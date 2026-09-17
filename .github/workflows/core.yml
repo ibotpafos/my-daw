@@ -2,6 +2,11 @@ name: Core and macOS prototype
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 3
 jobs:
   core:
     strategy:
@@ -14,7 +19,10 @@ jobs:
       - name: Configure
         run: cmake --preset sanitizers
       - name: Build
-        run: cmake --build --preset sanitizers
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build --preset sanitizers -- -k 2>&1 | tee "$RUNNER_TEMP/core-build.log"
       - name: Test
         run: ctest --preset sanitizers
       - name: Docs and contract checks
@@ -24,9 +32,21 @@ jobs:
       - name: Build AppKit prototype
         if: runner.os == 'macOS'
         run: ./scripts/build-macos.sh
+      - name: Package reproducible build input
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=tar -o "$RUNNER_TEMP/my-daw-source.tar" HEAD
+      - name: Preserve build diagnostics
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-build-input-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/my-daw-source.tar
+            ${{ runner.temp }}/core-build.log
+            build/sanitizers/Testing/Temporary/LastTest.log
+          retention-days: 3
   command-palette:
-    # Independent of the audio/core matrix: an unrelated C++ build failure must
-    # not skip native Swift compiler and keyboard/dispatch regression coverage.
+    # Independent of audio devices and the C++ build.
     runs-on: macos-15
     timeout-minutes: 10
     steps:
