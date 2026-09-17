@@ -7,6 +7,8 @@ concurrency:
   cancel-in-progress: true
 env:
   CMAKE_BUILD_PARALLEL_LEVEL: 3
+  CTEST_PARALLEL_LEVEL: 3
+  UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 jobs:
   core:
     strategy:
@@ -53,3 +55,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Command palette models and AppKit integration
         run: bash scripts/test-command-palette.sh
+        env:
+          DAW_PALETTE_EVIDENCE_DIR: ${{ runner.temp }}/command-palette-evidence
+      - name: Preserve native UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: command-palette-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/command-palette-evidence
+          if-no-files-found: error
+          retention-days: 3
