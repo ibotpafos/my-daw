@@ -105,17 +105,25 @@ final class AudioDeviceSettingsController: NSWindowController {
     }
     private func populate(_ menu: NSPopUpButton, uid: String, input: Bool) {
         menu.removeAllItems()
-        menu.addItem(withTitle: "Системное устройство по умолчанию")
-        menu.lastItem?.representedObject = ""
-        for device in devices where input ? device.inputs > 0 : device.outputs >= 2 {
-            menu.addItem(withTitle: device.name)
-            menu.lastItem?.representedObject = device.uid
+        let items = NSMenu()
+        items.autoenablesItems = false
+        func add(_ title: String, uid: String) {
+            // NSPopUpButton.addItem removes an existing item with the same title.
+            // Physical devices can share names: only the represented UID is identity.
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = uid
+            item.toolTip = uid.isEmpty ? nil : uid
+            items.addItem(item)
         }
+        add("Системное устройство по умолчанию", uid: "")
+        for device in devices where input ? device.inputs > 0 : device.outputs >= 2 {
+            add(device.name, uid: device.uid)
+        }
+        menu.menu = items
         if let index = menu.itemArray.firstIndex(where: { $0.representedObject as? String == uid }) {
             menu.selectItem(at: index)
         } else {
-            menu.addItem(withTitle: "Недоступно: \(uid)")
-            menu.lastItem?.representedObject = uid
+            add("Недоступно: \(uid)", uid: uid)
             menu.selectItem(at: menu.numberOfItems - 1)
         }
     }
@@ -195,16 +203,16 @@ extension AudioDevicePreferences {
 }
 
 extension DraftApp {
-    func audioConfigurationError() -> NSError {
+    func audioConfigurationError(_ target: OpaquePointer? = nil) -> NSError {
         var bytes = [CChar](repeating: 0, count: 512)
-        daw_error(session, &bytes, bytes.count)
+        daw_error(target ?? session, &bytes, bytes.count)
         return NSError(domain: "MyDAW.AudioSettings", code: 1,
             userInfo: [NSLocalizedDescriptionKey: String(cString: bytes)])
     }
     func restoreAudioDeviceConfiguration(_ target: OpaquePointer) {
         do {
             var raw = try AudioDevicePreferences.read(from: audioPreferences).bridgeValue()
-            guard daw_set_audio_device_config(target, &raw) == 0 else { throw audioConfigurationError() }
+            guard daw_set_audio_device_config(target, &raw) == 0 else { throw audioConfigurationError(target) }
         } catch {
             setProjectMessage("Настройки аудио не восстановлены: \(error.localizedDescription)")
         }
