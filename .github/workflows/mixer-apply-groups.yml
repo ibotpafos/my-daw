@@ -1,0 +1,109 @@
+name: Integrate and validate linked mixer levels
+on:
+  push:
+    branches: [codex/mixer-console]
+    paths:
+      - '.github/mixer-stage/group-*.patch'
+      - '.github/workflows/mixer-apply-groups.yml'
+permissions:
+  contents: write
+concurrency:
+  group: mixer-group-integration
+  cancel-in-progress: false
+jobs:
+  native:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/mixer-console'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Apply exact checked local diff without rewriting existing history
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/codex/mixer-console
+          test "$(git ls-remote origin refs/heads/codex/mixer-console | cut -f1)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor b08655a4e62cc77befc346e23f1d1c37aed0496d HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, subprocess
+          parts = [Path(f'.github/mixer-stage/group-{i}.patch').read_bytes() for i in range(4)]
+          # Undo two text-transport transcription artifacts before the exact
+          # SHA-256/index-preimage checks. No arbitrary patch rewriting follows.
+          parts[0] = parts[0].replace(b'\n diff --git ', b'\ndiff --git ')
+          parts[2] = parts[2].replace(b' apps/macos/DAWDesignTokens.swift', b'')
+          data = b''.join(parts)
+          expected = '81b0526d80f3b382baaf82a6fcbb427d7c6ef73f305d34438932648d9509bf78'
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit('Integrated diff does not match the locally checked source')
+          patch = Path('/tmp/linked-mixer.patch'); patch.write_bytes(data)
+          subprocess.run(['git','apply','--index','--check',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          PY
+          git diff --cached --check
+          git rm .github/mixer-stage/group-*.patch .github/workflows/mixer-apply-groups.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(mixer): linked track selection with relative levels and atomic Undo'
+          git push origin HEAD:refs/heads/codex/mixer-console
+          mkdir -p validation
+          git rev-parse HEAD | tee validation/revision.txt
+          git archive --format=tar.gz --output=validation/source.tar.gz HEAD
+          git show --stat --oneline HEAD > validation/changes.txt
+      - name: Real AppKit mixer, send, routing and linked selection tests
+        if: always() && steps.publish.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/test-mixer-ui.sh 2>&1 | tee validation/appkit-tests.log
+      - name: Sanitized core build
+        id: core
+        if: always() && steps.publish.outcome == 'success'
+        shell: bash
+        run: |
+          set -eo pipefail
+          cmake --preset sanitizers 2>&1 | tee validation/configure.log
+          cmake --build --preset sanitizers -j 2 2>&1 | tee validation/core-build.log
+      - name: Full core regression
+        if: always() && steps.core.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          ctest --preset sanitizers --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Complete signed arm64 application
+        id: app
+        if: always() && steps.publish.outcome == 'success'
+        shell: bash
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: |
+          set -eo pipefail
+          bash scripts/build-macos.sh 2>&1 | tee validation/app-build.log
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' validation/My-DAW-app.zip
+      - name: Native controls through production binding and real C ABI
+        if: always() && steps.app.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/test-mixer-groups.sh 2>&1 | tee validation/group-integration.log
+      - name: Documentation contracts
+        if: always() && steps.publish.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/check_docs.py 2>&1 | tee validation/docs.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mixer-linked-validation-${{ github.run_id }}
+          path: |
+            validation/
+            build/mixer-ui.png
+            build/mixer-routing-ui.png
+            build/mixer-send-ui.png
+            build/mixer-group-ui.png
+            build/build-manifest.json
+          retention-days: 7

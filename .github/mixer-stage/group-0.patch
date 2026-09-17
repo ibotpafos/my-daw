@@ -1,0 +1,382 @@
+diff --git a/.github/workflows/mixer.yml b/.github/workflows/mixer.yml
+index 47ed75b..86068ad 100644
+--- a/.github/workflows/mixer.yml
++++ b/.github/workflows/mixer.yml
+@@ -39,6 +39,7 @@ jobs:
+             build/mixer-ui.png
+             build/mixer-routing-ui.png
+             build/mixer-send-ui.png
++            build/mixer-group-ui.png
+           retention-days: 7
+   core-and-app:
+     runs-on: macos-15
+@@ -70,6 +71,12 @@ jobs:
+           mkdir -p validation
+           bash scripts/build-macos.sh 2>&1 | tee validation/app-build.log
+           ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' validation/My-DAW-app.zip
++      - name: Native group UI to real C ABI
++        if: always()
++        shell: bash
++        run: |
++          set -o pipefail
++          bash scripts/test-mixer-groups.sh 2>&1 | tee validation/group-integration.log
+       - name: Documentation contracts
+         if: always()
+         shell: bash
+ diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 300d38c..d192795 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -156,6 +156,11 @@ else()
+ endif()
+ include(CTest)
+ if(BUILD_TESTING)
++  add_executable(daw_mixer_group_tests tests/mixer_group_tests.cpp)
++  target_include_directories(daw_mixer_group_tests PRIVATE engine tests)
++  target_link_libraries(daw_mixer_group_tests PRIVATE daw_core)
++  target_compile_options(daw_mixer_group_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
++  add_test(NAME mixer_groups COMMAND daw_mixer_group_tests)
+   add_executable(daw_mixer_gesture_tests tests/mixer_gesture_tests.cpp)
+   target_include_directories(daw_mixer_gesture_tests PRIVATE engine tests)
+   target_link_libraries(daw_mixer_gesture_tests PRIVATE daw_core)
+ diff --git a/apps/macos/MixerConsoleController.swift b/apps/macos/MixerConsoleController.swift
+index 52304f4..2a191ce 100644
+--- a/apps/macos/MixerConsoleController.swift
++++ b/apps/macos/MixerConsoleController.swift
+@@ -13,6 +13,26 @@ extension DraftApp {
+         !isRecording && consoleGesture == nil && automationGesture == nil && pluginParameterGesture == nil
+     }
+     func configureMixerConsole() {
++        let groups = MixerGroupBinding(
++            session: { [weak self] in self?.session },
++            revision: { [weak self] in self?.revision ?? 0 },
++            mayBegin: { [weak self] ids in
++                guard let self, consoleRoutingEditable else { return false }
++                guard !ids.contains(where: { automationWrites(target: automationTrackVolume,id:$0) }) else {
++                    storageMessage("Отключи запись автоматизации для связанного изменения статических уровней."); return false
++                }
++                return true
++            },
++            started: { [weak self] revision in self?.consoleGesture = (false,revision) },
++            finished: { [weak self] in self?.consoleGesture = nil; self?.refresh() },
++            reportError: { [weak self] in _ = self?.check($0) })
++        groups.bind(to:mixerWorkspace.linkedLevels)
++        mixerWorkspace.onVolumeGestureCancel = { [weak self] in
++            guard let self, let gesture=consoleGesture else { return }
++            if gesture.automation { daw_cancel_automation_gesture(session); automationGesture=nil }
++            else { daw_cancel_mixer_gesture(session) }
++            consoleGesture=nil; refresh()
++        }
+         mixerWorkspace.onVolumeGestureBegin = { [weak self] in self?.consoleBegin($0, send: nil) }
+         mixerWorkspace.onVolume = { [weak self] _, value in self?.consoleWrite(value) }
+         mixerWorkspace.onVolumeGestureEnd = { [weak self] _, _ in self?.consoleEnd() }
+ diff --git a/apps/macos/MixerControls.swift b/apps/macos/MixerControls.swift
+index 73eae05..80d8661 100644
+--- a/apps/macos/MixerControls.swift
++++ b/apps/macos/MixerControls.swift
+@@ -4,6 +4,13 @@ import AppKit
+ final class MixerActionButton: NSButton {
+     var invoke: (() -> Void)?
+     var contextMenu: (() -> NSMenu)?
++    var invokeWithModifiers: ((NSEvent.ModifierFlags) -> Void)?
++    private var clickModifiers: NSEvent.ModifierFlags = []
++    override func mouseDown(with event: NSEvent) {
++        clickModifiers = event.modifierFlags
++        defer { clickModifiers = [] }
++        super.mouseDown(with: event)
++    }
+     init(_ title: String, action: (() -> Void)? = nil) {
+         super.init(frame: .zero)
+         self.title = title; invoke = action
+@@ -13,7 +20,9 @@ final class MixerActionButton: NSButton {
+         lineBreakMode = .byTruncatingTail
+     }
+     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+-    @objc private func fire() { invoke?() }
++    @objc private func fire() {
++        if let invokeWithModifiers { invokeWithModifiers(clickModifiers) } else { invoke?() }
++    }
+     override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() ?? super.menu(for: event) }
+ }
+ @MainActor
+@@ -91,6 +100,14 @@ private final class MixerFaderCell: NSSliderCell {
+ }
+ @MainActor
+ final class MixerFaderView: NSSlider {
++    var onCancel: (() -> Void)?
++    private var canceled = false
++    private var trackingStart: Double = 0
++    func displayPreview(_ value: Double) { doubleValue = MixerScale.position(value) }
++    override func cancelOperation(_ sender: Any?) {
++        guard tracking else { super.cancelOperation(sender); return }
++        canceled = true; displayPreview(trackingStart); onCancel?()
++    }
+     var onBegin: (() -> Void)?
+     var onChange: ((Double) -> Void)?
+     var onEnd: ((Double) -> Void)?
+@@ -108,14 +125,17 @@ final class MixerFaderView: NSSlider {
+         setAccessibilityHelp("Up/Down: 0.5 dB. Shift: 0.1 dB. Double-click: unity. Option: fine drag.")
+     }
+     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+-    @objc private func changed() { onChange?(valueDb) }
++    @objc private func changed() { if !canceled { onChange?(valueDb) } }
+     override func mouseDown(with event: NSEvent) {
+         guard isEnabled else { return }
+         window?.makeFirstResponder(self)
+         if event.clickCount == 2 { commit(0); return }
++        canceled = false; trackingStart = valueDb
+         tracking = true; onBegin?()
+         super.mouseDown(with: event)
+-        tracking = false; onEnd?(valueDb)
++        tracking = false
++        if canceled { displayPreview(trackingStart) } else { onEnd?(valueDb) }
++        canceled = false
+     }
+     func commit(_ value: Double) {
+         guard isEnabled, value.isFinite else { return }
+ diff --git a/apps/macos/MixerGroupBinding.swift b/apps/macos/MixerGroupBinding.swift
+new file mode 100644
+index 0000000..a4848b4
+--- /dev/null
++++ b/apps/macos/MixerGroupBinding.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++/// Shared by the application and the native C-ABI integration harness. There is
++/// no second gain model: Session owns the preview, validation and one Undo commit.
++@MainActor
++final class MixerGroupBinding {
++    private let session: () -> OpaquePointer?
++    private let revision: () -> UInt64
++    private let mayBegin: ([UInt64]) -> Bool
++    private let started: (UInt64) -> Void
++    private let finished: () -> Void
++    private let reportError: (Int32) -> Void
++    private var active: (session: OpaquePointer, revision: UInt64)?
++
++    init(session: @escaping () -> OpaquePointer?, revision: @escaping () -> UInt64,
++         mayBegin: @escaping ([UInt64]) -> Bool, started: @escaping (UInt64) -> Void,
++         finished: @escaping () -> Void, reportError: @escaping (Int32) -> Void) {
++        self.session = session; self.revision = revision; self.mayBegin = mayBegin
++        self.started = started; self.finished = finished; self.reportError = reportError
++    }
++    func bind(to selection: MixerLinkedLevels) {
++        selection.onBegin = { [self] in begin($0) }
++        selection.onDelta = { [self] in write($0) }
++        selection.onEnd = { [self] in end() }
++        selection.onCancel = { [self] in cancel() }
++    }
++    private func begin(_ ids: [UInt64]) -> Bool {
++        guard active == nil, ids.count >= 2, ids.count <= 256, mayBegin(ids), let s = session() else { return false }
++        let r = revision()
++        let result = ids.withUnsafeBufferPointer { daw_begin_track_gain_group(s,$0.baseAddress,UInt32($0.count),r) }
++        guard result == 0 else { reportError(result); return false }
++        active = (s,r); started(r); return true
++    }
++    private func write(_ delta: Double) -> Bool {
++        guard let active, session() == active.session else { return false }
++        let result = daw_write_mixer_gesture(active.session,delta)
++        guard result == 0 else { reportError(result); return false }
++        return true
++    }
++    private func end() {
++        guard let captured = active else { return }
++        active = nil
++        if session() == captured.session {
++            let result = daw_end_mixer_gesture(captured.session,captured.revision)
++            if result != 0 { reportError(result); daw_cancel_mixer_gesture(captured.session) }
++        }
++        finished()
++    }
++    private func cancel() {
++        guard let captured = active else { return }
++        active = nil
++        if session() == captured.session { daw_cancel_mixer_gesture(captured.session) }
++        finished()
++    }
++}
+ diff --git a/apps/macos/MixerLinkedLevels.swift b/apps/macos/MixerLinkedLevels.swift
+new file mode 100644
+index 0000000..ce4defd
+--- /dev/null
++++ b/apps/macos/MixerLinkedLevels.swift
+@@ -0,0 +1,179 @@
++import AppKit
++
++/// Temporary track selection, not a durable VCA or an audio-routing group.
++/// It contains no authoritative project values and writes only through callbacks.
++@MainActor
++final class MixerLinkedLevels {
++    struct Plan {
++        let sourceID: UInt64
++        let initial: [UInt64: Double]
++        let minimumDelta: Double
++        let maximumDelta: Double
++        var delta: Double = 0
++        init?(sourceID: UInt64, models: [MixerStripModel]) {
++            guard models.count >= 2, models.allSatisfy({ $0.kind == .track && $0.volumeDb.isFinite }),
++                  Set(models.map(\.id)).count == models.count,
++                  models.contains(where: { $0.id == sourceID }) else { return nil }
++            self.sourceID = sourceID
++            initial = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0.volumeDb) })
++            minimumDelta = models.map { -120 - $0.volumeDb }.max()!
++            maximumDelta = models.map { 24 - $0.volumeDb }.min()!
++        }
++        mutating func update(sourceValue: Double) -> Bool {
++            guard sourceValue.isFinite, let base = initial[sourceID] else { return false }
++            delta = min(maximumDelta, max(minimumDelta, sourceValue - base))
++            if abs(delta) < 1e-9 { delta = 0 } // Round-tripping the nonlinear fader is a no-op.
++            return true
++        }
++        var levels: [UInt64: Double] { initial.mapValues { min(24, max(-120, $0 + delta)) } }
++    }
++    private enum Gesture { case idle, single(UInt64), linked(Plan), rejected }
++    private var gesture: Gesture = .idle
++    private weak var workspace: MixerWorkspaceView?
++    private(set) var selectedIDs = Set<UInt64>()
++    private var anchor: UInt64?
++    private var primary: UInt64?
++    private(set) var linkEnabled = true
++    var onBegin: (([UInt64]) -> Bool)?
++    var onDelta: ((Double) -> Bool)?
++    var onEnd: (() -> Void)?
++    var onCancel: (() -> Void)?
++    let bar = NSView()
++    let linkButton = MixerActionButton("Link levels")
++    let clearButton = MixerActionButton("Clear selection")
++    let summary = NSTextField(labelWithString: "")
++    var isEditing: Bool { if case .idle = gesture { return false }; return true }
++    var barHeight: CGFloat { selectedIDs.count > 1 ? 32 : 0 }
++
++    init(workspace: MixerWorkspaceView) {
++        self.workspace = workspace
++        bar.wantsLayer = true; bar.layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
++        summary.font = .systemFont(ofSize: 11, weight: .medium)
++        summary.lineBreakMode = .byTruncatingTail
++        summary.textColor = DAWDesignTokens.Color.secondaryText
++        linkButton.setButtonType(.toggle); linkButton.state = .on
++        linkButton.setAccessibilityLabel("Link selected track faders")
++        linkButton.toolTip = "Move selected static track levels by one common dB offset. No bus, Master, send or automation grouping."
++        linkButton.invoke = { [weak self] in guard let self else { return }; setLinked(!linkEnabled) }
++        clearButton.invoke = { [weak self] in self?.clear() }
++        for view in [summary, linkButton, clearButton] { bar.addSubview(view) }
++    }
++    func setLinked(_ value: Bool) {
++        guard !isEditing else { return }
++        linkEnabled = value; refreshPresentation()
++    }
++    func clear() {
++        guard !isEditing else { return }
++        selectedIDs = primary.map { selectedIDs.contains($0) ? Set([$0]) : [] } ?? []
++        refreshPresentation(); workspace?.needsLayout = true
++    }
++    func synchronize(_ models: [MixerStripModel]) {
++        guard !isEditing else { return }
++        let valid = Set(models.filter { $0.kind == .track }.map(\.id))
++        let incoming = models.first { $0.isSelected }?.id
++        // External arranger/inspector selection replaces the temporary selection.
++        // Our own click assigns primary before the synchronous onSelect/refresh.
++        if incoming != primary {
++            primary = incoming; anchor = incoming
++            selectedIDs = incoming.map { valid.contains($0) ? Set([$0]) : [] } ?? []
++        }
++        selectedIDs.formIntersection(valid)
++        if let anchor, !valid.contains(anchor) { self.anchor = nil }
++    }
++    func prune(visibleIDs: [UInt64]) {
++        guard !isEditing else { return }
++        selectedIDs.formIntersection(visibleIDs)
++        if let anchor, !visibleIDs.contains(anchor) { self.anchor = nil }
++    }
++    func select(_ id: UInt64, modifiers: NSEvent.ModifierFlags = []) {
++        guard !isEditing, let workspace, let model = workspace.strips.first(where: { $0.id == id }) else { return }
++        let order = workspace.visibleIDs.filter { candidate in workspace.strips.contains { $0.id == candidate && $0.kind == .track } }
++        if model.kind != .track { selectedIDs.removeAll(); anchor = nil; primary = id }
++        else if modifiers.contains(.shift), let anchor, let start = order.firstIndex(of: anchor), let end = order.firstIndex(of: id) {
++            let range = Set(order[min(start,end)...max(start,end)])
++            selectedIDs = modifiers.contains(.command) ? selectedIDs.union(range) : range
++            primary = id
++        } else if modifiers.contains(.command) {
++            if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
++            primary = selectedIDs.contains(id) ? id : order.last { selectedIDs.contains($0) } ?? id
++            anchor = primary
++        } else { selectedIDs = [id]; primary = id; anchor = id }
++        if let primary { workspace.onSelect?(primary) }
++        refreshPresentation(); workspace.needsLayout = true
++    }
++    func refreshPresentation() {
++        guard let workspace else { return }
++        for view in workspace.presentedStripViews { view.isGroupSelected = selectedIDs.contains(view.model.id) && selectedIDs.count > 1 }
++        let sendMode = workspace.sendTargetID != nil
++        summary.stringValue = "\(selectedIDs.count) tracks selected · \(sendMode ? "Send controls stay individual" : linkEnabled ? "Linked static levels" : "Individual levels")"
++        linkButton.state = linkEnabled ? .on : .off
++        linkButton.isEnabled = workspace.editingEnabled && !sendMode && !isEditing
++        clearButton.isEnabled = !isEditing
++        bar.isHidden = barHeight == 0
++        if case .linked(let plan) = gesture { show(plan.levels) }
++    }
++    func layoutBar(width: CGFloat, top: CGFloat) {
++        bar.frame = NSRect(x: 5, y: top, width: max(0,width-10), height: barHeight)
++        let controls = min(240, max(0,bar.bounds.width-120))
++        summary.frame = NSRect(x: 10, y: 8, width: max(0,bar.bounds.width-controls-20), height: 18)
++        linkButton.frame = NSRect(x: max(0,bar.bounds.width-controls), y: 3, width: 106, height: 25)
++        clearButton.frame = NSRect(x: max(0,bar.bounds.width-126), y: 3, width: 120, height: 25)
++        refreshPresentation()
++    }
++    func begin(_ id: UInt64) {
++        guard !isEditing, let workspace, workspace.editingEnabled else { return }
++        if linkEnabled && selectedIDs.count > 1 && selectedIDs.contains(id) && workspace.sendTargetID == nil {
++            let models = workspace.strips.filter { selectedIDs.contains($0.id) && $0.kind == .track }
++            guard let plan = Plan(sourceID: id, models: models) else { gesture = .rejected; return }
++            // Never silently fall back to an individual edit on a rejected group.
++            gesture = .rejected
++            if onBegin?(models.map(\.id)) == true { gesture = .linked(plan) }
++        } else {
++            gesture = .single(id); workspace.onVolumeGestureBegin?(id)
++        }
++        refreshPresentation()
++    }
++    func change(_ id: UInt64, value: Double, source: MixerStripView) {
++        guard let workspace else { return }
++        switch gesture {
++        case .single(let member) where member == id:
++            workspace.previewLevel(id, send: nil, value: value, source: source)
++            workspace.onVolume?(id,value)
++        case .linked(var plan) where plan.sourceID == id:
++            guard plan.update(sourceValue: value) else { return }
++            guard onDelta?(plan.delta) == true else {
++                gesture = .rejected; onCancel?(); restoreLevels(); return
++            }
++            gesture = .linked(plan); show(plan.levels)
++        default: break
++        }
++    }
++    func end(_ id: UInt64, value: Double) {
++        let finished = gesture; gesture = .idle
++        switch finished {
++        case .single(let member) where member == id: workspace?.onVolumeGestureEnd?(id,value)
++        case .linked: onEnd?()
++        default: break
++        }
++        restoreLevels(); refreshPresentation()
++    }
++    func cancel() {
++        let previous = gesture; gesture = .idle
++        switch previous {
++        case .linked: onCancel?()
++        case .single: workspace?.onVolumeGestureCancel?()
++        default: break
++        }
++        restoreLevels(); refreshPresentation()
++    }
++    private func show(_ levels: [UInt64:Double]) {
++        for view in workspace?.presentedStripViews ?? [] where view.sendTarget == nil {
++            if let value = levels[view.model.id] {
++                view.fader.displayPreview(value); view.gainField.stringValue = MixerScale.label(value)
++            }
++        }
++    }
++    private func restoreLevels() {
++        for view in workspace?.presentedStripViews ?? [] { view.updateFaderMode() }
++    }
++}
