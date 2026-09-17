@@ -16,7 +16,8 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     private let autoLabel = NSTextField(labelWithString: "Read")
     private let loudness = NSTextField(labelWithString: "")
     private let route = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let pan = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
+    let pan = MixerBalanceView(frame: .zero)
+    private let sendPanMode = MixerActionButton("LINK")
     private let mute = MixerActionButton("M"), solo = MixerActionButton("S"), arm = MixerActionButton("●")
     private let addInsert = MixerActionButton("+ Insert"), addSend = MixerActionButton("+ Send")
     private var insertButtons: [MixerActionButton] = [], sendButtons: [MixerActionButton] = []
@@ -27,7 +28,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         self.model = model
         super.init(frame: .zero)
         wantsLayer = true
-        for view in [icon,title,footer,insertLabel,sendsLabel,balanceLabel,autoLabel,loudness,route,pan,mute,solo,arm,addInsert,addSend,gainField,fader,meter] { addSubview(view) }
+        for view in [icon,title,footer,insertLabel,sendsLabel,balanceLabel,autoLabel,loudness,route,pan,sendPanMode,mute,solo,arm,addInsert,addSend,gainField,fader,meter] { addSubview(view) }
         for label in [insertLabel,sendsLabel,balanceLabel,autoLabel,loudness] {
             label.font = .monospacedSystemFont(ofSize: 9, weight: .medium)
             label.textColor = DAWDesignTokens.Color.secondaryText
@@ -40,15 +41,37 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         gainField.toolTip = "Enter an exact level in dB (−120…+24). Decimal point or comma."
         route.controlSize = .small; route.font = .systemFont(ofSize: 10)
         route.target = self; route.action = #selector(routeChanged)
-        pan.controlSize = .small; pan.isContinuous = false; pan.target = self; pan.action = #selector(panChanged)
-        pan.toolTip = "Stereo balance. Center preserves both channels at unity."
+        pan.onBegin = { [weak self] in
+            guard let self, let bus=sendTarget else { return }
+            workspace?.onSendPanBegin?(model.id,bus)
+        }
+        pan.onChange = { [weak self] value in
+            guard let self, let bus=sendTarget else { return }
+            workspace?.previewSendPan(model.id,bus:bus,value:value,source:self)
+            workspace?.onSendPan?(model.id,bus,value)
+        }
+        pan.onEnd = { [weak self] value in
+            guard let self else { return }
+            if let bus=sendTarget { workspace?.onSendPanEnd?(model.id,bus,value) }
+            else { workspace?.onPan?(model.id,value) }
+        }
+        sendPanMode.invoke = { [weak self] in
+            guard let self, let send=model.sends.first(where:{$0.busID == sendTarget}) else { return }
+            performSend(.pan(send.busID,send.pan,!send.independentPan),expected:send)
+        }
         title.isBordered = false; title.alignment = .center
         footer.isBordered = false; footer.alignment = .center
         title.invoke = { [weak self] in self?.select() }; footer.invoke = { [weak self] in self?.select() }
         title.contextMenu = { [weak self] in self?.channelMenu() ?? NSMenu() }
         footer.contextMenu = title.contextMenu
         mute.setButtonType(.toggle); solo.setButtonType(.toggle); arm.setButtonType(.toggle)
-        mute.invoke = { [weak self] in guard let self else { return }; workspace?.onMute?(model.id, !model.isMuted) }
+        mute.invoke = { [weak self] in
+            guard let self, workspace?.editingEnabled != false else { return }
+            if let bus=sendTarget {
+                guard let send=model.sends.first(where:{$0.busID == bus}) else { return }
+                performSend(.mute(bus,!send.muted),expected:send)
+            } else { workspace?.onMute?(model.id,!model.isMuted) }
+        }
         solo.invoke = { [weak self] in guard let self else { return }; workspace?.onSolo?(model.id, !model.isSolo) }
         arm.invoke = { [weak self] in guard let self else { return }; workspace?.onArm?(model.id, !model.isArmed) }
         addInsert.invoke = { [weak self] in guard let self else { return }; workspace?.onInsert?(model.id, .add) }
@@ -76,7 +99,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         arm.contentTintColor = model.isArmed ? .systemRed : .secondaryLabelColor
         mute.isHidden = model.kind == .master; solo.isHidden = model.kind != .track; arm.isHidden = model.kind != .track
         pan.isHidden = model.kind == .master; balanceLabel.isHidden = model.kind == .master
-        pan.doubleValue = model.pan
+        pan.value = model.pan
         balanceLabel.stringValue = model.pan == 0 ? "BAL · CENTER" : String(format: "BAL · %@ %.0f", model.pan < 0 ? "L" : "R", abs(model.pan) * 100)
         autoLabel.stringValue = model.automationLabel
         autoLabel.toolTip = "Project automation mode. Arm its target in the automation toolbar to write."
@@ -87,8 +110,7 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         fader.setAccessibilityLabel("\(model.title) level")
         gainField.setAccessibilityLabel("\(model.title) exact dB")
         meter.setAccessibilityLabel("\(model.title) stereo sample peak")
-        pan.setAccessibilityLabel("\(model.title) stereo balance")
-        for (button, name) in [(mute,"Mute"),(solo,"Solo"),(arm,"Record arm")] { button.setAccessibilityLabel("\(name) \(model.title)") }
+        for (button, name) in [(solo,"Solo"),(arm,"Record arm")] { button.setAccessibilityLabel("\(name) \(model.title)") }
         route.setAccessibilityLabel("Output of \(model.title)")
         layer?.backgroundColor = DAWDesignTokens.Color.surface.cgColor
         layer?.borderWidth = model.isSelected ? 1.5 : 0.5
@@ -108,8 +130,22 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         let hasControl = sendTarget == nil || selectedSend != nil
         fader.isEnabled = hasControl && workspace?.editingEnabled != false
         gainField.isEnabled = fader.isEnabled
-        pan.isEnabled = sendTarget == nil && model.kind != .master && workspace?.editingEnabled != false
-        mute.isEnabled = workspace?.editingEnabled != false
+        pan.isEnabled = model.kind != .master && workspace?.editingEnabled != false && (sendTarget == nil || selectedSend?.independentPan == true)
+        pan.value = sendTarget == nil ? model.pan : (selectedSend?.independentPan == true ? selectedSend!.pan : (selectedSend?.preFader == true ? 0 : model.pan))
+        pan.setAccessibilityLabel(sendTarget == nil ? "\(model.title) main stereo balance" : "\(model.title) send to \(selectedSend?.destination ?? "missing destination") stereo balance")
+        pan.toolTip = sendTarget == nil ? "Main stereo balance. Center preserves both channels at unity." : "Send stereo balance only. IND: independent; LINK: original PRE/POST behavior. Main balance stays unchanged."
+        sendPanMode.title = selectedSend?.independentPan == true ? "IND" : "LINK"
+        sendPanMode.isEnabled = selectedSend != nil && workspace?.editingEnabled != false
+        sendPanMode.setAccessibilityLabel("Independent send balance for \(model.title)")
+        sendPanMode.setAccessibilityValue(selectedSend?.independentPan == true ? "Independent" : "Linked")
+        sendPanMode.toolTip = "Click to switch between independent send balance and the original PRE/POST tap."
+        mute.title = sendTarget == nil ? "M" : "SM"
+        let isMuted = sendTarget == nil ? model.isMuted : selectedSend?.muted == true
+        mute.state = isMuted ? .on : .off
+        mute.contentTintColor = isMuted ? .systemOrange : .labelColor
+        mute.setAccessibilityLabel(sendTarget == nil ? "Mute \(model.title)" : "Mute send from \(model.title) to \(selectedSend?.destination ?? "missing destination")")
+        mute.toolTip = sendTarget == nil ? "Mute channel" : "Mute only this send, keeping its level and route. Channel mute is unchanged."
+        mute.isEnabled = hasControl && workspace?.editingEnabled != false
         solo.isEnabled = workspace?.editingEnabled != false
         arm.isEnabled = workspace?.editingEnabled != false
         addInsert.isEnabled = workspace?.editingEnabled != false && model.inserts.count < 4
@@ -119,9 +155,10 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
             fader.valueDb = db
             gainField.stringValue = hasControl ? MixerScale.label(db) : "No send"
         }
-        balanceLabel.stringValue = sendTarget == nil ? (model.pan == 0 ? "BAL · CENTER" : String(format:"BAL · %@ %.0f",model.pan < 0 ? "L" : "R",abs(model.pan)*100)) : "MAIN BALANCE"
+        balanceLabel.stringValue = sendTarget == nil ? (model.pan == 0 ? "BAL · CENTER" : String(format:"BAL · %@ %.0f",model.pan < 0 ? "L" : "R",abs(model.pan)*100)) : "SEND · \(selectedSend?.panLabel ?? "No send")"
         fader.toolTip = sendTarget == nil ? "Main level. Double-click: 0 dB. Option: fine control." : (selectedSend.map { "Send to \($0.destination) · \($0.preFader ? "PRE" : "POST"). Main level unchanged." } ?? "This channel has no send to the selected destination.")
         gainField.textColor = sendTarget == nil ? DAWDesignTokens.Color.text : .systemMint
+        needsLayout = true
     }
     private func beginGain() {
         guard fader.isEnabled else { return }
@@ -150,7 +187,11 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         guard let id = (route.selectedItem?.representedObject as? NSNumber)?.uint64Value else { return }
         workspace?.onOutput?(model.id,id)
     }
-    @objc private func panChanged() { workspace?.onPan?(model.id,pan.doubleValue) }
+    private func performSend(_ action: MixerSendAction, expected: MixerSendSummary) {
+        guard workspace?.editingEnabled != false,
+              workspace?.strips.first(where:{$0.id == model.id})?.sends.first(where:{$0.busID == expected.busID}) == expected else { return }
+        workspace?.onSend?(model.id,action)
+    }
     func updateDestinations() {
         let items = workspace?.strips.filter { $0.kind == .bus && $0.id != model.id } ?? []
         route.removeAllItems(); route.addItem(withTitle: model.kind == .master ? model.outputName : "Master")
@@ -190,16 +231,20 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
     private func rebuildSends() {
         sendButtons.forEach { $0.removeFromSuperview() }; sendButtons.removeAll()
         for send in model.sends {
-            let button = MixerActionButton("\(send.destination)  \(MixerScale.label(send.gainDb))")
+            let button = MixerActionButton("\(send.muted ? "○ " : "")\(send.destination)  \(MixerScale.label(send.gainDb))")
             button.alignment = .left
-            button.toolTip = "\(send.destination) · \(send.preFader ? "PRE" : "POST") · \(MixerScale.label(send.gainDb)) dB. Click: exact level. Right-click: tap / remove."
-            button.invoke = { [weak self] in guard let self else {return}; workspace?.onSend?(model.id,.edit(send.busID)) }
+            button.contentTintColor = send.muted ? .secondaryLabelColor : .labelColor
+            button.toolTip = "\(send.destination) · \(send.statusLabel). Right-click: mute / independent balance / tap / remove."
+            button.setAccessibilityLabel("Send from \(model.title) to \(send.destination), \(send.statusLabel)")
+            button.invoke = { [weak self] in guard let self else {return}; performSend(.edit(send.busID),expected:send) }
             button.contextMenu = { [weak self] in
                 guard let self else { return NSMenu() }
                 let menu = NSMenu(); menu.autoenablesItems = false
                 menu.addItem(MixerMenuItem("Use faders for \(send.destination)") { [weak self] in self?.workspace?.setSendTarget(send.busID) })
-                menu.addItem(MixerMenuItem(send.preFader ? "Switch to POST" : "Switch to PRE") { [weak self] in guard let self else {return}; workspace?.onSend?(model.id,.tap(send.busID,!send.preFader)) })
-                menu.addItem(MixerMenuItem("Remove send") { [weak self] in guard let self else {return}; workspace?.onSend?(model.id,.remove(send.busID)) })
+                menu.addItem(MixerMenuItem(send.preFader ? "Switch to POST" : "Switch to PRE") { [weak self] in guard let self else {return}; performSend(.tap(send.busID,!send.preFader),expected:send) })
+                menu.addItem(MixerMenuItem(send.muted ? "Unmute send" : "Mute send") { [weak self] in self?.performSend(.mute(send.busID,!send.muted),expected:send) })
+                menu.addItem(MixerMenuItem(send.independentPan ? "Use channel pan / original tap" : "Independent send balance") { [weak self] in self?.performSend(.pan(send.busID,send.pan,!send.independentPan),expected:send) })
+                menu.addItem(MixerMenuItem("Remove send") { [weak self] in guard let self else {return}; performSend(.remove(send.busID),expected:send) })
                 return menu
             }
             addSubview(button); sendButtons.append(button)
@@ -288,7 +333,10 @@ final class MixerStripView: NSView, NSTextFieldDelegate {
         }
         let showPan = !ultraCompact && h >= 300 && model.kind != .master
         balanceLabel.isHidden = !showPan; pan.isHidden = !showPan
-        balanceLabel.frame = NSRect(x:inset,y:y,width:w-14,height:12)
+        let showSendMode = showPan && sendTarget != nil
+        sendPanMode.isHidden = !showSendMode
+        balanceLabel.frame = NSRect(x:inset,y:y,width:showSendMode ? max(1,w-59) : w-14,height:12)
+        sendPanMode.frame = NSRect(x:w-49,y:y-2,width:42,height:16)
         pan.frame = NSRect(x:inset,y:y+15,width:w-14,height:18)
         if showPan { y += 42 }
         else if !ultraCompact && model.kind == .master && h >= 400 { y += 42 }

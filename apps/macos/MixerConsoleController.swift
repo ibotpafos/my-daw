@@ -19,6 +19,9 @@ extension DraftApp {
         mixerWorkspace.onSendGainBegin = { [weak self] id, bus in self?.consoleBegin(id, send: bus) }
         mixerWorkspace.onSendGain = { [weak self] _, _, value in self?.consoleWrite(value) }
         mixerWorkspace.onSendGainEnd = { [weak self] _, _, _ in self?.consoleEnd() }
+        mixerWorkspace.onSendPanBegin = { [weak self] id,bus in self?.consoleBegin(id,send:bus,pan:true) }
+        mixerWorkspace.onSendPan = { [weak self] _,_,value in self?.consoleWrite(value) }
+        mixerWorkspace.onSendPanEnd = { [weak self] _,_,_ in self?.consoleEnd() }
         mixerWorkspace.onPan = { [weak self] id, value in
             guard let self, !isRecording else { return }
             mixerSetPan(id,value); refresh()
@@ -91,7 +94,7 @@ extension DraftApp {
     @objc private func mixerRackFaders(){mixerWorkspace.setRackMode(.faders)}
     @objc private func mixerShowAllChannels(){mixerWorkspace.consoleState.showAll();mixerWorkspace.needsLayout=true}
 
-    func consoleBegin(_ id: UInt64, send: UInt64?) {
+    func consoleBegin(_ id: UInt64, send: UInt64?, pan: Bool = false) {
         guard !isRecording, consoleGesture == nil, let kind = mixerKinds[id] else { return }
         if send == nil {
             let target: Int32 = kind == .track ? automationTrackVolume : kind == .bus ? automationBusGain : automationMasterGain
@@ -101,7 +104,7 @@ extension DraftApp {
                 return
             }
         }
-        let target: Int32 = send != nil ? 6 : kind == .track ? 1 : kind == .bus ? 3 : 4
+        let target: Int32 = send != nil ? (pan ? Int32(DAW_MIXER_SEND_PAN) : Int32(DAW_MIXER_SEND_GAIN)) : kind == .track ? 1 : kind == .bus ? 3 : 4
         if check(daw_begin_mixer_gesture(session,target,id,send ?? 0,revision)) {
             consoleGesture = (false,revision)
         }
@@ -161,6 +164,10 @@ extension DraftApp {
             _ = check(daw_upsert_send(session,id,bus,-12,0,revision))
         case .remove(let bus):
             _ = check(daw_remove_send(session,id,bus,revision))
+        case .mute(let bus,let muted):
+            _ = check(daw_set_send_muted(session,id,bus,muted ? 1 : 0,revision))
+        case .pan(let bus,let value,let independent):
+            _ = check(daw_set_send_pan(session,id,bus,value,independent ? 1 : 0,revision))
         case .tap(let bus,let pre):
             guard let send = sends.first(where:{ $0.busID == bus }) else { return }
             _ = check(daw_upsert_send(session,id,bus,send.gainDb,pre ? 1 : 0,revision))

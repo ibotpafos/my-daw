@@ -45,7 +45,7 @@ private final class MixerRoutingTable: NSTableView {
 final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     enum Mode: Int { case main, sends }
     struct Cell: Equatable { let rowID: UInt64; let destinationID: UInt64 }
-    private enum Intent { case primary, remove, toggleTap }
+    private enum Intent { case primary, remove, toggleTap, toggleMute, togglePanMode }
 
     var strips: [MixerStripModel] = [] {
         didSet { if oldValue != strips { generation &+= 1; rebuild() } }
@@ -205,13 +205,13 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
         let connected = activeMode == .main ? row.outputID == destination.id : send != nil
         let reason = blockReason(rowID: row.id, destinationID: destination.id)
         button.title = reason != nil ? "—" : activeMode == .main ? (connected ? "● MAIN" : "Connect")
-            : send.map { "\($0.preFader ? "PRE" : "POST") \(MixerScale.label($0.gainDb))" } ?? "+ Send"
+            : send.map { "\($0.muted ? "M " : "")\($0.preFader ? "PRE" : "POST") \(MixerScale.label($0.gainDb))" } ?? "+ Send"
         button.isEnabled = editingEnabled && reason == nil
-        button.contentTintColor = connected ? .systemMint : .secondaryLabelColor
+        button.contentTintColor = activeMode == .sends && send?.muted == true ? .systemOrange : connected ? .systemMint : .secondaryLabelColor
         button.setAccessibilityLabel("\(row.title) → \(destination.title), \(activeMode == .main ? "main output" : "send")")
-        let sendValue = send.map { "\($0.preFader ? "Pre-fader" : "Post-fader"), \(MixerScale.label($0.gainDb)) dB" } ?? "Not connected"
+        let sendValue = send.map { $0.statusLabel } ?? "Not connected"
         button.setAccessibilityValue(activeMode == .main ? (connected ? "Connected" : "Not connected") : sendValue)
-        button.toolTip = reason ?? (activeMode == .main ? "Route \(row.title) to \(destination.title)." : connected ? "Edit send level. Right-click for PRE/POST or Remove." : "Add a post-fader send at −12 dB.")
+        button.toolTip = reason ?? (activeMode == .main ? "Route \(row.title) to \(destination.title)." : connected ? "\(send?.statusLabel ?? ""). Right-click for mute, independent balance, PRE/POST or Remove." : "Add a post-fader send at −12 dB.")
         button.setAccessibilityHelp(button.toolTip)
         button.wantsLayer = true
         button.layer?.borderWidth = focusedCell == Cell(rowID: row.id, destinationID: destination.id) ? 1.5 : 0
@@ -279,6 +279,8 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
             case .primary: onSend?(rowID, send == nil ? .add(destinationID) : .edit(destinationID))
             case .remove: if send != nil { onSend?(rowID, .remove(destinationID)) }
             case .toggleTap: if let send { onSend?(rowID, .tap(destinationID, !send.preFader)) }
+            case .toggleMute: if let send { onSend?(rowID, .mute(destinationID, !send.muted)) }
+            case .togglePanMode: if let send { onSend?(rowID, .pan(destinationID,send.pan,!send.independentPan)) }
             }
         }
     }
@@ -290,7 +292,7 @@ final class MixerRoutingMatrixView: NSView, NSSearchFieldDelegate, NSTableViewDa
         let token = generation
         let menu = NSMenu(); menu.autoenablesItems = false
         let enabled = editingEnabled && editingAllowed?() != false
-        for (title, intent) in [("Edit level…", Intent.primary), (send.preFader ? "Switch to POST" : "Switch to PRE", Intent.toggleTap), ("Remove send", Intent.remove)] {
+        for (title, intent) in [("Edit level…", Intent.primary), (send.preFader ? "Switch to POST" : "Switch to PRE", Intent.toggleTap), ("Remove send", Intent.remove), (send.muted ? "Unmute send" : "Mute send", Intent.toggleMute), (send.independentPan ? "Use channel pan / original tap" : "Independent send balance", Intent.togglePanMode)] {
             menu.addItem(MixerMenuItem(title, enabled: enabled) { [weak self] in
                 self?.perform(intent, rowID: rowID, destinationID: destinationID, expectedGeneration: token)
             })

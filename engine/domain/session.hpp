@@ -10,11 +10,20 @@ namespace daw {
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
 struct Region { uint64_t start=0, sourceOffset=0, length=0, fadeIn=0, fadeOut=0; uint32_t take=0; double gain=0.0; uint32_t color=0; bool muted=false, looped=false; double pan=0.0; bool operator==(const Region&) const = default; };
 struct Take { std::string name; uint64_t start=0; std::shared_ptr<const Clip> audio; bool operator==(const Take&) const = default; };
-struct Send { uint64_t bus=0; double gain=-12; bool preFader=false; bool operator==(const Send&) const = default; };
+// Linked mode preserves the historic tap: PRE bypasses track balance, POST follows it.
+// Independent mode uses the same unity-center stereo balance law, before track pan.
+struct Send {
+    uint64_t bus=0;
+    double gain=-12;
+    bool preFader=false;
+    double pan=0;
+    bool muted=false, independentPan=false;
+    bool operator==(const Send&) const = default;
+};
 // Ordered timeline points for the track fader. Frames are project frames at
 // the fixed 48 kHz session rate; an empty lane means the static track gain.
 struct AutomationPoint { uint64_t frame=0; double gainDb=0; bool operator==(const AutomationPoint&) const = default; };
-enum class MixerEditTarget : uint8_t { TrackGain=1, TrackPan=2, BusGain=3, MasterGain=4, BusPan=5, SendGain=6 };
+enum class MixerEditTarget : uint8_t { TrackGain=1, TrackPan=2, BusGain=3, MasterGain=4, BusPan=5, SendGain=6, SendPan=7 };
 enum class AutomationTarget : uint8_t { TrackVolume=1, TrackPan=2, BusGain=3, MasterGain=4 };
 enum class AutomationWriteMode : uint8_t { Touch=1, Latch=2 };
 enum class PluginOwner : uint8_t { Track=1, Bus=2, Master=3 };
@@ -156,6 +165,9 @@ public:
     void routeBus(uint64_t busID,uint64_t outputBusID,uint64_t expected);
     void upsertSend(uint64_t trackID,uint64_t busID,double gain,bool preFader,uint64_t expected);
     void removeSend(uint64_t trackID,uint64_t busID,uint64_t expected);
+    // Scalar edits of an existing send. No route insertion or tap changes.
+    void setSendMuted(uint64_t trackID,uint64_t busID,bool muted,uint64_t expected);
+    void setSendPan(uint64_t trackID,uint64_t busID,double pan,bool independent,uint64_t expected);
     void upsertTrackVolumeAutomation(uint64_t trackID,uint64_t frame,double gainDb,uint64_t expected);
     void removeTrackVolumeAutomation(uint64_t trackID,uint64_t frame,uint64_t expected);
     void upsertTrackPanAutomation(uint64_t trackID,uint64_t frame,double pan,uint64_t expected);

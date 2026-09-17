@@ -90,6 +90,9 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
     var onOutput: ((UInt64,UInt64) -> Void)?
     var onInsert: ((UInt64,MixerInsertAction) -> Void)?
     var onSend: ((UInt64,MixerSendAction) -> Void)?
+    var onSendPanBegin: ((UInt64,UInt64) -> Void)?
+    var onSendPan: ((UInt64,UInt64,Double) -> Void)?
+    var onSendPanEnd: ((UInt64,UInt64,Double) -> Void)?
     var onSendGainBegin: ((UInt64,UInt64) -> Void)?
     var onSendGain: ((UInt64,UInt64,Double) -> Void)?
     var onSendGainEnd: ((UInt64,UInt64,Double) -> Void)?
@@ -290,6 +293,12 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         for view in [stripViews[id],inspector].compactMap({$0}) where view !== source && view.model.id == id && view.sendTarget == send {
             view.fader.valueDb = value
             view.gainField.stringValue = MixerScale.label(value)
+        }
+    }
+
+    func previewSendPan(_ id:UInt64,bus:UInt64,value:Double,source:MixerStripView) {
+        for view in [stripViews[id],inspector].compactMap({$0}) where view !== source && view.model.id == id && view.sendTarget == bus {
+            view.pan.value = value
         }
     }
 

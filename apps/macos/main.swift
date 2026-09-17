@@ -1196,7 +1196,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             var send=daw_send();send.struct_size=UInt32(MemoryLayout<daw_send>.size)
             guard daw_get_send(session,trackID,index,&send) == 0 else { return nil }
             let destination=orderedBuses.first(where:{$0.id == send.bus_id})?.name ?? "Bus \(send.bus_id)"
-            return MixerSendSummary(destination:destination,gainDb:send.gain_db,preFader:send.pre_fader != 0,busID:send.bus_id)
+            var controls=daw_send_controls();controls.struct_size=UInt32(MemoryLayout<daw_send_controls>.size)
+            guard daw_get_send_controls(session,trackID,send.bus_id,&controls) == 0 else { return nil }
+            return MixerSendSummary(destination:destination,gainDb:send.gain_db,preFader:send.pre_fader != 0,
+                busID:send.bus_id,pan:controls.pan,muted:controls.muted != 0,independentPan:controls.independent_pan != 0)
         }
     }
     func loadSupportedAudioUnits(){

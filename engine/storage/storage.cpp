@@ -66,13 +66,13 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
     if(observer) observer(1);
     {
         auto db = open(":memory:", SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
-        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=21; BEGIN IMMEDIATE;"
+        sql(db.get(), "PRAGMA application_id=1296323159; PRAGMA user_version=22; BEGIN IMMEDIATE;"
             "CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, next_id INTEGER NOT NULL, master_gain REAL NOT NULL);"
             "CREATE TABLE tracks(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pcm BLOB, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), solo INTEGER NOT NULL CHECK(solo IN(0,1)), base_start INTEGER NOT NULL, output_bus INTEGER NOT NULL, color INTEGER);"
             "CREATE TABLE takes(track_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, take_start INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(track_id,position));"
             "CREATE TABLE regions(track_id INTEGER NOT NULL, position INTEGER NOT NULL, clip_start INTEGER NOT NULL, source_offset INTEGER NOT NULL, clip_length INTEGER NOT NULL, fade_in INTEGER NOT NULL, fade_out INTEGER NOT NULL, take_index INTEGER NOT NULL, gain REAL NOT NULL, color INTEGER NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), looped INTEGER NOT NULL CHECK(looped IN(0,1)), pan REAL NOT NULL, PRIMARY KEY(track_id,position));"
             "CREATE TABLE buses(position INTEGER PRIMARY KEY, id INTEGER UNIQUE NOT NULL, name TEXT NOT NULL, gain REAL NOT NULL, pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), output_bus INTEGER NOT NULL);"
-            "CREATE TABLE sends(track_id INTEGER NOT NULL, position INTEGER NOT NULL, bus_id INTEGER NOT NULL, gain REAL NOT NULL, pre_fader INTEGER NOT NULL CHECK(pre_fader IN(0,1)), PRIMARY KEY(track_id,position));"
+            "CREATE TABLE sends(track_id INTEGER NOT NULL, position INTEGER NOT NULL, bus_id INTEGER NOT NULL, gain REAL NOT NULL, pre_fader INTEGER NOT NULL CHECK(pre_fader IN(0,1)), pan REAL NOT NULL, muted INTEGER NOT NULL CHECK(muted IN(0,1)), independent_pan INTEGER NOT NULL CHECK(independent_pan IN(0,1)), PRIMARY KEY(track_id,position));"
             "CREATE TABLE track_volume_automation(track_id INTEGER NOT NULL, position INTEGER NOT NULL, frame INTEGER NOT NULL, gain REAL NOT NULL, PRIMARY KEY(track_id,position), UNIQUE(track_id,frame));"
             "CREATE TABLE track_pan_automation(track_id INTEGER NOT NULL, position INTEGER NOT NULL, frame INTEGER NOT NULL, pan REAL NOT NULL, PRIMARY KEY(track_id,position), UNIQUE(track_id,frame));"
             "CREATE TABLE bus_gain_automation(bus_id INTEGER NOT NULL, position INTEGER NOT NULL, frame INTEGER NOT NULL, gain REAL NOT NULL, PRIMARY KEY(bus_id,position), UNIQUE(bus_id,frame));"
@@ -109,8 +109,8 @@ void writeDraft(const State& state, const std::string& path, SaveObserver observ
         }
         auto busRow=prepare(db.get(),"INSERT INTO buses VALUES(?,?,?,?,?,?,?)");
         for(size_t position=0;position<state.buses.size();++position){const auto& bus=state.buses[position];sqlite3_reset(busRow.get());sqlite3_clear_bindings(busRow.get());sqlite3_bind_int64(busRow.get(),1,static_cast<int64_t>(position));sqlite3_bind_int64(busRow.get(),2,static_cast<int64_t>(bus.id));sqlite3_bind_text(busRow.get(),3,bus.name.data(),static_cast<int>(bus.name.size()),SQLITE_TRANSIENT);sqlite3_bind_double(busRow.get(),4,bus.gain);sqlite3_bind_double(busRow.get(),5,bus.pan);sqlite3_bind_int(busRow.get(),6,bus.muted);sqlite3_bind_int64(busRow.get(),7,static_cast<int64_t>(bus.outputBus));done(busRow.get());}
-        auto sendRow=prepare(db.get(),"INSERT INTO sends VALUES(?,?,?,?,?)");
-        for(const auto& track:state.tracks)for(size_t position=0;position<track.sends.size();++position){const auto& send=track.sends[position];sqlite3_reset(sendRow.get());sqlite3_clear_bindings(sendRow.get());sqlite3_bind_int64(sendRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(sendRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(sendRow.get(),3,static_cast<int64_t>(send.bus));sqlite3_bind_double(sendRow.get(),4,send.gain);sqlite3_bind_int(sendRow.get(),5,send.preFader);done(sendRow.get());}
+        auto sendRow=prepare(db.get(),"INSERT INTO sends VALUES(?,?,?,?,?,?,?,?)");
+        for(const auto& track:state.tracks)for(size_t position=0;position<track.sends.size();++position){const auto& send=track.sends[position];sqlite3_reset(sendRow.get());sqlite3_clear_bindings(sendRow.get());sqlite3_bind_int64(sendRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(sendRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(sendRow.get(),3,static_cast<int64_t>(send.bus));sqlite3_bind_double(sendRow.get(),4,send.gain);sqlite3_bind_int(sendRow.get(),5,send.preFader);sqlite3_bind_double(sendRow.get(),6,send.pan);sqlite3_bind_int(sendRow.get(),7,send.muted);sqlite3_bind_int(sendRow.get(),8,send.independentPan);done(sendRow.get());}
         auto automationRow=prepare(db.get(),"INSERT INTO track_volume_automation VALUES(?,?,?,?)");
         for(const auto& track:state.tracks)for(size_t position=0;position<track.volumeAutomation.size();++position){const auto& point=track.volumeAutomation[position];sqlite3_reset(automationRow.get());sqlite3_clear_bindings(automationRow.get());sqlite3_bind_int64(automationRow.get(),1,static_cast<int64_t>(track.id));sqlite3_bind_int64(automationRow.get(),2,static_cast<int64_t>(position));sqlite3_bind_int64(automationRow.get(),3,static_cast<int64_t>(point.frame));sqlite3_bind_double(automationRow.get(),4,point.gainDb);done(automationRow.get());}
         auto panAutomationRow=prepare(db.get(),"INSERT INTO track_pan_automation VALUES(?,?,?,?)");
@@ -167,7 +167,7 @@ State readDraft(const std::string& path) {
     auto version = prepare(db.get(), "PRAGMA user_version");
     if (sqlite3_step(version.get()) != SQLITE_ROW) throw Error("Missing draft version");
     auto formatVersion=integer(version.get(),0);
-    if(formatVersion<1 || formatVersion>21) throw Error("Unsupported draft version");
+    if(formatVersion<1 || formatVersion>22) throw Error("Unsupported draft version");
     auto integrity = prepare(db.get(), "PRAGMA quick_check");
     if (sqlite3_step(integrity.get()) != SQLITE_ROW || string(integrity.get(), 0) != "ok") throw Error("Damaged draft database");
     auto meta = prepare(db.get(),formatVersion>=7?"SELECT singleton,revision,next_id,master_gain FROM metadata":"SELECT singleton,revision,next_id,0 FROM metadata");
@@ -222,8 +222,24 @@ State readDraft(const std::string& path) {
         auto buses=prepare(db.get(),"SELECT position,id,name,gain,pan,muted,output_bus FROM buses ORDER BY position");
         while((rc=sqlite3_step(buses.get()))==SQLITE_ROW){if(integer(buses.get(),0)!=static_cast<int64_t>(state.buses.size()))throw Error("Invalid draft bus order");const auto muted=integer(buses.get(),5);if(muted<0||muted>1)throw Error("Invalid bus mute state");state.buses.push_back({static_cast<uint64_t>(integer(buses.get(),1)),string(buses.get(),2),sqlite3_column_double(buses.get(),3),sqlite3_column_double(buses.get(),4),muted!=0,static_cast<uint64_t>(integer(buses.get(),6)),{},{}});}
         if(rc!=SQLITE_DONE)throw Error("Cannot read draft buses");
-        auto sends=prepare(db.get(),"SELECT track_id,position,bus_id,gain,pre_fader FROM sends ORDER BY track_id,position");
-        while((rc=sqlite3_step(sends.get()))==SQLITE_ROW){const auto trackID=static_cast<uint64_t>(integer(sends.get(),0));auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==trackID;});if(track==state.tracks.end()||integer(sends.get(),1)!=static_cast<int64_t>(track->sends.size()))throw Error("Invalid draft send order");const auto pre=integer(sends.get(),4);if(pre<0||pre>1)throw Error("Invalid send tap");track->sends.push_back({static_cast<uint64_t>(integer(sends.get(),2)),sqlite3_column_double(sends.get(),3),pre!=0});}
+        auto sends=prepare(db.get(),formatVersion>=22
+            ? "SELECT track_id,position,bus_id,gain,pre_fader,pan,muted,independent_pan FROM sends ORDER BY track_id,position"
+            : "SELECT track_id,position,bus_id,gain,pre_fader,0,0,0 FROM sends ORDER BY track_id,position");
+        while((rc=sqlite3_step(sends.get()))==SQLITE_ROW) {
+            const auto trackID=static_cast<uint64_t>(integer(sends.get(),0));
+            auto track=std::find_if(state.tracks.begin(),state.tracks.end(),[&](const auto& item){return item.id==trackID;});
+            if(track==state.tracks.end() || track->sends.size()>=8 || integer(sends.get(),1)!=static_cast<int64_t>(track->sends.size()))
+                throw Error("Invalid draft send order or capacity");
+            const auto pre=integer(sends.get(),4), muted=integer(sends.get(),6), independent=integer(sends.get(),7);
+            if(pre<0 || pre>1 || muted<0 || muted>1 || independent<0 || independent>1)
+                throw Error("Invalid send controls flag");
+            for(int column : {3,5}) {
+                const auto type=sqlite3_column_type(sends.get(),column);
+                if(type!=SQLITE_FLOAT && type!=SQLITE_INTEGER) throw Error("Invalid send numeric value");
+            }
+            track->sends.push_back({static_cast<uint64_t>(integer(sends.get(),2)),sqlite3_column_double(sends.get(),3),
+                pre!=0,sqlite3_column_double(sends.get(),5),muted!=0,independent!=0});
+        }
         if(rc!=SQLITE_DONE)throw Error("Cannot read draft sends");
     }
     if(formatVersion>=11){

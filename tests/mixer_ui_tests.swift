@@ -53,6 +53,8 @@ struct MixerUITests {
         matrix.onOutput={matrixOutput=($0,$1)}
         matrix.onSend={ id,action in
             switch action {
+            case .mute(let bus,let muted): matrixSends.append("mute:\(id):\(bus):\(muted)")
+            case .pan(let bus,let pan,let independent): matrixSends.append("pan:\(id):\(bus):\(pan):\(independent)")
             case .add(let bus): matrixSends.append("add:\(id):\(bus)")
             case .remove(let bus): matrixSends.append("remove:\(id):\(bus)")
             case .edit(let bus): matrixSends.append("edit:\(id):\(bus)")
@@ -196,6 +198,7 @@ struct MixerUITests {
         NotificationCenter.default.post(name:NSView.boundsDidChangeNotification,object:mixer.contentView)
         precondition(mixer.stripViews[1]!.isHidden)
         try MixerRoutingTests.run()
+        try MixerSendTests.run()
         print("Mixer AppKit tests PASS: scale, routing matrix, search, visibility, zones, section focus, latency, inserts/sends, send mapping, metering, resize, 256-strip virtualization")
     }
 }

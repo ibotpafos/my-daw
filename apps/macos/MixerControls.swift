@@ -134,3 +134,56 @@ final class MixerFaderView: NSSlider {
     override func accessibilityPerformIncrement() -> Bool { guard isEnabled else { return false }; commit(valueDb + 0.5); return true }
     override func accessibilityPerformDecrement() -> Bool { guard isEnabled else { return false }; commit(valueDb - 0.5); return true }
 }
+
+/// Native balance control. Model refreshes never fight a tracked gesture.
+@MainActor
+final class MixerBalanceView: NSSlider {
+    var onBegin: (() -> Void)?
+    var onChange: ((Double) -> Void)?
+    var onEnd: ((Double) -> Void)?
+    private(set) var tracking = false
+    var value: Double {
+        get { doubleValue }
+        set { if !tracking { doubleValue = newValue } }
+    }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        minValue = -1; maxValue = 1; doubleValue = 0
+        isContinuous = true; altIncrementValue = 0.005; controlSize = .small
+        target = self; action = #selector(changed)
+        setAccessibilityHelp("Stereo balance. Arrows: 2 percent, Shift: 0.5 percent. Double-click: center. Option: fine drag.")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    @objc private func changed() {
+        if tracking { onChange?(doubleValue) }
+        else { commit(doubleValue) }
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        window?.makeFirstResponder(self)
+        if event.clickCount == 2 { commit(0); return }
+        tracking = true; onBegin?()
+        super.mouseDown(with: event)
+        tracking = false; onEnd?(doubleValue)
+    }
+    func commit(_ value: Double) {
+        guard isEnabled, value.isFinite else { return }
+        onBegin?(); doubleValue = max(-1, min(1, value))
+        onChange?(doubleValue); onEnd?(doubleValue)
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+    override func keyDown(with event: NSEvent) {
+        guard event.modifierFlags.intersection([.command,.option,.control]).isEmpty else { super.keyDown(with:event); return }
+        let step = event.modifierFlags.contains(.shift) ? 0.005 : 0.02
+        switch event.keyCode {
+        case 123,125: commit(doubleValue - step)
+        case 124,126: commit(doubleValue + step)
+        default: super.keyDown(with: event)
+        }
+    }
+    override func accessibilityValue() -> Any? {
+        doubleValue == 0 ? "Center" : String(format: "%@ %.1f percent",doubleValue < 0 ? "Left" : "Right",abs(doubleValue)*100)
+    }
+    override func accessibilityPerformIncrement() -> Bool { guard isEnabled else { return false }; commit(doubleValue + 0.02); return true }
+    override func accessibilityPerformDecrement() -> Bool { guard isEnabled else { return false }; commit(doubleValue - 0.02); return true }
+}

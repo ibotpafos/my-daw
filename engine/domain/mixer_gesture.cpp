@@ -5,7 +5,7 @@
 namespace daw {
 namespace {
 double& mixerValue(State& state, MixerEditTarget target, uint64_t id, uint64_t busID) {
-    if (target != MixerEditTarget::SendGain && busID != 0)
+    if (target != MixerEditTarget::SendGain && target != MixerEditTarget::SendPan && busID != 0)
         throw Error("Send destination is valid only for a send gesture");
     switch (target) {
     case MixerEditTarget::MasterGain:
@@ -13,6 +13,7 @@ double& mixerValue(State& state, MixerEditTarget target, uint64_t id, uint64_t b
         return state.masterGain;
     case MixerEditTarget::TrackGain:
     case MixerEditTarget::TrackPan:
+    case MixerEditTarget::SendPan:
     case MixerEditTarget::SendGain: {
         auto track = std::find_if(state.tracks.begin(), state.tracks.end(),
                                   [id](const auto& t) { return t.id == id; });
@@ -22,6 +23,10 @@ double& mixerValue(State& state, MixerEditTarget target, uint64_t id, uint64_t b
         auto send = std::find_if(track->sends.begin(), track->sends.end(),
                                  [busID](const auto& s) { return s.bus == busID; });
         if (send == track->sends.end()) throw Error("Send not found");
+        if (target == MixerEditTarget::SendPan) {
+            if (!send->independentPan) throw Error("Enable independent send balance before a pan gesture");
+            return send->pan;
+        }
         return send->gain;
     }
     case MixerEditTarget::BusGain:
@@ -57,7 +62,7 @@ void Session::beginMixerGesture(MixerEditTarget target, uint64_t id, uint64_t bu
 }
 void Session::writeMixerGesture(double value) {
     if (!mixerGesture) throw Error("No active mixer gesture");
-    const bool pan = mixerGesture->target == MixerEditTarget::TrackPan || mixerGesture->target == MixerEditTarget::BusPan;
+    const bool pan = mixerGesture->target == MixerEditTarget::TrackPan || mixerGesture->target == MixerEditTarget::BusPan || mixerGesture->target == MixerEditTarget::SendPan;
     if (!std::isfinite(value) || value < (pan ? -1.0 : -120.0) || value > (pan ? 1.0 : 24.0))
         throw Error(pan ? "Balance must be between -1 and +1" : "Gain must be between -120 and +24 dB");
     // Only a scalar changes. No snapshots/history allocation at mouse frequency;

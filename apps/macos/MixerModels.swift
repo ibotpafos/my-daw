@@ -19,6 +19,14 @@ struct MixerSendSummary: Sendable, Equatable {
     var gainDb: Double = -12
     var preFader = false
     var busID: UInt64 = 0
+    var pan: Double = 0
+    var muted = false
+    var independentPan = false
+    var panLabel: String {
+        guard independentPan else { return preFader ? "PRE · center" : "Follows channel" }
+        return pan == 0 ? "Center" : String(format: "%@ %.0f", pan < 0 ? "L" : "R", abs(pan) * 100)
+    }
+    var statusLabel: String { "\(muted ? "MUTED · " : "")\(preFader ? "PRE" : "POST") \(MixerScale.label(gainDb)) dB · \(panLabel)" }
 }
 struct MixerStripModel: Identifiable, Sendable, Equatable {
     var id: UInt64
@@ -47,4 +55,7 @@ struct MixerStripModel: Identifiable, Sendable, Equatable {
     var hasUnavailableInsert: Bool { inserts.contains { !$0.available } }
 }
 enum MixerInsertAction { case add, edit(UInt64), bypass(UInt64, Bool), move(UInt64, Int), remove(UInt64) }
-enum MixerSendAction { case add(UInt64), edit(UInt64), tap(UInt64, Bool), remove(UInt64) }
+enum MixerSendAction {
+    case add(UInt64), edit(UInt64), tap(UInt64, Bool), remove(UInt64)
+    case mute(UInt64, Bool), pan(UInt64, Double, Bool)
+}

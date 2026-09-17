@@ -191,7 +191,7 @@ void validate(const State& state) {
         if(!hasBus(track.outputBus))throw Error("Track output bus not found");
         if(track.sends.size()>8)throw Error("Track supports at most 8 sends");
         std::set<uint64_t> targets;
-        for(const auto& send:track.sends){if(!send.bus||!busIDs.contains(send.bus))throw Error("Send bus not found");if(!targets.insert(send.bus).second)throw Error("Duplicate send target");if(!std::isfinite(send.gain)||send.gain < -120||send.gain > 24)throw Error("Send gain outside -120…24 dB");}
+        for(const auto& send:track.sends){if(!send.bus||!busIDs.contains(send.bus))throw Error("Send bus not found");if(!targets.insert(send.bus).second)throw Error("Duplicate send target");if(!std::isfinite(send.gain)||send.gain < -120||send.gain > 24)throw Error("Send gain outside -120…24 dB");if(!std::isfinite(send.pan)||send.pan < -1||send.pan > 1)throw Error("Send balance outside -1…1");}
     }
     for(const auto& bus:state.buses)if(bus.outputBus==bus.id||!hasBus(bus.outputBus))throw Error("Invalid bus output");
     std::vector<uint8_t> colours(state.buses.size());

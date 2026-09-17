@@ -317,7 +317,7 @@ int daw_rename_track(daw_session*, uint64_t id, const char* name, uint64_t expec
  * preview. Mutations and nested gestures reject until end/cancel. Main-thread
  * API: previews publish atomic targets to an already prepared renderer. */
 enum { DAW_MIXER_TRACK_GAIN=1, DAW_MIXER_TRACK_PAN=2, DAW_MIXER_BUS_GAIN=3,
-       DAW_MIXER_MASTER_GAIN=4, DAW_MIXER_BUS_PAN=5, DAW_MIXER_SEND_GAIN=6 };
+       DAW_MIXER_MASTER_GAIN=4, DAW_MIXER_BUS_PAN=5, DAW_MIXER_SEND_GAIN=6, DAW_MIXER_SEND_PAN=7 };
 int daw_begin_mixer_gesture(daw_session*,int32_t target,uint64_t id,uint64_t send_bus_id,uint64_t expected_revision);
 int daw_write_mixer_gesture(daw_session*,double value);
 int daw_end_mixer_gesture(daw_session*,uint64_t expected_revision);
@@ -344,6 +344,20 @@ int daw_get_bus_count(daw_session*,uint32_t* count);
 int daw_delete_bus(daw_session*,uint64_t bus_id,uint64_t expected_revision);
 int daw_set_bus_output(daw_session*,uint64_t bus_id,uint64_t output_bus_id,uint64_t expected_revision);
 int daw_get_send(daw_session*,uint64_t track_id,uint32_t index,daw_send*);
+/* Additive send-controls ABI. Get by stable bus ID, not a visible row index.
+ * Callers set struct_size; version is returned. No borrowed memory escapes.
+ * pan is unity-center stereo balance -1..+1, not an equal-power mono panner.
+ * independent_pan=0 preserves historic PRE/POST behavior; =1 bypasses track
+ * balance on this send only (POST still follows track fader automation).
+ * Muting preserves the send level/route/tap/pan. Setters require existing sends,
+ * reject non-boolean flags, stale revisions and active recording, commit one
+ * Undo entry or no-op, and publish smoothed targets without stopping playback.
+ * The legacy upsert API preserves these controls on an existing send. */
+enum { DAW_SEND_CONTROLS_VERSION=1 };
+typedef struct { uint32_t struct_size; uint32_t version; double pan; int32_t muted; int32_t independent_pan; } daw_send_controls;
+int daw_get_send_controls(daw_session*,uint64_t track_id,uint64_t bus_id,daw_send_controls*);
+int daw_set_send_muted(daw_session*,uint64_t track_id,uint64_t bus_id,int32_t muted,uint64_t expected_revision);
+int daw_set_send_pan(daw_session*,uint64_t track_id,uint64_t bus_id,double pan,int32_t independent_pan,uint64_t expected_revision);
 int daw_upsert_send(daw_session*,uint64_t track_id,uint64_t bus_id,double gain_db,int32_t pre_fader,uint64_t expected_revision);
 int daw_remove_send(daw_session*,uint64_t track_id,uint64_t bus_id,uint64_t expected_revision);
 /* Automation points are ordered 48 kHz project-frame fader values. Upsert

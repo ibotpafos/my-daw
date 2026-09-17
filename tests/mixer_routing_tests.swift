@@ -28,6 +28,8 @@ struct MixerRoutingTests {
         matrix.onOutput = { outputs.append("\($0):\($1)") }
         matrix.onSend = { id, action in
             switch action {
+            case .mute(let bus,let muted): sends.append("mute:\(id):\(bus):\(muted)")
+            case .pan(let bus,let pan,let independent): sends.append("pan:\(id):\(bus):\(pan):\(independent)")
             case .add(let bus): sends.append("add:\(id):\(bus)")
             case .edit(let bus): sends.append("edit:\(id):\(bus)")
             case .remove(let bus): sends.append("remove:\(id):\(bus)")
