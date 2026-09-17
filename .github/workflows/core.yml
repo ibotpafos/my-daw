@@ -1,7 +1,7 @@
 name: Core and macOS prototype
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -9,6 +9,9 @@ permissions:
 concurrency:
   group: core-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 jobs:
   core:
     strategy:
@@ -35,7 +38,10 @@ jobs:
       - name: Configure
         run: cmake --preset sanitizers
       - name: Build
-        run: cmake --build --preset sanitizers --parallel 2
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build --preset sanitizers --parallel 2 -- -k 2>&1 | tee "$RUNNER_TEMP/core-build.log"
       - name: Test
         run: ctest --preset sanitizers
       - name: Install pinned documentation tools
@@ -60,6 +66,9 @@ jobs:
           xcrun swiftc -swift-version 6 -parse-as-library apps/macos/ProjectTime.swift tests/project_time_tests.swift -o build/swift-tests/project-time
           build/swift-tests/project-time
           xcrun swiftc -swift-version 6 -typecheck scripts/macos-app-control.swift
+      - name: Typecheck complete AppKit UI
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: bash scripts/typecheck-macos-ui.sh
       - name: Build AppKit prototype
         id: app-build
         if: ${{ !cancelled() && runner.os == 'macOS' }}
@@ -91,6 +100,19 @@ jobs:
             build/sanitizers/Testing/Temporary/LastTest.log
           if-no-files-found: warn
           retention-days: 14
+      - name: Package reproducible build input
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=tar -o "$RUNNER_TEMP/my-daw-source.tar" HEAD
+      - name: Preserve build diagnostics
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-build-input-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/my-daw-source.tar
+            ${{ runner.temp }}/core-build.log
+            build/sanitizers/Testing/Temporary/LastTest.log
+          retention-days: 3
   source-quality:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -107,3 +129,23 @@ jobs:
           shellcheck script/build_and_run.sh scripts/run-macos.sh
           bash -n scripts/build-macos.sh
           ./script/build_and_run.sh --help
+  command-palette:
+    # Independent of audio devices and the C++ build.
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Command palette models and AppKit integration
+        run: bash scripts/test-command-palette.sh
+        env:
+          DAW_PALETTE_EVIDENCE_DIR: ${{ runner.temp }}/command-palette-evidence
+      - name: Preserve native UI evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: command-palette-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/command-palette-evidence
+          if-no-files-found: error
+          retention-days: 3
