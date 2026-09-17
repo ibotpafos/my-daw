@@ -48,14 +48,34 @@ jobs:
           path.write_bytes(patch)
           subprocess.run(['git', 'apply', '--index', '--check', str(path)], check=True)
           subprocess.run(['git', 'apply', '--index', str(path)], check=True)
-          # The first native run correctly rejected an invalid fixture: the
-          # ABI requires metadata.note_count to match the supplied note array.
           fixture = pathlib.Path('tests/mix_export_ui_tests.swift')
           if subprocess.check_output(['git', 'hash-object', str(fixture)], text=True).strip() != '9f764b281625b2296c24220aea51dc9864a2effc':
               raise SystemExit('Changed native fixture')
           text = fixture.read_text()
           text = text.replace('clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length', 'clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.length = length\n        clip.note_count = notes ? 1 : 0')
           text = text.replace('print("PASS \\(name)")', 'FileHandle.standardOutput.write(Data("PASS \\(name)\\n".utf8))')
+          setup = '''    // Use the real installed-AU scanner and catalog: the normal startup scan
+              // was suppressed for this harness, and the public insert API requires it.
+              let helper = URL(fileURLWithPath: "build/debug/daw_au_scan_helper").standardizedFileURL.path
+              guard let scan = daw_begin_installed_au_scan(helper, 3_000) else { fatalError("AU scan did not start") }
+              var scanStatus = daw_au_scan_status()
+              scanStatus.struct_size = UInt32(MemoryLayout<daw_au_scan_status>.size)
+              let scanDeadline = Date().addingTimeInterval(75)
+              repeat {
+                  guard daw_poll_installed_au_scan(scan, &scanStatus) == 0 else { fatalError("AU scan poll failed") }
+                  if scanStatus.status != 0 { break }
+                  RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+              } while Date() < scanDeadline
+              var available: UInt32 = 0, quarantined: UInt32 = 0
+              let applied = scanStatus.status == 1 ? daw_apply_installed_au_scan(app.session, scan, &available, &quarantined) : 1
+              daw_release_installed_au_scan(scan)
+              expect(applied == 0 && available > 0, "Apply real scanned AU catalog before inserting instrument")
+          '''
+          if hashlib.sha256(setup.encode()).hexdigest() != '88648ef7d04287dfb40e0f0d25a41fe3ca645454c171d76dc1462fcb0e1ce342':
+              raise SystemExit('Scanner setup checksum mismatch')
+          needle = '    // No custom test synthesizer. Apple DLS MusicDevice must actually exist and\n'
+          if text.count(needle) != 1: raise SystemExit('Fixture anchor changed')
+          text = text.replace(needle, setup + needle)
           fixture.write_text(text)
           subprocess.run(['git', 'add', str(fixture)], check=True)
           PY
