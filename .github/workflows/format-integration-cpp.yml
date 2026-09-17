@@ -1,0 +1,39 @@
+name: Format reconciled integration C++
+on:
+  push:
+    branches: [codex/midi-only-export-ui]
+    paths: [.github/workflows/format-integration-cpp.yml]
+permissions:
+  contents: write
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Apply clang-format 18 and publish formatting-only commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-format-18
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          clang-format-18 -i engine/bridge/daw.cpp engine/storage/storage.cpp
+          clang-format-18 --dry-run --Werror engine/domain/session.cpp engine/bridge/daw.cpp engine/storage/storage.cpp
+          git diff --check
+          git add engine/bridge/daw.cpp engine/storage/storage.cpp
+          git diff --cached --quiet && exit 0
+          git commit -m 'style(core): format integrated mixer bridge and storage'
+          remote_head=$(git ls-remote origin refs/heads/codex/midi-only-export-ui | cut -f1)
+          test "$remote_head" = "$SOURCE_HEAD"
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/askpass.sh"
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          git push origin HEAD:refs/heads/codex/midi-only-export-ui
+          rm -f "$RUNNER_TEMP/askpass.sh"
