@@ -66,6 +66,7 @@ final class WaveformView: NSView {
     var onSelect: ((Int, Bool) -> Void)?
     /// Option+стрелки: сдвинуть всю группу на шаг сетки (-1/ +1).
     var onNudge: ((Int) -> Void)?
+    var isGesturing: Bool { gesture != nil }
     private var gesture: (kind: Int, x: CGFloat, start: UInt64, offset: UInt64, length: UInt64, fadeIn: UInt64, fadeOut: UInt64)?
     var projectFrames: UInt64 = 0
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }

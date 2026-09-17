@@ -13,6 +13,7 @@ final class TimelineRangeView: NSView {
     var onCommit: ((TimelineFrameRange) -> Bool)?
     var onToggle: (() -> Void)?
     var onClear: (() -> Void)?
+    var isGesturing: Bool { gesture != nil }
     private var gesture: TimelineRangeGesture?
     private var mouseDownX: CGFloat = 0
     private var didDrag = false

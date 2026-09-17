@@ -6,6 +6,8 @@ apps/macos/DesignSystem/DAWDesignTokens.swift
 apps/macos/DesignSystem/DAWIcon.swift
 apps/macos/Diagnostics.swift
 apps/macos/InspectorBrowserView.swift
+apps/macos/MixExportPolicy.swift
+apps/macos/MixExportUI.swift
 apps/macos/MixerWorkspaceView.swift
 apps/macos/PianoRollView.swift
 apps/macos/PinnedTrackHeaderView.swift

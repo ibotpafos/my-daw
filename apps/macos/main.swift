@@ -35,6 +35,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var saveCompletion: (() -> Void)?
     var saveStarted = Date()
     var saveError: String?
+    var mixExportInteraction: any MixExportInteraction = AppKitMixExportInteraction()
+    var mixExportDialogToken: UUID?
+    var mixExportDocumentID = UUID()
     var exportJob: OpaquePointer?
     var dawprojectJob: OpaquePointer?
     var exportURL: URL?
@@ -485,13 +488,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.onPan = { [weak self] id,value in self?.mixerSetPan(id,value) }
         mixerWorkspace.onDeleteBus = { [weak self] id in self?.deleteBusWithConfirmation(id) }
         wireInspectorBrowser()
-#if !DAW_WORKSPACE_TESTS
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         setupRecovery()
         loadSupportedAudioUnits()
         loadInstalledVST3()
 #endif
         refreshBrowserCatalog()
-#if !DAW_WORKSPACE_TESTS
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         transportTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             // Дрен MIDI-ring живёт в этом же цикле: транспорт, метры и тейк
             // опрашиваются одной 10 Гц-проверкой, отдельного таймера нет.
@@ -500,7 +503,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if let timer = transportTimer { RunLoop.main.add(timer, forMode: .common) }
 #endif
         refresh()
-#if !DAW_WORKSPACE_TESTS
+#if !DAW_WORKSPACE_TESTS && !DAW_MIX_EXPORT_TESTS
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in self?.restoreWorkspaceLayout() }
         DispatchQueue.main.async { [weak self] in self?.offerRecovery() }
@@ -573,6 +576,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return false
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(exportMix) { return mixExportPolicy().canExport }
         if menuItem.action == #selector(togglePlayStop) || menuItem.action == #selector(soloSelectedTrack)
             || menuItem.action == #selector(muteSelectedTrack) || menuItem.action == #selector(armSelectedTrack) {
             if isEditingText { return false }
@@ -731,6 +735,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     /// одну точку (см. v0-оценку кадра в daw.h).
     @objc func toggleMidiRecording() {
         if midiTakeArmed { stopMidiTake(); return }
+        guard !exportBusy, mixExportDialogToken == nil else { storageMessage("Сначала завершите или отмените экспорт."); return }
         guard !isRecording else { storageMessage("Сначала заверши аудиозапись."); return }
         guard midiInputID != 0 else { storageMessage("Выбери MIDI-вход в инспекторе дорожки."); return }
         guard let track = inspectorTrackID, let clip = midiClipIndex else { storageMessage("Выбери MIDI-дорожку с клипом — в него лягут ноты."); return }
@@ -1155,7 +1160,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         mixerKinds[0] = .master;mixerStrips.append(MixerStripModel(id:0,kind:.master,title:"MASTER",color:.systemOrange,volumeDb:snapshot.master_gain_db,outputName:"Output 1–2",inserts:mixerInsertSummaries(owner:Int32(DAW_INSERT_OWNER_MASTER),ownerID:0),isSelected:selectedMixerID == 0,isAutomationRead:automationMode == 0));mixerWorkspace.strips=mixerStrips;timelineRuler.projectFrames=min(48000*600,max(48000*12,transport.duration+48000*2));timelineRuler.playhead=transport.frame
         reloadAutomationArmPopup()
-        exportButton.isEnabled = hasAudio && !exportBusy && !isRecording
+        updateMixExportAvailability()
         dawprojectButton.isEnabled = !exportBusy && !isRecording
         cancelExportButton.isEnabled = exportBusy
         cancelExportButton.isHidden = !exportBusy
@@ -1383,7 +1388,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func setProjectControlsEnabled(_ enabled: Bool) {
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
-            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton { button.isEnabled = enabled }
+            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== exportButton { button.isEnabled = enabled }
             if let popup = view as? NSPopUpButton { popup.isEnabled = enabled }
             if let slider = view as? NSSlider { slider.isEnabled = enabled }
             if let field = view as? NSTextField, field.isEditable { field.isEnabled = enabled }
@@ -1391,6 +1396,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if let contentView = window.contentView { visit(contentView) }
         recordButton.isEnabled = true
+        updateMixExportAvailability()
     }
     func recordingAlert(_ message: String) {
         DAWLog.audio.error("Запись недоступна: \(message, privacy: .public)")
@@ -1617,7 +1623,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func pollTransport() {
         guard session != nil else { return }
-        defer { updateWorkspaceChrome(); for view in midiArrangementViews { view.playhead = playheadFrame } }
+        defer { updateWorkspaceChrome(); updateMixExportAvailability(); for view in midiArrangementViews { view.playhead = playheadFrame } }
         updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard check(daw_get_recording(session,&recording)) else {
@@ -1935,7 +1941,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let job = ids.withUnsafeBufferPointer { daw_begin_stem_export_tracks(session, url.path, format, &options, $0.baseAddress, UInt32(ids.count)) }
         guard let job else { _ = check(1); return }
         exportJob = job; exportURL = url; exportStarted = Date(); exportMessage = nil; exportMessageUntil = .distantPast
-        exportButton.isEnabled = false; cancelExportButton.isEnabled = true; recordButton.isEnabled = false
+        updateMixExportAvailability(); cancelExportButton.isEnabled = true; recordButton.isEnabled = false
         updateStorageStatus()
     }
     /// Группировка дорожек: шина и есть папка. Подменю предлагает создать
@@ -2358,6 +2364,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 }
 #if DAW_WORKSPACE_TESTS
 runWorkspaceIntegrationTests()
+#elseif DAW_MIX_EXPORT_TESTS
+runMixExportIntegrationTests()
 #else
 let app = NSApplication.shared
 let delegate = DraftApp()
