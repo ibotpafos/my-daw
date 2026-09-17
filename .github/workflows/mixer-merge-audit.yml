@@ -1,27 +1,89 @@
-name: Mixer merge audit
+name: Mixer integrated main validation
 on:
   push:
     branches: [codex/mixer-console]
-    paths: ['.github/workflows/mixer-merge-audit.yml']
+    paths: ['.github/workflows/mixer-merge-audit.yml', 'scripts/mixer-integration-resolve.py']
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: mixer-main-integration
+  cancel-in-progress: false
 jobs:
-  history:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  integrate:
+    if: github.repository == 'ibotpafos/my-daw' && github.ref == 'refs/heads/codex/mixer-console'
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      MAIN: 176aeb314983295fcf234915ac97de362d567607
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Archive exact histories without publishing code
+      - name: Integrate pinned main preserving both histories and reviewed outputs
+        id: source
+        shell: bash
         run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/codex/mixer-console | cut -f1)" = "$GITHUB_SHA"
+          test "$(git hash-object scripts/mixer-integration-resolve.py)" = 7e5e613ee9f3f21302005ec7ea41a4c6f4c4b700
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-commit --no-ff "$MAIN" || test "$?" = 1
+          python3 scripts/mixer-integration-resolve.py
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git rm scripts/mixer-integration-resolve.py
+          git diff --cached --check
+          # Workflow files were reconciled separately using the authorized connector.
+          # This publisher may only change source, never workflows or permissions.
+          test -z "$(git diff --cached --name-only -- .github/workflows)"
+          git commit -m 'merge(mixer): integrate current main and preserve piano-roll transactions'
           mkdir -p validation
-          git rev-parse HEAD refs/remotes/origin/main > validation/revisions.txt
-          git bundle create validation/repository.bundle HEAD refs/remotes/origin/main
-          git bundle verify validation/repository.bundle
+          git rev-parse HEAD > validation/revision.txt
+          git archive --format=tar.gz --output=validation/source.tar.gz HEAD
+          git bundle create validation/integrated.bundle HEAD
+      - name: Full Swift 6 application typecheck
+        run: bash scripts/typecheck-macos-ui.sh
+      - name: Mixer AppKit controls and routing
+        run: bash scripts/test-mixer-ui.sh
+      - name: Piano roll AppKit smoke
+        run: bash scripts/test-piano-roll-appkit.sh
+      - name: Piano roll musical transforms and edit safety
+        run: bash scripts/test-piano-roll-transforms.sh
+      - name: Sanitized core and complete regression
+        shell: bash
+        run: |
+          set -eo pipefail
+          cmake --preset sanitizers 2>&1 | tee validation/configure.log
+          cmake --build --preset sanitizers 2>&1 | tee validation/core-build.log
+          ctest --preset sanitizers --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Complete application and production C ABI adapters
+        shell: bash
+        run: |
+          set -eo pipefail
+          bash scripts/build-macos.sh 2>&1 | tee validation/app-build.log
+          bash scripts/test-mixer-groups.sh 2>&1 | tee validation/mixer-integration.log
+          bash scripts/test-piano-roll-bridge.sh 2>&1 | tee validation/piano-integration.log
+          ditto -c -k --sequesterRsrc --keepParent 'build/My DAW.app' validation/My-DAW-app.zip
+          cp build/build-manifest.json validation/
+      - name: Documentation and complete non-hardware ABI coverage
+        run: |
+          python3 scripts/check_docs.py
+          python3 scripts/e2e_coverage.py --strict
+      - name: Publish only the tested integration to the feature branch
+        run: |
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$MAIN"
+          test "$(git ls-remote origin refs/heads/codex/mixer-console | cut -f1)" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/codex/mixer-console
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          name: mixer-merge-history-${{ github.sha }}
-          path: validation/
-          retention-days: 2
+          name: mixer-main-integration-${{ github.run_id }}
+          path: |
+            validation/
+            build/mixer-ui.png
+            build/mixer-routing-ui.png
+            build/mixer-send-ui.png
+            build/mixer-group-ui.png
+          retention-days: 7
