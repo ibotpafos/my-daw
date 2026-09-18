@@ -57,6 +57,15 @@ int main() {
         rejects([&] { validateAudioDeviceConfiguration(bad); });
         bad = config; bad.inputChannel = 128;
         rejects([&] { validateAudioDeviceConfiguration(bad); });
+        bad = config; bad.inputChannels = 3;
+        rejects([&] { validateAudioDeviceConfiguration(bad); });
+        bad = config; bad.inputChannels = 2; bad.inputRight = bad.inputChannel;
+        rejects([&] { validateAudioDeviceConfiguration(bad); });
+        config.inputChannels = 2; config.inputChannel = 0; config.inputRight = 1;
+        check(resolveAudioDevice(config, devices, AudioDeviceDirection::Input).id == 7);
+        config.inputRight = 1; devices[0].inputChannels = 1;
+        rejects([&] { resolveAudioDevice(config, devices, AudioDeviceDirection::Input); });
+        devices[0].inputChannels = 2; config.inputChannels = 1;
         // Every legal stereo pair routes exactly once, with silence everywhere else.
         for (uint32_t channels : {2u, 4u, 8u, 128u}) {
             for (uint32_t left = 0; left < channels; ++left) {
