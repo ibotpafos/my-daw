@@ -24,6 +24,19 @@ int main(int argc,char** argv){try{
     daw::RecordingWriter writer(normal,12000,20,16);writer.writeMono(values,5);auto clip=writer.finish();
     CHECK(clip->frames()==5&&clip->samples()[0]==0.25f&&clip->samples()[1]==0.25f&&clip->samples()[4]==0&&clip->samples()[6]==16);
     auto recovered=daw::recoverTake(normal);CHECK(recovered.startFrame==12000&&recovered.clip->samples()==clip->samples());
+    // Stereo capture preserves independent channels in the same recoverable
+    // interleaved file. A 30-minute capacity does not allocate 30 minutes of
+    // RAM: only the bounded ring is resident; this tiny fixture proves the
+    // capacity path without manufacturing a giant test asset.
+    auto stereoPath=(root/"stereo.mydawtake").string();
+    daw::RecordingWriter stereo(stereoPath,24000,48000ULL*60*30,32,0,2);
+    float sl[]={0.1f,0.2f,0.3f},sr[]={-0.1f,-0.2f,-0.3f};
+    stereo.writeStereo(sl,sr,3);auto stereoClip=stereo.finish();
+    CHECK(stereoClip->frames()==3&&std::abs(stereoClip->samples()[0]-0.1f)<1e-6f&&
+          std::abs(stereoClip->samples()[1]+0.1f)<1e-6f&&
+          std::abs(stereoClip->samples()[4]-0.3f)<1e-6f&&
+          std::abs(stereoClip->samples()[5]+0.3f)<1e-6f);
+    CHECK(daw::recoverTake(stereoPath).clip->samples()==stereoClip->samples());
     std::vector<float> loopAudio(20);for(size_t i=0;i<10;++i)loopAudio[i*2]=loopAudio[i*2+1]=float(i);
     daw::Clip loopRecording(std::move(loopAudio));auto passes=daw::splitLoopPasses(loopRecording,4);
     CHECK(passes.size()==3&&passes[0]->frames()==4&&passes[1]->frames()==4&&passes[2]->frames()==2);
