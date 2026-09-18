@@ -177,6 +177,38 @@ int main() {
             CHECK_OK(s, daw_record_cancel(s)); CHECK(std::filesystem::exists(lost));
             recording_fixture_failure(0);
         }
+        // 6. Clipboard transactions cannot interrupt either ordinary or loop
+        // capture. Rejections retain both the immutable board and the project.
+        for (bool loop : {false, true}) {
+            Bridge session; auto* s = session.get();
+            const auto source = root / (loop ? "clipboard-loop.wav" : "clipboard-normal.wav");
+            writeWavFixture(source, std::vector<float>(4096 * 2, 0.1f), kProjectRate, 2, "f32");
+            CHECK_OK(s, daw_import_wav(s, source.c_str(), "Clipboard source", rev(s)));
+            const uint32_t index = 0;
+            CHECK_OK(s, daw_capture_clipboard(s, 1, 0, &index, 1, 0, rev(s)));
+            const auto before = dumpOf(s);
+            const auto revision = rev(s);
+            if (loop) CHECK_OK(s, daw_set_loop(s, 1, 0, 1024));
+            const auto raw = (root / (loop ? "clipboard-loop.mydawtake" : "clipboard-normal.mydawtake")).string();
+            if (loop) CHECK_OK(s, daw_record_start_take(s, 1, 0, raw.c_str()));
+            else CHECK_OK(s, daw_record_start(s, 0, raw.c_str()));
+            pump(0.2f, 64);
+            CHECK(recording_fixture_active() && capture(s).frames == 64);
+            CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 0, revision));
+            CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 1, revision));
+            CHECK_REJ(s, daw_paste_clipboard(s, 1, 4096, revision));
+            auto board = abi<daw_clipboard_info>();
+            CHECK_OK(s, daw_get_clipboard(s, &board));
+            CHECK(board.kind == 1 && board.clip_count == 1 && board.length == 4096);
+            CHECK(dumpOf(s) == before && rev(s) == revision);
+            CHECK(recording_fixture_active() && capture(s).frames == 64);
+            CHECK_OK(s, daw_record_cancel(s));
+            CHECK(!recording_fixture_active() && std::filesystem::exists(raw));
+            CHECK_OK(s, daw_paste_clipboard(s, 1, 4096, revision));
+            CHECK(trackById(s, 1).clip_count == 2 && rev(s) == revision + 1);
+            CHECK_OK(s, daw_undo(s, rev(s)));
+            CHECK(sameContent(dumpOf(s), before));
+        }
         std::cout << "PASS: duplex recording bridge, dry PCM, pre-roll, live MON, loop/normal commit, Undo/reopen/export, cap and recovery (simulated device, real core).\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
