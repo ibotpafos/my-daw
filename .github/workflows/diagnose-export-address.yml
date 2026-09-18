@@ -1,0 +1,81 @@
+name: Diagnose intermittent export memory fault
+on:
+  push:
+    branches: [codex/diagnose-export-address-20260918]
+permissions:
+  contents: read
+jobs:
+  export-memory:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 46d1cab9023528eb417f9aff1af044cc37bbf09b
+          persist-credentials: false
+      - name: Build unmodified export test and normal core
+        run: |
+          set -euo pipefail
+          mkdir -p build/export-memory
+          { git rev-parse HEAD; sw_vers; xcrun swiftc --version; } > build/export-memory/source.txt
+          ./scripts/build-macos.sh > build/export-memory/build-normal.log 2>&1
+          python3 - <<'PY'
+          from pathlib import Path
+          script = Path('scripts/test-mix-export-ui.sh').read_text()
+          assert script.count("python3 - <<'PY'") == 1
+          prefix = script.split("python3 - <<'PY'")[0]
+          Path('scripts/diagnose-export-compile.sh').write_text(prefix)
+          Path('scripts/diagnose-export-asan-compile.sh').write_text(prefix.replace('xcrun swiftc ', 'xcrun swiftc -g -sanitize=address ', 1))
+          PY
+          bash scripts/diagnose-export-compile.sh > build/export-memory/compile-normal.log 2>&1
+          cp build/mix-export-ui/export-tests build/export-memory/export-normal
+      - name: Instrument all host C++ and Objective-C++ plus Swift with ASan
+        run: |
+          set -euo pipefail
+          cmake --preset debug -DCMAKE_CXX_FLAGS='-fsanitize=address -fno-omit-frame-pointer' -DCMAKE_OBJCXX_FLAGS='-fsanitize=address -fno-omit-frame-pointer' -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address' > build/export-memory/configure-asan.log 2>&1
+          cmake --build --preset debug --target daw_core daw_au_scanner daw_au_scan_helper --parallel 2 > build/export-memory/build-asan.log 2>&1
+          bash scripts/diagnose-export-asan-compile.sh > build/export-memory/compile-asan.log 2>&1
+          cp build/mix-export-ui/export-tests build/export-memory/export-asan
+      - name: Fixed ASan and ordinary repetitions, stop on the first fault
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, time
+          root = pathlib.Path('build/export-memory')
+          reports = []
+          for mode in ['asan', 'normal']:
+              for index in range(10):
+                  proof = pathlib.Path('build/mix-export-ui/proof.json')
+                  proof.unlink(missing_ok=True)
+                  logfile = root / f'{mode}-{index:02d}.log'
+                  with logfile.open('w') as log:
+                      env = dict(os.environ)
+                      if mode == 'asan':
+                          env['ASAN_OPTIONS'] = 'abort_on_error=1:detect_leaks=0:symbolize=1'
+                      process = subprocess.Popen([str(root / f'export-{mode}')], stdout=log, stderr=subprocess.STDOUT, env=env)
+                      try:
+                          status = process.wait(timeout=120)
+                      except subprocess.TimeoutExpired:
+                          process.kill(); process.wait()
+                          status = 124
+                  proof_result = json.loads(proof.read_text()) if proof.exists() else None
+                  item = {'mode':mode,'iteration':index,'pid':process.pid,'exit':status,'proof':proof_result}
+                  reports.append(item)
+                  (root / 'results.json').write_text(json.dumps(reports,indent=2))
+                  print(json.dumps(item),flush=True)
+                  if status != 0 or not proof_result or proof_result.get('assertions') != 112:
+                      print(logfile.read_text()[-100000:],flush=True)
+                      raise SystemExit('Export diagnostic failed; failure is preserved, not retried to PASS')
+          PY
+      - name: Preserve diagnostics without shipping temporary executables
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: export-memory-${{ github.run_id }}
+          path: |
+            build/export-memory/*.log
+            build/export-memory/*.txt
+            build/export-memory/*.json
+          if-no-files-found: error
+          retention-days: 7
