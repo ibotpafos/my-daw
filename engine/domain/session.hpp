@@ -125,6 +125,14 @@ std::vector<WorkflowOperation> prepareVocalTracks(const State& state,
                                                    const std::vector<uint64_t>& selectedTrackIDs,
                                                    const std::string& namingBase,
                                                    const std::vector<VocalGainSuggestion>& suggestions);
+// Revision-scoped references: never keep them after a project mutation.
+enum class ClipSelectionEdit : uint8_t { Move=1, Copy=2, Delete=3 };
+struct ClipSelectionRef {
+    uint64_t trackID = 0;
+    uint32_t index = 0;
+    bool midi = false;
+};
+class ClipClipboard;
 class Session {
 public:
     const State& state() const { return current; }
@@ -262,20 +270,28 @@ public:
     // unity-center law as the track fader's pan.
     void setClipPan(uint64_t id, uint32_t clipIndex, double pan, uint64_t expected);
     // Multi-selection group operations: one revision for the whole group.
-    // deleteClips sorts/uniques indices and keeps the track non-empty through
-    // validate(); nudgeClips translates selected regions together and re-sorts
+    // deleteClips sorts/uniques indices and may leave an empty audio lane;
+    // nudgeClips translates selected regions together and re-sorts
     // by start, so overlaps/crossfades stay validate()'s business.
     void deleteClips(uint64_t id, std::vector<uint32_t> indices, uint64_t expected);
     void nudgeClips(uint64_t id, std::vector<uint32_t> indices, int64_t deltaFrames, uint64_t expected);
     void setMidiClipColor(uint64_t trackID, uint32_t index, uint32_t color, uint64_t expected);
     void transposeMidiClip(uint64_t trackID, uint32_t index, int8_t semitones, uint64_t expected);
     void quantizeMidiClip(uint64_t trackID, uint32_t index, double gridBeats, uint64_t expected);
-    // Cross-track clipboard moves. Copy keeps the source; move erases it, so a
-    // lone region cannot leave its imported track (same rule as deleteClip).
-    // Paste of an audio region requires the target track to carry the very same
-    // take at the region's take index (take indices are track-local). MIDI keeps
-    // its lane: validate() only requires non-negativity. start/limits/overlaps
-    // and every capacity rule stay owned by validate().
+    // Transfers intern the immutable source in the target's existing base/take
+    // table. Empty audio region lists retain sources, routing and plugin state.
+    // Value clipboard for audio/MIDI groups on one source track. Copy is read-only;
+    // cut removes the group atomically. Paste never dereferences the original track.
+    ClipClipboard captureClips(uint64_t track, std::vector<uint32_t> indices, bool midi,
+                               bool cut, uint64_t expected);
+    ClipClipboard captureClipSelection(const std::vector<ClipSelectionRef>&, bool cut, uint64_t expected);
+    void pasteClips(const ClipClipboard&, uint64_t target, uint64_t start, uint64_t expected);
+    void transferClips(uint64_t source, std::vector<uint32_t> indices, bool midi,
+                       uint64_t target, uint64_t start, bool copy, uint64_t expected);
+    // One atomic edit for a bounded mixed audio/MIDI selection across tracks.
+    // trackOffset refers to the current project order, including unselected rows.
+    void editClipSelection(const std::vector<ClipSelectionRef>&, ClipSelectionEdit,
+                           int64_t deltaFrames, int32_t trackOffset, uint64_t expected);
     void copyClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     void moveClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     void copyMidiClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);

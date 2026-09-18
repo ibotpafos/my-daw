@@ -32,6 +32,7 @@ add_library(daw_core STATIC
   engine/audio/recording.cpp
   engine/audio/duplex_capture.cpp
   engine/audio/renderer.cpp
+  engine/domain/clip_clipboard.cpp
   engine/domain/session.cpp
   engine/domain/mixer_gesture.cpp
   engine/domain/send_controls.cpp

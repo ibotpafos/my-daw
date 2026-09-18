@@ -278,7 +278,6 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         menu.addItem(MixerMenuItem("Clear left pins",enabled:!consoleState.leftPinnedIDs.isEmpty) { [weak self] in self?.consoleState.clearPins(.left);self?.presentationChanged() })
         menu.addItem(MixerMenuItem("Clear right pins",enabled:!consoleState.rightPinnedIDs.isEmpty) { [weak self] in self?.consoleState.clearPins(.right);self?.presentationChanged() })
         if !consoleState.leftPinnedIDs.isEmpty || !consoleState.rightPinnedIDs.isEmpty {
-            menu.addItem(.separator())
             let names=Dictionary(uniqueKeysWithValues:strips.map{($0.id,$0.title)})
             for id in consoleState.leftPinnedIDs { let item=NSMenuItem(title:"Left · \(names[id] ?? "Channel")",action:nil,keyEquivalent:"");item.isEnabled=false;menu.addItem(item) }
             for id in consoleState.rightPinnedIDs { let item=NSMenuItem(title:"Right · \(names[id] ?? "Channel")",action:nil,keyEquivalent:"");item.isEnabled=false;menu.addItem(item) }
@@ -310,7 +309,10 @@ final class MixerWorkspaceView: NSView, NSSearchFieldDelegate {
         }
     }
 
-    func resetFocus() { focused = false; focus.state = .off }
+    /// Projection only: the workspace owns focus. Do not emit onFocus here,
+    /// otherwise toolbar and dock navigation form a recursive feedback loop.
+    func setWorkspaceFocus(_ value: Bool) { focused = value; focus.state = value ? .on : .off }
+    func resetFocus() { setWorkspaceFocus(false) }
     func resetPeaks() { stripViews.values.forEach { $0.meter.resetClip() }; inspector?.meter.resetClip(); onResetPeaks?() }
 
     func updateMeters(_ snapshots: [UInt64:MixerMeterSnapshot]) {

@@ -16,6 +16,8 @@ enum AudioClipDrawing {
     static func draw(_ clip: ClipGeometry, title: String, index: Int, rect: NSRect, accent: NSColor,
                      selected: Bool, hovered: Bool, fallbackPeaks: [Float], sourceFrames: UInt64) {
         guard rect.width > 0, rect.height > 0, clip.length > 0 else { return }
+        if let context = NSGraphicsContext.current?.cgContext,
+           !rect.insetBy(dx: -2, dy: -2).intersects(context.boundingBoxOfClipPath) { return }
         let color = color(for: clip, accent: accent)
         let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
         color.withAlphaComponent(clip.muted ? 0.12 : (selected ? 0.38 : 0.22)).setFill(); path.fill()

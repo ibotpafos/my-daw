@@ -83,6 +83,7 @@ func runWorkspaceMixerTests(_ app: DraftApp) -> Int {
     app.midiTakeArmed = false; app.refresh(); workspace.resetLayout(); settle()
     expect(app.exportButton.isEnabled && app.mixerWorkspace.editingEnabled,
            "Cancelled capture preview leaves application usable")
+    checks += runWorkspaceScreenTests(app)
     print("PASS: \(checks) joined workspace/mixer assertions")
     return checks
 }

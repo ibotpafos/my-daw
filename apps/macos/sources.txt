@@ -27,6 +27,8 @@ apps/macos/Workspace/TimelineRangeEditing.swift
 apps/macos/Workspace/TimelineRangeView.swift
 apps/macos/Workspace/WorkspaceCommandBar.swift
 apps/macos/Workspace/WorkspaceLayout.swift
+apps/macos/Workspace/WorkspaceScreen.swift
+apps/macos/Workspace/WorkspaceScreenNavigation.swift
 apps/macos/Workspace/RackParameter.swift
 apps/macos/Workspace/RackParameterPanelView.swift
 apps/macos/Workspace/RackParameterEditing.swift
@@ -76,4 +78,14 @@ apps/macos/Workspace/ArrangementOverviewBinding.swift
 apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
 apps/macos/AudioHardwareSettings.swift
+apps/macos/Workspace/ArrangementEditingModel.swift
+apps/macos/Workspace/ArrangementToolBar.swift
+apps/macos/Workspace/ArrangementEditingController.swift
+apps/macos/Workspace/ArrangementEditingCommands.swift
+apps/macos/Workspace/ArrangementClipboardBinding.swift
 apps/macos/RecordingUI.swift
+apps/macos/Workspace/ArrangementClipboardCommands.swift
+apps/macos/Workspace/RecordCompSelection.swift
+apps/macos/Workspace/RecordTakeLaneView.swift
+apps/macos/Workspace/RecordingWorkspaceView.swift
+apps/macos/Workspace/RecordingWorkspaceBinding.swift
