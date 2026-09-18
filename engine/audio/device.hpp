@@ -12,7 +12,10 @@ constexpr uint32_t audioDeviceUIDBytes = 480;
 constexpr uint32_t audioDeviceMaximumFrames = 4096;
 struct AudioDeviceConfiguration {
     std::string inputUID, outputUID;
-    uint32_t inputChannel = 0, outputLeft = 0, outputRight = 1;
+    // recordingChannels is 1 (mono) or 2 (stereo). inputChannel is the mono/left
+    // source; inputRight is consulted only for stereo capture.
+    uint32_t inputChannel = 0, inputRight = 1, recordingChannels = 1;
+    uint32_t outputLeft = 0, outputRight = 1;
     bool operator==(const AudioDeviceConfiguration&) const = default;
 };
 struct AudioDeviceInfo {
