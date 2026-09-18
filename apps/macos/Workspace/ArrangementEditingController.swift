@@ -85,6 +85,12 @@ final class ArrangementEditingController: ArrangementWindowEditing {
             items.removeAll(); syncSelection(); return
         }
         if let g = gesture, g.lane.view.window !== app.window { cancelGesture() }
+        // An inspector/track-header selection owns the legacy highlight until
+        // a lane is focused. Do not erase its remembered clip on every refresh.
+        if gesture == nil, !restoreKeyboardFocus, let focused = focusTrack,
+           app.selectedMixerID != focused { focusTrack = nil; selection.removeAll() }
+        let remembered = documentID == app.midiDocumentID && restoringSelection.isEmpty ?
+            items.filter { selection.contains($0.key) } : []
         if documentID != app.midiDocumentID || projectionRevision != revision {
             cancelGesture()
             selection.removeAll()
@@ -115,6 +121,14 @@ final class ArrangementEditingController: ArrangementWindowEditing {
             }
         }
         selection = selection.intersection(Set(items.map(\.key)))
+        // Unrelated edits (Solo, inserts, sends) keep the selected geometry.
+        // Match the new projection, not an index that may now refer elsewhere.
+        for previous in remembered {
+            if let item = items.first(where: { $0.key.track == previous.key.track &&
+                $0.key.kind == previous.key.kind && $0.bounds == previous.bounds }) {
+                selection.insert(item.key)
+            }
+        }
         for (track, kind, bounds) in restoringSelection {
             if let item = items.first(where: { !selection.contains($0.key) && $0.key.track == track &&
                 $0.key.kind == kind && $0.bounds.start == bounds.start && $0.bounds.length == bounds.length }) {
@@ -185,6 +199,10 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         for lane in lanes {
             let indices = selection.filter { $0.track == lane.track }.map(\.index).sorted()
             if let wave = lane.view as? WaveformView {
+                if focusTrack == nil {
+                    wave.selectionActive = lane.track == app.selectedMixerID
+                    continue
+                }
                 wave.selectedIndices = indices; wave.selectedIndex = indices.first ?? 0
                 wave.selectionActive = !indices.isEmpty; wave.needsDisplay = true
                 app.clipSelection[lane.track] = indices
@@ -209,6 +227,11 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         let handle = min(7, box.width / 4)
         if local.x < box.minX + handle { return .trimLeft }
         if local.x > box.maxX - handle { return .trimRight }
+        if item.key.kind == .audio, local.y > box.maxY - 13 {
+            let fadeWidth = max(10, min(28, box.width * 0.22))
+            if local.x < box.minX + fadeWidth { return .fadeLeft }
+            if local.x > box.maxX - fadeWidth { return .fadeRight }
+        }
         return .move
     }
     func updateCursor(at point: NSPoint, modifiers: NSEvent.ModifierFlags) {
@@ -216,8 +239,11 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         switch tool {
         case .pointer:
             if let item = hit(at: point, in: lane) {
-                if action(at: point, item: item, lane: lane) != .move { NSCursor.resizeLeftRight.set() }
-                else { (modifiers.contains(.option) ? NSCursor.dragCopy : NSCursor.openHand).set() }
+                switch action(at: point, item: item, lane: lane) {
+                case .trimLeft, .trimRight: NSCursor.resizeLeftRight.set()
+                case .fadeLeft, .fadeRight: NSCursor.crosshair.set()
+                default: (modifiers.contains(.option) ? NSCursor.dragCopy : NSCursor.openHand).set()
+                }
             } else { NSCursor.arrow.set() }
         case .hand: (gesture == nil ? NSCursor.openHand : NSCursor.closedHand).set()
         case .range, .fade: NSCursor.crosshair.set()
@@ -236,7 +262,8 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         case .keyDown: return handleKey(event)
         case .mouseMoved, .flagsChanged:
             let point = event.type == .flagsChanged ? app.window.mouseLocationOutsideOfEventStream : event.locationInWindow
-            guard lane(at: point) != nil else { if gesture == nil { NSCursor.arrow.set() }; return false }
+            guard let hovered = lane(at: point) else { if gesture == nil { NSCursor.arrow.set() }; return false }
+            if event.type == .mouseMoved { (hovered.view as? WaveformView)?.mouseMoved(with: event) }
             updateCursor(at: point, modifiers: event.modifierFlags); return true
         case .rightMouseDown:
             guard let lane = lane(at: event.locationInWindow), let item = hit(at: event.locationInWindow, in: lane) else { return false }
