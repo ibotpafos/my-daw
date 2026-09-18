@@ -697,6 +697,28 @@ int daw_remove_marker(daw_session*, uint64_t frame, uint64_t expected_revision);
  * to resolve the same take source at the same take start (take 0 is the base
  * audio; indices are track-local), and region overlap follows the crossfade
  * rule. MIDI clips keep their lane; note and clip limits stay domain-owned. */
+/* Document-owned value clipboard (not the system pasteboard). Audio buffers
+   are retained immutably, MIDI/region properties are copied. Capture reads 1–256
+   indices from ONE track/kind (midi=0/1); cut=1 removes them as one Undo step.
+   Copy does not dirty the project. Paste survives source edits/deletion/Undo and
+   can be repeated. A failed operation preserves both project and old clipboard.
+   Load/destroy/clear releases it. All calls run on the session owner thread;
+   capture and paste reject active audio/MIDI capture and domain gestures. */
+typedef struct daw_clipboard_info {
+    uint32_t struct_size;
+    uint32_t kind;       /* 0 empty, 1 audio, 2 MIDI */
+    uint32_t clip_count;
+    uint32_t reserved;
+    uint64_t length;     /* group span, including gaps */
+} daw_clipboard_info;
+int daw_capture_clipboard(daw_session*, uint64_t track_id, uint32_t midi,
+                         const uint32_t* indices, uint32_t count, uint32_t cut,
+                         uint64_t expected_revision);
+int daw_paste_clipboard(daw_session*, uint64_t target_track, uint64_t start,
+                       uint64_t expected_revision);
+int daw_get_clipboard(daw_session*, daw_clipboard_info*);
+int daw_clear_clipboard(daw_session*);
+
 int daw_copy_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
 int daw_move_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
 int daw_copy_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);

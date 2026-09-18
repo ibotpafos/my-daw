@@ -32,10 +32,10 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         var proposed: [ArrangementClipBounds] = []
     }
     struct Clipboard {
-        let key: ArrangementClipKey
-        let revision: UInt64
         let document: UUID
-        let cut: Bool
+        let kind: ArrangementClipKey.Kind
+        /// Geometry is UI metadata only. The session owns the immutable content.
+        let relativeBounds: [ArrangementClipBounds]
     }
     weak var app: DraftApp?
     weak var toolbar: ArrangementToolBar?
@@ -81,7 +81,7 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         // never with a newer session revision while the lane views are stale.
         let revision = app.revision
         guard currentRevision() == revision else {
-            cancelGesture(); selection.removeAll(); clipboard = nil; projectionRevision = nil
+            cancelGesture(); selection.removeAll(); projectionRevision = nil
             items.removeAll(); syncSelection(); return
         }
         if let g = gesture, g.lane.view.window !== app.window { cancelGesture() }
@@ -94,10 +94,11 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         if documentID != app.midiDocumentID || projectionRevision != revision {
             cancelGesture()
             selection.removeAll()
-            // An index-based clipboard must never silently name a different clip.
-            if clipboard?.revision != revision || clipboard?.document != app.midiDocumentID { clipboard = nil }
         }
-        if documentID != app.midiDocumentID { focusTrack = nil }
+        if documentID != app.midiDocumentID {
+            focusTrack = nil; clipboard = nil
+            _ = daw_clear_clipboard(app.session)
+        }
         documentID = app.midiDocumentID; projectionRevision = revision
         lanes = []; items = []
         for (row, track) in app.trackIDs.sorted(by: { $0.key < $1.key }) {

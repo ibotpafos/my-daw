@@ -110,7 +110,8 @@ int main(){try{
         { const auto& t=s.state().tracks[2];
           CHECK(t.regions.size()==2&&t.regions[1].start==96000&&t.regions[1].color==0xFF0000u&&std::abs(t.regions[1].gain+3.5)<1e-9);
           CHECK(s.state().tracks[0].regions.size()==1); }                   // source keeps its clip
-        rejectsMessage("The target track does not share the clip's audio source",[&]{s.copyClipToTrack(1,0,2,0,6);});
+        // Foreign sources are supported; the occupied destination still rejects overlap.
+        rejectsMessage("Crossfade must leave audible material in both clips",[&]{s.copyClipToTrack(1,0,2,0,6);});
         rejectsMessage("Audio clip not found",[&]{s.copyClipToTrack(1,5,3,0,6);});
         rejectsMessage("Track not found",[&]{s.copyClipToTrack(1,0,99,0,6);});
         CHECK(s.state().revision==6);
@@ -118,7 +119,8 @@ int main(){try{
         s.moveClipToTrack(3,0,3,240000,6);                                  // rev 7 — same-track move reorders
         { const auto& t=s.state().tracks[2];
           CHECK(t.regions.size()==2&&t.regions[0].start==96000&&t.regions[1].start==240000); }
-        rejectsMessage("The last clip keeps the imported audio attached to its track",[&]{s.moveClipToTrack(1,0,3,0,7);});
+        // The last clip is transferable, but stale revision protection remains mandatory.
+        rejectsMessage("Revision conflict: refresh the project",[&]{s.moveClipToTrack(1,0,3,0,6);});
         CHECK(s.state().revision==7);
         const uint64_t moved=s.state().revision; s.undo(moved);              // rev 8
         CHECK(s.state().tracks[2].regions[0].start==0&&s.state().tracks[2].regions[1].start==96000);
@@ -198,7 +200,9 @@ int main(){try{
         rejectsMessage("No timeline space for the clip",[&]{s.nudgeClips(1,{2u},int64_t(48000ull*600),s.state().revision);});
         s.deleteClips(1,{0u,0u,1u},s.state().revision);                                      // rev 6: unique-merge deletes two
         CHECK(s.state().tracks[0].regions.size()==1&&starts()==std::vector<uint64_t>({400000}));
-        rejectsMessage("Audio track must contain 1\u2013256 clips",[&]{s.deleteClips(1,{0u},s.state().revision);});  // validate keeps the track non-empty
+        s.deleteClips(1,{0u},s.state().revision);
+        CHECK(s.state().tracks[0].regions.empty() && s.state().tracks[0].audio==clip);
+        s.undo(s.state().revision); CHECK(s.state().tracks[0].regions.size()==1);
         { const uint64_t cur=s.state().revision; s.undo(cur);                                // rev 7 -> back to three clips
           CHECK(s.state().tracks[0].regions.size()==3&&starts()==std::vector<uint64_t>({96000,240000,400000}));
           s.redo(s.state().revision);                                                        // rev 8 -> group delete again

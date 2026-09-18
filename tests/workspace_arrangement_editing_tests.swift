@@ -127,7 +127,9 @@ func runArrangementEditingTests(_ app: DraftApp) -> Int {
     selectFirst(); send(key(8, flags: [.command])); expect(editor.clipboard != nil, "Cmd-C uses focused MIDI, not stale audio selection")
     let beforeStale = revision()
     expect(daw_set_midi_clip_color(app.session, track, 0, 0xAA33FF, beforeStale) == 0, "External edit invalidates clip index reference")
-    send(key(9, flags: [.command])); expect(revision() == beforeStale + 1 && editor.clipboard == nil, "Stale clipboard cannot paste another clip")
+    // A captured value survives the source change, but a stale UI projection
+    // still cannot commit until it is refreshed.
+    send(key(9, flags: [.command])); expect(revision() == beforeStale + 1 && editor.clipboard != nil, "Value clipboard survives a source edit without a stale commit")
     app.refresh(); settle()
 
     selectFirst(); let beforeStaleDuplicate = revision()
@@ -224,6 +226,7 @@ func runArrangementEditingTests(_ app: DraftApp) -> Int {
     expect(editor.clipboard == nil && editor.selection.isEmpty, "New project clears document-local editing state")
     app.midiDocumentID = oldDocument; editor.bindProjection()
     editor.selectTool(.pointer); app.setTimelineZoom(1); app.restoreArrangementViewport(.zero)
+    checks += runArrangementClipboardTests(app)
     print("PASS: \(checks) native arrangement editing assertions")
     return checks
 }

@@ -117,8 +117,10 @@ int main(){try{
     rejects([&]{clipOps.setClipFades(1,0,300,300,5);}); CHECK(clipOps.state().revision==5);
     clipOps.duplicateClip(1,0,5); CHECK(clipOps.state().tracks[0].regions.size()==3 && clipOps.state().tracks[0].regions.back().start==1000);
     clipOps.deleteClip(1,1,6); CHECK(clipOps.state().tracks[0].regions.size()==2);
-    clipOps.deleteClip(1,1,7); rejects([&]{clipOps.deleteClip(1,0,8);});
-    clipOps.undo(8); CHECK(clipOps.state().tracks[0].regions.size()==2);
+    clipOps.deleteClip(1,1,7); clipOps.deleteClip(1,0,8);
+    CHECK(clipOps.state().tracks[0].regions.empty() && clipOps.state().tracks[0].audio==transient);
+    clipOps.undo(9); CHECK(clipOps.state().tracks[0].regions.size()==1);
+    clipOps.undo(10); CHECK(clipOps.state().tracks[0].regions.size()==2);
     auto constantClip=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.5f));
     daw::Session crossfade;crossfade.import("X",constantClip,0);crossfade.splitClip(1,0,500,1);crossfade.setCrossfade(1,0,100,2);
     CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500,0,100},{400,400,600,100,0}}));

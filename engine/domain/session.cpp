@@ -181,8 +181,8 @@ void validate(const State &state) {
                 ++audioAssets;
                 audioBytes += take.audio->samples().size() * sizeof(float);
             }
-            if (t.regions.empty() || t.regions.size() > 256)
-                throw Error("Audio track must contain 1–256 clips");
+            if (t.regions.size() > 256)
+                throw Error("Audio track supports at most 256 clips");
             uint64_t previousEnd = 0;
             bool first = true;
             size_t regionIndex = 0;
@@ -1637,79 +1637,27 @@ void Session::duplicateClip(uint64_t id, uint32_t index, uint64_t expected) {
     it->regions.push_back(copy);
     commit(std::move(next));
 }
-// Renderer semantics of Region::take: 0 is the track's base audio, n>0 is takes[n-1].
-namespace {
-std::shared_ptr<const Clip> takeAudio(const Track &t, uint32_t take) {
-    return take == 0 ? t.audio : (take - 1 < t.takes.size() ? t.takes[take - 1].audio : nullptr);
-}
-uint64_t takeStart(const Track &t, uint32_t take) {
-    return take == 0 ? t.baseStart : t.takes[take - 1].start;
-}
-}
 void Session::copyClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack,
                               uint64_t start, uint64_t expected) {
     check(expected);
-    State next = current;
-    auto src = std::find_if(next.tracks.begin(), next.tracks.end(), [sourceTrack](const auto &t) {
-        return t.id == sourceTrack;
-    });
-    if (src == next.tracks.end() || !src->audio || index >= src->regions.size())
+    const auto source = std::find_if(current.tracks.begin(), current.tracks.end(),
+                                     [sourceTrack](const Track &track) {
+                                         return track.id == sourceTrack;
+                                     });
+    if (source == current.tracks.end() || index >= source->regions.size())
         throw Error("Audio clip not found");
-    auto dst = std::find_if(next.tracks.begin(), next.tracks.end(), [targetTrack](const auto &t) {
-        return t.id == targetTrack;
-    });
-    if (dst == next.tracks.end())
-        throw Error("Track not found");
-    if (!dst->audio)
-        throw Error("Target track has no audio");
-    const Region source = src->regions[index];
-    // The take index points into the target's own take list; only an identical
-    // shared source at the same position makes the pasted region meaningful.
-    const auto pasted = takeAudio(*dst, source.take);
-    if (!pasted || pasted != takeAudio(*src, source.take) ||
-        takeStart(*dst, source.take) != takeStart(*src, source.take))
-        throw Error("The target track does not share the clip's audio source");
-    if (start > 48000 * 600 || source.length > 48000 * 600 - start)
-        throw Error("No timeline space for the clip");
-    if (dst->regions.size() >= 256)
-        throw Error("Track supports at most 256 clips");
-    auto copy = source;
-    copy.start = start;
-    dst->regions.push_back(std::move(copy));
-    commit(std::move(next));
+    transferClips(sourceTrack, {index}, false, targetTrack, start, true, expected);
 }
 void Session::moveClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack,
                               uint64_t start, uint64_t expected) {
     check(expected);
-    State next = current;
-    auto src = std::find_if(next.tracks.begin(), next.tracks.end(), [sourceTrack](const auto &t) {
-        return t.id == sourceTrack;
-    });
-    if (src == next.tracks.end() || !src->audio || index >= src->regions.size())
+    const auto source = std::find_if(current.tracks.begin(), current.tracks.end(),
+                                     [sourceTrack](const Track &track) {
+                                         return track.id == sourceTrack;
+                                     });
+    if (source == current.tracks.end() || index >= source->regions.size())
         throw Error("Audio clip not found");
-    auto dst = std::find_if(next.tracks.begin(), next.tracks.end(), [targetTrack](const auto &t) {
-        return t.id == targetTrack;
-    });
-    if (dst == next.tracks.end())
-        throw Error("Track not found");
-    if (!dst->audio)
-        throw Error("Target track has no audio");
-    const Region source = src->regions[index];
-    const auto pasted = takeAudio(*dst, source.take);
-    if (!pasted || pasted != takeAudio(*src, source.take) ||
-        takeStart(*dst, source.take) != takeStart(*src, source.take))
-        throw Error("The target track does not share the clip's audio source");
-    if (start > 48000 * 600 || source.length > 48000 * 600 - start)
-        throw Error("No timeline space for the clip");
-    if (src != dst && src->regions.size() == 1)
-        throw Error("The last clip keeps the imported audio attached to its track");
-    if (src != dst && dst->regions.size() >= 256)
-        throw Error("Track supports at most 256 clips");
-    auto copy = source;
-    copy.start = start;
-    src->regions.erase(src->regions.begin() + index);
-    dst->regions.push_back(std::move(copy));
-    commit(std::move(next));
+    transferClips(sourceTrack, {index}, false, targetTrack, start, false, expected);
 }
 void Session::copyMidiClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack,
                                   uint64_t start, uint64_t expected) {
@@ -1758,8 +1706,6 @@ void Session::deleteClip(uint64_t id, uint32_t index, uint64_t expected) {
     });
     if (it == next.tracks.end() || !it->audio || index >= it->regions.size())
         throw Error("Audio clip not found");
-    if (it->regions.size() == 1)
-        throw Error("The last clip keeps the imported audio attached to its track");
     it->regions.erase(it->regions.begin() + index);
     commit(std::move(next));
 }
