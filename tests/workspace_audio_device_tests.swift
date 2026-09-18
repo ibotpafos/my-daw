@@ -36,7 +36,8 @@ func runAudioDeviceSettingsTests(_ app: DraftApp) -> Int {
     controller.selectionChanged(controller.outputDevice)
     expect(controller.inputChannel.numberOfItems == 8 && controller.inputRight.numberOfItems == 8,
            "physical channel choices")
-    expect(controller.recordingMode.item(withTag: 2)?.isEnabled == true, "stereo mode available for multi-input device")
+    expect(controller.recordingMode.itemArray.first(where: { $0.tag == 2 })?.isEnabled == true,
+           "stereo mode available for multi-input device")
     controller.recordingMode.selectItem(withTag: 2)
     controller.selectionChanged(controller.recordingMode)
     controller.inputChannel.selectItem(withTag: 3)
