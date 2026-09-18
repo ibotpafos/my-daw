@@ -31,9 +31,15 @@ func runAudioDeviceSettingsTests(_ app: DraftApp) -> Int {
     controller.selectionChanged(controller.inputDevice)
     controller.outputDevice.selectItem(at: 1)
     controller.selectionChanged(controller.outputDevice)
-    expect(controller.inputChannel.numberOfItems == 8, "physical channel choices")
+    expect(controller.inputChannel.numberOfItems == 8 && controller.inputRight.numberOfItems == 8,
+           "physical channel choices")
+    expect(controller.recordingMode.item(withTag: 2)?.isEnabled == true, "stereo mode available for multi-input device")
+    controller.recordingMode.selectItem(withTag: 2)
+    controller.selectionChanged(controller.recordingMode)
     controller.inputChannel.selectItem(withTag: 3)
     controller.selectionChanged(controller.inputChannel)
+    controller.inputRight.selectItem(withTag: 4)
+    controller.selectionChanged(controller.inputRight)
     controller.outputLeft.selectItem(withTag: 4)
     controller.selectionChanged(controller.outputLeft)
     controller.outputRight.selectItem(withTag: 5)
@@ -41,10 +47,12 @@ func runAudioDeviceSettingsTests(_ app: DraftApp) -> Int {
     controller.applyButton.performClick(nil)
     let saved = try! AudioDevicePreferences.read(from: defaults)
     expect(saved.inputUID == "fixture-input" && saved.outputUID == "fixture-input", "stable UID, not display name")
-    expect(saved.inputChannel == 3 && saved.outputLeft == 4 && saved.outputRight == 5, "one-based UI maps to zero-based routing")
+    expect(saved.recordingChannels == 2 && saved.inputChannel == 3 && saved.inputRight == 4 &&
+           saved.outputLeft == 4 && saved.outputRight == 5, "stereo UI maps to zero-based routing")
     var raw = daw_audio_device_config()
     raw.struct_size = UInt32(MemoryLayout<daw_audio_device_config>.size); raw.version = UInt32(DAW_AUDIO_DEVICE_CONFIG_VERSION)
-    expect(daw_get_audio_device_config(app.session, &raw) == 0 && raw.input_channel == 3, "real C ABI applied")
+    expect(daw_get_audio_device_config(app.session, &raw) == 0 && raw.recording_channels == 2 &&
+           raw.input_channel == 3 && raw.input_right == 4, "real stereo C ABI applied")
     var after = daw_snapshot(); after.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
     expect(daw_get_snapshot(app.session, &after) == 0 && revision.revision == after.revision && revision.can_undo == after.can_undo, "no project/Undo mutation")
     choices.reverse(); controller.refreshButton.performClick(nil)
@@ -67,8 +75,9 @@ func runAudioDeviceSettingsTests(_ app: DraftApp) -> Int {
     }) == true, "settings menu mounted")
     if let fresh = daw_create() {
         app.restoreAudioDeviceConfiguration(fresh)
-        expect(daw_get_audio_device_config(fresh, &raw) == 0 && raw.input_channel == 3 && raw.output_right == 5,
-               "New session restores machine preferences through production helper")
+        expect(daw_get_audio_device_config(fresh, &raw) == 0 && raw.recording_channels == 2 &&
+               raw.input_channel == 3 && raw.input_right == 4 && raw.output_right == 5,
+               "New session restores stereo machine preferences through production helper")
         daw_destroy(fresh)
     } else { fatalError("fresh session") }
     // Capturing the actual view uses native controls, not a design mockup.
