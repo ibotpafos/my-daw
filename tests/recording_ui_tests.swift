@@ -125,5 +125,25 @@ func runWorkspaceIntegrationTests() {
     expect(!app.isRecording && recording_fixture_active() == 0, "failed start never claims success")
     expect(snapshot().revision == beforeFailure, "failed start preserves project")
     recording_fixture_failure(0)
+    // Timestamp failure takes the same native failure/recovery path, not a
+    // successful Stop. The shared capture processor rejects the bad PCM.
+    for fault in [Int32(3), Int32(4)] {
+        app.rangeStart = 100
+        let before = snapshot().revision
+        app.beginRecording(); _ = pump(512)
+        let clockRecovery = app.activeRecordingURL!
+        recording_fixture_failure(fault)
+        expect(pump(64, 0.75).allSatisfy { $0 == 0 }, "timestamp failure immediately silences output")
+        expect(!app.isRecording && recording_fixture_active() == 0, "clock fault ends device lifetime")
+        expect(snapshot().revision == before, "failed clock never commits partial take implicitly")
+        expect(app.transportLabel.stringValue.contains(fault == 3 ? "sample clock" : "sample timestamp"), "specific clock failure reaches native UI")
+        expect(app.transportLabel.stringValue.contains("восстановления"), "recovery action explained")
+        expect(app.playButton.isEnabled && app.exportButton.isEnabled, "controls restored after clock error")
+        expect(FileManager.default.fileExists(atPath: clockRecovery.path), "clock prefix remains recoverable")
+        recording_fixture_failure(0)
+        expect(daw_recover_take(app.session, clockRecovery.path, "Clock recovery", before) == 0, "real public recovery succeeds")
+        expect(snapshot().revision == before + 1, "recovery is one project command")
+        app.refresh()
+    }
     print("Recording native UI: \(checks) checks passed (simulated device, real AppKit/bridge/writer)")
 }

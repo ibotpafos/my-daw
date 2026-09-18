@@ -31,9 +31,25 @@ class MacDuplex final:public Duplex {
     static OSStatus callback(void* ref,AudioUnitRenderActionFlags* flags,const AudioTimeStamp* time,UInt32,UInt32 frames,AudioBufferList* output) noexcept {
         auto& self=*static_cast<MacDuplex*>(ref);
         if(!self.unit||!output||frames>maxSlice||output->mNumberBuffers!=2||output->mBuffers[0].mNumberChannels!=1||output->mBuffers[1].mNumberChannels!=1||!output->mBuffers[0].mData||!output->mBuffers[1].mData||frames>output->mBuffers[0].mDataByteSize/sizeof(float)||frames>output->mBuffers[1].mDataByteSize/sizeof(float)){silence(output);self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return kAudio_ParamError;}
+        if(!frames||self.capture->progress().complete){silence(output);return noErr;}
+        if(self.capture->clockError()!=CaptureClockError::none){silence(output);return kAudio_ParamError;}
         AudioBufferList input{};input.mNumberBuffers=1;input.mBuffers[0].mNumberChannels=1;input.mBuffers[0].mDataByteSize=frames*sizeof(float);input.mBuffers[0].mData=self.inputScratch.data();
+        CaptureTimestamp stamp{};
+        if(time){
+            stamp.sampleTimeValid=(time->mFlags & kAudioTimeStampSampleTimeValid)!=0;
+            stamp.hostTimeValid=(time->mFlags & kAudioTimeStampHostTimeValid)!=0;
+            if(stamp.sampleTimeValid)stamp.sampleTime=time->mSampleTime;
+            if(stamp.hostTimeValid)stamp.hostTime=time->mHostTime;
+        }
+        // Missing/invalid timestamps must not be passed to AudioUnitRender.
+        // The shared processor latches the failure without reading scratch PCM.
+        if(!stamp.sampleTimeValid||!std::isfinite(stamp.sampleTime)||std::abs(stamp.sampleTime)>CaptureClock::maximumSampleTime-frames){
+            self.capture->process(self.inputScratch.data(),static_cast<float*>(output->mBuffers[0].mData),static_cast<float*>(output->mBuffers[1].mData),frames,stamp);
+            self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return kAudio_ParamError;
+        }
         auto status=AudioUnitRender(self.unit,flags,time,1,frames,&input);if(status!=noErr){silence(output);self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return status;}
-        self.capture->process(self.inputScratch.data(),static_cast<float*>(output->mBuffers[0].mData),static_cast<float*>(output->mBuffers[1].mData),frames);
+        self.capture->process(self.inputScratch.data(),static_cast<float*>(output->mBuffers[0].mData),static_cast<float*>(output->mBuffers[1].mData),frames,stamp);
+        if(self.capture->clockError()!=CaptureClockError::none){self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return kAudio_ParamError;}
         self.callbackCount.fetch_add(1,std::memory_order_relaxed);return noErr;
     }
     void shutdown(OutputState reason) noexcept {active=false;renderer.playing.store(false);if(unit){AudioOutputUnitStop(unit);AudioUnitUninitialize(unit);AudioComponentInstanceDispose(unit);unit=nullptr;}device=0;outputState.store(static_cast<uint32_t>(reason));}
@@ -66,7 +82,7 @@ public:
     std::shared_ptr<const Clip> stop() override {if(!active)throw Error("Recording is not active");shutdown(OutputState::stopped);return capture->finish();}
     void cancel() noexcept override {shutdown(OutputState::stopped);if(capture)capture->cancel();}
     void markStalled() noexcept override{shutdown(OutputState::stalled);if(capture)capture->cancel();}
-    void checkDevices() override {if(!active)return;if(callbackErrors.load()){shutdown(OutputState::callbackError);throw Error("Duplex callback received an invalid audio buffer");}try{checkAudioDevice(openedDevice,configuration.inputUID.empty(),AudioDeviceDirection::Input);checkAudioDevice(openedDevice,configuration.outputUID.empty(),AudioDeviceDirection::Output);}catch(...){shutdown(OutputState::deviceLost);throw;}}
+    void checkDevices() override {if(!active)return;if(capture&&capture->clockError()!=CaptureClockError::none){const auto error=capture->clockError();shutdown(OutputState::callbackError);throw Error(captureClockErrorMessage(error));}if(callbackErrors.load()){shutdown(OutputState::callbackError);throw Error("Duplex callback received an invalid audio buffer");}try{checkAudioDevice(openedDevice,configuration.inputUID.empty(),AudioDeviceDirection::Input);checkAudioDevice(openedDevice,configuration.outputUID.empty(),AudioDeviceDirection::Output);}catch(...){shutdown(OutputState::deviceLost);throw;}}
     uint64_t frames() const noexcept override{return capture?capture->frames():0;}uint64_t callbacks() const noexcept override{return callbackCount.load(std::memory_order_relaxed);}bool overflowed() const noexcept override{return callbackErrors.load()||(capture&&capture->overflowed());}
     DuplexCaptureProgress progress() const noexcept override {return capture?capture->progress():DuplexCaptureProgress{};}
     void setMonitor(bool on) noexcept override {monitorOn=on;if(capture)capture->setMonitor(on);}

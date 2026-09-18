@@ -4,6 +4,7 @@
 
 namespace daw {
 static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::atomic<CaptureClockError>::is_always_lock_free);
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
 DuplexCapture::DuplexCapture(Renderer& renderer, const State& state, uint64_t capacity,
                              const std::string& path, uint64_t start, uint64_t loopStart,
@@ -20,15 +21,21 @@ DuplexCapture::DuplexCapture(Renderer& renderer, const State& state, uint64_t ca
     renderer_.prepare(state, start - lead_, loopStart, loopEnd, looping ? loopEnd : start + capacity);
     writer_ = std::make_unique<RecordingWriter>(path, start, capacity, 48000 * 2, lead_);
 }
-void DuplexCapture::process(const float* input, float* left, float* right, uint32_t frames) noexcept {
+void DuplexCapture::process(const float* input, float* left, float* right, uint32_t frames, CaptureTimestamp time) noexcept {
     if (!left || !right) return; // HAL adapter validates its actual buffer list.
     std::fill_n(left, frames, 0.0f);
     std::fill_n(right, frames, 0.0f);
-    if (!input || !frames || frames > maximumSlice) return;
+    if (!input || !frames || frames > maximumSlice || clockError() != CaptureClockError::none) return;
     const auto elapsed = elapsed_.load(std::memory_order_relaxed);
     const auto remaining = lead_ + capacity_ - elapsed;
     const auto count = static_cast<uint32_t>(std::min<uint64_t>(frames, remaining));
-    if (!count) return;
+    if (!count) return; // A late callback after the deliberate cap is harmless.
+    const auto error = clock_.observe(time, count);
+    if (error != CaptureClockError::none) {
+        clockError_.store(error, std::memory_order_release);
+        renderer_.playing.store(false, std::memory_order_release);
+        return; // Silence was filled above; neither writer nor renderer advances.
+    }
     // Only the dry device input reaches disk: no backing, click or monitor sum.
     writer_->writeMono(input, count);
     renderer_.render(left, right, count);
@@ -64,6 +71,8 @@ DuplexCaptureProgress DuplexCapture::progress() const noexcept {
 }
 std::shared_ptr<const Clip> DuplexCapture::finish() {
     writer_->stopPreserving();
+    if (const auto error = clockError(); error != CaptureClockError::none)
+        throw Error(captureClockErrorMessage(error));
     if (!writer_->frames()) return {};
     return writer_->finish();
 }
