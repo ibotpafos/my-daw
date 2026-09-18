@@ -9,17 +9,20 @@ if [ "$(uname -s)" = Darwin ]; then
 else
   SWIFTC=(swiftc -swift-version 6 -warnings-as-errors)
 fi
-"${SWIFTC[@]}" "$ROOT/apps/macos/CommandPaletteSearch.swift" \
+"${SWIFTC[@]}" "$ROOT/apps/macos/CommandPaletteSearch.swift" "$ROOT/apps/macos/CommandAliases.swift" \
   "$ROOT/tests/macos_command_palette_search_tests.swift" -o "$WORK/model-tests"
 "$WORK/model-tests"
+"${SWIFTC[@]}" "$ROOT/apps/macos/CommandPaletteSearch.swift" "$ROOT/apps/macos/CommandAliases.swift" \
+  "$ROOT/tests/command_alias_tests.swift" -o "$WORK/alias-tests"
+"$WORK/alias-tests"
 
 if [ "$(uname -s)" = Darwin ]; then
   # A raw command-line executable can show a window without establishing the
   # application's real key/main responder chain. Exercise a proper .app launch.
   APP="$WORK/Command Palette Tests.app"
   mkdir -p "$APP/Contents/MacOS"
-  "${SWIFTC[@]}" "$ROOT/apps/macos/CommandPaletteSearch.swift" \
-    "$ROOT/apps/macos/CommandPalette.swift" "$ROOT/apps/macos/DAWWindow.swift" \
+  "${SWIFTC[@]}" "$ROOT/apps/macos/CommandPaletteSearch.swift" "$ROOT/apps/macos/CommandAliases.swift" \
+    "$ROOT/apps/macos/CommandPalette.swift" "$ROOT/apps/macos/CommandAliasEditor.swift" "$ROOT/apps/macos/DAWWindow.swift" \
     "$ROOT/tests/macos_command_palette_appkit_tests.swift" \
     -framework AppKit -o "$APP/Contents/MacOS/PaletteTests"
   python3 - "$APP/Contents/Info.plist" <<'PY'
