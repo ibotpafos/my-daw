@@ -105,6 +105,28 @@ func runAudioHardwareSettingsTests(_ app: DraftApp) -> Int {
     var after = daw_snapshot(); after.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
     expect(daw_get_snapshot(app.session, &after) == 0 && before.revision == after.revision && before.can_undo == after.can_undo,
            "hardware UI path does not alter project or Undo")
+    // New must be transactional with respect to machine preference restore.
+    // The same failure return covers a still-exclusive canceled hardware job.
+    let preferences = app.audioPreferences
+    let savedRevision = app.savedRevision
+    let currentSession = app.session
+    let documentID = app.midiDocumentID
+    let suite = "mydaw-hardware-new-" + UUID().uuidString
+    let invalidDefaults = UserDefaults(suiteName: suite)!
+    defer {
+        app.audioPreferences = preferences
+        app.savedRevision = savedRevision
+        invalidDefaults.removePersistentDomain(forName: suite)
+    }
+    invalidDefaults.set("invalid preferences", forKey: AudioDevicePreferences.key)
+    app.audioPreferences = invalidDefaults
+    app.savedRevision = app.revision // avoid a save dialog in the test fixture
+    app.newDraft()
+    expect(app.session == currentSession && app.midiDocumentID == documentID,
+           "failed settings restore cannot replace the document with system defaults")
+    var unchanged = daw_snapshot(); unchanged.struct_size = UInt32(MemoryLayout<daw_snapshot>.size)
+    expect(daw_get_snapshot(app.session, &unchanged) == 0 && unchanged.revision == before.revision,
+           "failed New preserves the complete existing project")
     print("PASS: audio hardware AppKit: \(checks) checks")
     return checks
 }

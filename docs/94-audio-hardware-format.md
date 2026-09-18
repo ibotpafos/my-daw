@@ -32,7 +32,9 @@ IsPropertySettable. Запись — AudioObjectSetPropertyData. Никаких 
 Четыре versioned C ABI функции: read capabilities, begin change, poll и release.
 Begin проверяет idle состояния, затем запускает ограниченный фоновый worker.
 Worker хранит собственный snapshot, не session pointer, поэтому закрытие или
-смена проекта не приводят к use-after-free. Output/Input/Duplex держат общий
+смена проекта не приводят к use-after-free. New сначала восстанавливает
+машинный выбор на новом session; отказ (включая ещё занятый hardware lease)
+сохраняет прежний документ, а не оставляет новый с system defaults. Output/Input/Duplex держат общий
 process-local IO lease; hardware worker — exclusive lease. Нельзя начать
 HAL I/O из другой сессии или позднего prepare одновременно с перенастройкой.
 Это не lock в callback и не межпроцессная блокировка чужих приложений.

@@ -235,12 +235,15 @@ extension DraftApp {
         return NSError(domain: "MyDAW.AudioSettings", code: 1,
             userInfo: [NSLocalizedDescriptionKey: String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)])
     }
-    func restoreAudioDeviceConfiguration(_ target: OpaquePointer) {
+    @discardableResult
+    func restoreAudioDeviceConfiguration(_ target: OpaquePointer) -> Bool {
         do {
             var raw = try AudioDevicePreferences.read(from: audioPreferences).bridgeValue()
             guard daw_set_audio_device_config(target, &raw) == 0 else { throw audioConfigurationError(target) }
+            return true
         } catch {
             setProjectMessage("Настройки аудио не восстановлены: \(error.localizedDescription)")
+            return false
         }
     }
     func audioDeviceChoices() throws -> [AudioDeviceChoice] {
