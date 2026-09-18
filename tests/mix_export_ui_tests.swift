@@ -272,7 +272,9 @@ func runMixExportIntegrationTests() {
     app.exportMix(); waitForJob()
     expect(pcm(afterOpen).peak > 0.000001, "Save/open preserves actual audible MIDI export")
 
+    FileHandle.standardOutput.write(Data("PHASE first-range/update-timeline\n".utf8))
     app.rangeStart = 0; app.rangeEnd = 24_000; app.updateTimelineTools()
+    FileHandle.standardOutput.write(Data("PHASE first-range/begin-export\n".utf8))
     let ranged = choose("range.wav")
     app.exportMix(); waitForJob()
     let rangePCM = pcm(ranged)
@@ -282,6 +284,28 @@ func runMixExportIntegrationTests() {
     let invalidRange = choose("invalid-range.wav"); app.exportMix()
     expect(app.exportJob == nil && !FileManager.default.fileExists(atPath: invalidRange.path), "Invalid range never starts a job")
     app.rangeStart = nil; app.rangeEnd = nil; app.refresh()
+
+    // Fixed repetitions of the exact Save/Open → timeline update → range
+    // export sequence implicated by #30. A failure stops immediately; this is
+    // not a retry-until-green wrapper. All original cases below still run.
+    for iteration in 0..<8 {
+        FileHandle.standardOutput.write(Data("PHASE save-open-range/\(iteration)/save\n".utf8))
+        expect(daw_save_draft(app.session, saved.path) == 0, "Stress save preserves source")
+        let document = app.mixExportDocumentID
+        app.openDraftFile(saved)
+        expect(app.mixExportDocumentID != document, "Stress reopen rotates document identity")
+        let before = revision()
+        FileHandle.standardOutput.write(Data("PHASE save-open-range/\(iteration)/timeline\n".utf8))
+        app.rangeStart = 0; app.rangeEnd = 24_000; app.updateTimelineTools()
+        let url = choose("stress-range-\(iteration).wav")
+        FileHandle.standardOutput.write(Data("PHASE save-open-range/\(iteration)/export\n".utf8))
+        app.exportMix(); waitForJob()
+        let rendered = pcm(url)
+        expect(rendered.frames == rangePCM.frames && rendered.peak > 0.000001,
+               "Repeated range export retains exact frame count and audible PCM")
+        expect(revision() == before, "Repeated range export does not edit the document")
+        app.rangeStart = nil; app.rangeEnd = nil; app.refresh()
+    }
 
     let reentrant = choose("one-request.wav")
     let beforePrompts = answers.prompts.count
