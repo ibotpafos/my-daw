@@ -82,3 +82,4 @@ apps/macos/Workspace/ArrangementEditingController.swift
 apps/macos/Workspace/ArrangementEditingCommands.swift
 apps/macos/Workspace/ArrangementClipboardBinding.swift
 apps/macos/RecordingUI.swift
+apps/macos/Workspace/ArrangementClipboardCommands.swift

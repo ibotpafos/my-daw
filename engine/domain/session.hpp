@@ -284,6 +284,7 @@ public:
     // cut removes the group atomically. Paste never dereferences the original track.
     ClipClipboard captureClips(uint64_t track, std::vector<uint32_t> indices, bool midi,
                                bool cut, uint64_t expected);
+    ClipClipboard captureClipSelection(const std::vector<ClipSelectionRef>&, bool cut, uint64_t expected);
     void pasteClips(const ClipClipboard&, uint64_t target, uint64_t start, uint64_t expected);
     void transferClips(uint64_t source, std::vector<uint32_t> indices, bool midi,
                        uint64_t target, uint64_t start, bool copy, uint64_t expected);

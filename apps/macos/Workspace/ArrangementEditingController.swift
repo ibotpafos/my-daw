@@ -32,10 +32,19 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         var proposed: [ArrangementClipBounds] = []
     }
     struct Clipboard {
+        struct Entry {
+            let rowOffset: Int
+            let kind: ArrangementClipKey.Kind
+            let bounds: ArrangementClipBounds
+        }
         let document: UUID
-        let kind: ArrangementClipKey.Kind
-        /// Geometry is UI metadata only. The session owns the immutable content.
-        let relativeBounds: [ArrangementClipBounds]
+        // UI geometry only. The session owns all immutable audio/MIDI content.
+        // Track offsets, not IDs, survive deleting or reordering source tracks.
+        let entries: [Entry]
+        var kind: ArrangementClipKey.Kind? {
+            guard let first = entries.first, entries.allSatisfy({ $0.kind == first.kind }) else { return nil }
+            return first.kind
+        }
         var continuation: (track: UInt64, frame: UInt64)? = nil
     }
     weak var app: DraftApp?

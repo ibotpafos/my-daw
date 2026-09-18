@@ -719,7 +719,7 @@ int daw_remove_marker(daw_session*, uint64_t frame, uint64_t expected_revision);
    capture and paste reject active audio/MIDI capture and domain gestures. */
 typedef struct daw_clipboard_info {
     uint32_t struct_size;
-    uint32_t kind;       /* 0 empty, 1 audio, 2 MIDI */
+    uint32_t kind;       /* 0 empty, 1 audio-only, 2 MIDI-only, 3 mixed audio/MIDI */
     uint32_t clip_count;
     uint32_t reserved;
     uint64_t length;     /* group span, including gaps */
@@ -752,6 +752,17 @@ typedef struct daw_clip_selection_ref {
     uint64_t track_id;
     uint32_t clip_index, kind;
 } daw_clip_selection_ref;
+/* Immutable multi-track clipboard, sharing the same slot and paste/clear/info APIs
+ * as daw_capture_clipboard. 1..256 refs from expected_revision, no duplicates.
+ * Capture preserves relative times AND row offsets including unselected gaps.
+ * Paste anchors the top captured row at target_track in CURRENT project order.
+ * Source tracks may be edited/deleted/reordered after capture. Cut commits all
+ * removals in one Undo; failure preserves the previous board and entire project.
+ * daw_get_clipboard.kind is 3 for mixed audio/MIDI, 1/2 for homogeneous content.
+ * No new tracks are created; incompatible/missing/capacity-limited targets reject
+ * the entire paste. Document load/clear/destroy releases this document-only board. */
+int daw_capture_selection_clipboard(daw_session*,const daw_clip_selection_ref* clips,uint32_t count,
+                                     uint32_t cut,uint64_t expected_revision);
 int daw_edit_clip_selection(daw_session*,const daw_clip_selection_ref* clips,uint32_t count,
                             uint32_t action,int64_t delta_frames,int32_t track_offset,
                             uint64_t expected_revision);

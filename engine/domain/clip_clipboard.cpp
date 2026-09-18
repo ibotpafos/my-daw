@@ -33,6 +33,29 @@ void erase(Track &track, const std::vector<uint32_t> &indices, bool midi) {
             track.regions.erase(track.regions.begin() + *it);
     }
 }
+using SelectionGroups = std::map<std::pair<size_t, bool>, std::vector<uint32_t>>;
+SelectionGroups checkedGroups(const State &state, const std::vector<ClipSelectionRef> &selection) {
+    if (selection.empty() || selection.size() > 256)
+        throw Error("Select 1–256 clips");
+    std::map<std::pair<size_t, bool>, std::vector<uint32_t>> groups;
+    std::set<std::tuple<uint64_t, bool, uint32_t>> unique;
+    for (const auto &ref : selection) {
+        if (!unique.emplace(ref.trackID, ref.midi, ref.index).second)
+            throw Error("Duplicate clip selection reference");
+        const auto found = std::find_if(state.tracks.begin(), state.tracks.end(),
+                                        [&](const Track &t) { return t.id == ref.trackID; });
+        if (found == state.tracks.end())
+            throw Error("Selected track no longer exists");
+        if (ref.index >= (ref.midi ? found->midiClips.size() : found->regions.size()))
+            throw Error("Selected clip no longer exists");
+        groups[{static_cast<size_t>(found - state.tracks.begin()), ref.midi}].push_back(ref.index);
+    }
+    for (auto &[key, indices] : groups) {
+        (void)key;
+        std::sort(indices.begin(), indices.end());
+    }
+    return groups;
+}
 }
 ClipClipboard Session::captureClips(uint64_t id, std::vector<uint32_t> indices, bool midi, bool cut,
                                     uint64_t expected) {
@@ -44,35 +67,62 @@ ClipClipboard Session::captureClips(uint64_t id, std::vector<uint32_t> indices, 
     if (it == current.tracks.end())
         throw Error("Track not found");
     indices = checkedIndices(std::move(indices), midi ? it->midiClips.size() : it->regions.size());
+    std::vector<ClipSelectionRef> selection;
+    selection.reserve(indices.size());
+    for (const auto index : indices)
+        selection.push_back({id, index, midi});
+    auto board = captureClipSelection(selection, cut, expected);
+    // Preserve historical single-track API support for hybrid tracks. The new
+    // arrangement capture enforces visible row types; legacy transfer does not.
+    board.arrangementTypes_ = false;
+    return board;
+}
+ClipClipboard Session::captureClipSelection(const std::vector<ClipSelectionRef> &selection,
+                                           bool cut, uint64_t expected) {
+    check(expected);
+    const auto groups = checkedGroups(current, selection);
+    // The arrangement has one visible media type per row. Reject an ambiguous
+    // hybrid-row Cut before removing anything; Undo is not a substitute for Paste.
+    for (const auto &[key, indices] : groups) {
+        (void)indices;
+        if (!key.second && groups.contains({key.first, true}))
+            throw Error("Clipboard selection cannot mix audio and MIDI on one row");
+    }
+    const auto firstRow = groups.begin()->first.first;
     ClipClipboard board;
-    board.midi_ = midi;
+    board.rowSpan_ = groups.rbegin()->first.first - firstRow + 1;
     uint64_t anchor = std::numeric_limits<uint64_t>::max(), end = 0;
-    for (const auto index : indices) {
-        if (midi) {
-            const auto &clip = it->midiClips[index];
-            anchor = std::min(anchor, clip.start);
-            end = std::max(end, clip.start + clip.length);
-            board.midiClips_.push_back(clip);
-        } else {
-            const auto &region = it->regions[index];
-            const auto *take = region.take == 0 ? nullptr : &it->takes.at(region.take - 1);
-            anchor = std::min(anchor, region.start);
-            end = std::max(end, region.start + region.length);
-            board.audioClips_.push_back({region, take ? take->audio : it->audio,
-                                         take ? take->name : it->name,
-                                         take ? take->start : it->baseStart});
+    for (const auto &[key, indices] : groups) {
+        const auto [row, midi] = key;
+        const auto &track = current.tracks[row];
+        for (const auto index : indices) {
+            if (midi) {
+                const auto &clip = track.midiClips[index];
+                anchor = std::min(anchor, clip.start);
+                end = std::max(end, clip.start + clip.length);
+                board.midiClips_.push_back({clip, row - firstRow});
+            } else {
+                const auto &region = track.regions[index];
+                const auto *take = region.take == 0 ? nullptr : &track.takes.at(region.take - 1);
+                anchor = std::min(anchor, region.start);
+                end = std::max(end, region.start + region.length);
+                board.audioClips_.push_back({region, take ? take->audio : track.audio,
+                    take ? take->name : track.name, take ? take->start : track.baseStart,
+                    row - firstRow});
+            }
         }
     }
     board.length_ = end - anchor;
     for (auto &entry : board.audioClips_)
         entry.region.start -= anchor;
-    for (auto &clip : board.midiClips_)
-        clip.start -= anchor;
-    // Allocate the complete replacement clipboard before spending an Undo step.
-    // Returning/moving the result is noexcept; a rejected cut keeps the old board.
+    for (auto &entry : board.midiClips_)
+        entry.clip.start -= anchor;
+    // Finish every allocation before commit. Returning/moving this value is
+    // noexcept; a failure in any cut batch leaves the old board and history intact.
     if (cut) {
         State next = current;
-        erase(findTrack(next, id), indices, midi);
+        for (const auto &[key, indices] : groups)
+            erase(next.tracks[key.first], indices, key.second);
         commit(std::move(next));
     }
     return board;
@@ -80,30 +130,26 @@ ClipClipboard Session::captureClips(uint64_t id, std::vector<uint32_t> indices, 
 void ClipClipboard::pasteInto(State &state, uint64_t target, uint64_t start) const {
     if (count() == 0)
         throw Error("Clip clipboard is empty");
-    const uint64_t limit = midi_ ? kMaxMidiFrame : audioLimit;
-    if (start > limit || length_ > limit - start)
+    if (start > kMaxMidiFrame || length_ > kMaxMidiFrame - start)
         throw Error("No timeline space for the clip");
-    auto &track = findTrack(state, target);
-    if (midi_) {
-        if (midiClips_.size() > kMaxMidiClipsPerTrack - track.midiClips.size())
-            throw Error("Track supports at most 64 MIDI clips");
-        for (auto clip : midiClips_) {
-            clip.start += start;
-            track.midiClips.push_back(std::move(clip));
-        }
-        std::stable_sort(track.midiClips.begin(), track.midiClips.end(),
-                         [](const auto &a, const auto &b) {
-                             return a.start < b.start;
-                         });
-        return;
-    }
-    if (audioClips_.size() > 256 - track.regions.size())
-        throw Error("Track supports at most 256 clips");
+    const auto firstRow = static_cast<size_t>(&findTrack(state, target) - state.tracks.data());
+    if (rowSpan_ > state.tracks.size() - firstRow)
+        throw Error("The clipboard needs more destination tracks");
+    // Candidate state only. Any late capacity/type/source/overlap failure is
+    // discarded by Session before it publishes a revision or an Undo entry.
+    std::set<size_t> audioRows, midiRows;
     for (const auto &entry : audioClips_) {
+        auto &track = state.tracks[firstRow + entry.rowOffset];
+        if (arrangementTypes_ && !track.midiClips.empty())
+            throw Error("Audio clipboard destination contains MIDI clips");
+        if (track.regions.size() >= 256)
+            throw Error("Track supports at most 256 clips");
         auto region = entry.region;
-        // Reuse the persisted per-track source table (base + takes). A foreign
-        // source is attached once, not decoded, copied or written during a drag.
-        // Original source timing is retained for the existing comping contract.
+        if (start > audioLimit || region.start > audioLimit - start ||
+            region.length > audioLimit - start - region.start)
+            throw Error("No timeline space for the clip");
+        // Reuse the persisted base/takes source table. Immutable audio is shared,
+        // not decoded, copied or written to disk during an edit.
         if (!track.audio) {
             track.audio = entry.source;
             track.baseStart = entry.sourceStart;
@@ -125,11 +171,31 @@ void ClipClipboard::pasteInto(State &state, uint64_t target, uint64_t start) con
         }
         region.start += start;
         track.regions.push_back(region);
+        audioRows.insert(firstRow + entry.rowOffset);
     }
-    std::stable_sort(track.regions.begin(), track.regions.end(),
-                     [](const Region &a, const Region &b) {
-                         return a.start < b.start;
-                     });
+    for (const auto &entry : midiClips_) {
+        auto &track = state.tracks[firstRow + entry.rowOffset];
+        if (arrangementTypes_ && track.audio)
+            throw Error("MIDI clipboard destination has an audio source");
+        if (track.midiClips.size() >= kMaxMidiClipsPerTrack)
+            throw Error("Track supports at most 64 MIDI clips");
+        auto clip = entry.clip;
+        clip.start += start;
+        track.midiClips.push_back(std::move(clip));
+        midiRows.insert(firstRow + entry.rowOffset);
+    }
+    for (const auto row : audioRows) {
+        auto &regions = state.tracks[row].regions;
+        std::stable_sort(regions.begin(), regions.end(), [](const Region &a, const Region &b) {
+            return a.start < b.start;
+        });
+    }
+    for (const auto row : midiRows) {
+        auto &clips = state.tracks[row].midiClips;
+        std::stable_sort(clips.begin(), clips.end(), [](const MidiClip &a, const MidiClip &b) {
+            return a.start < b.start;
+        });
+    }
 }
 void Session::pasteClips(const ClipClipboard &clipboard, uint64_t target, uint64_t start,
                          uint64_t expected) {
@@ -168,19 +234,7 @@ void Session::editClipSelection(const std::vector<ClipSelectionRef> &selection,
         throw Error("Delete does not accept a time or track offset");
     // Build every source batch against the same immutable revision BEFORE any
     // erase/insert/sort. Moving onto another selected track cannot rebind indices.
-    std::map<std::pair<size_t, bool>, std::vector<uint32_t>> groups;
-    std::set<std::tuple<uint64_t, bool, uint32_t>> unique;
-    for (const auto &ref : selection) {
-        if (!unique.emplace(ref.trackID, ref.midi, ref.index).second)
-            throw Error("Duplicate clip selection reference");
-        const auto found = std::find_if(current.tracks.begin(), current.tracks.end(),
-                                        [&](const Track &t) { return t.id == ref.trackID; });
-        if (found == current.tracks.end())
-            throw Error("Selected track no longer exists");
-        if (ref.index >= (ref.midi ? found->midiClips.size() : found->regions.size()))
-            throw Error("Selected clip no longer exists");
-        groups[{static_cast<size_t>(found - current.tracks.begin()), ref.midi}].push_back(ref.index);
-    }
+    const auto groups = checkedGroups(current, selection);
     if (action == ClipSelectionEdit::Move && delta == 0 && trackOffset == 0)
         return; // Validate references first; a stale no-op must still be rejected.
     struct Batch {
@@ -191,8 +245,7 @@ void Session::editClipSelection(const std::vector<ClipSelectionRef> &selection,
         ClipClipboard board;
     };
     std::vector<Batch> batches;
-    for (auto &[key, indices] : groups) {
-        std::sort(indices.begin(), indices.end());
+    for (const auto &[key, indices] : groups) {
         const auto [source, midi] = key;
         Batch batch;
         batch.source = source; batch.midi = midi; batch.indices = indices;

@@ -200,6 +200,8 @@ int main() {
             auto selection = abi<daw_clip_selection_ref>();
             selection.version = DAW_CLIP_SELECTION_REF_VERSION;
             selection.track_id = 1; selection.clip_index = 0; selection.kind = 1;
+            CHECK_REJ(s, daw_capture_selection_clipboard(s, &selection, 1, 0, revision));
+            CHECK_REJ(s, daw_capture_selection_clipboard(s, &selection, 1, 1, revision));
             for (uint32_t action : {DAW_CLIP_SELECTION_MOVE, DAW_CLIP_SELECTION_COPY, DAW_CLIP_SELECTION_DELETE})
                 CHECK_REJ(s, daw_edit_clip_selection(s, &selection, 1, action,
                     action == DAW_CLIP_SELECTION_DELETE ? 0 : 4096, 0, revision));

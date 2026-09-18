@@ -7,7 +7,9 @@ extension DraftApp {
     func copyArrangementClipboard(trackID: UInt64? = nil, index: Int? = nil,
                                   midi: Bool? = nil, cut: Bool) {
         guard let editor = window.arrangementEditing as? ArrangementEditingController else { return }
-        editor.bindProjectionIfNeeded()
+        guard !isEditingText, editor.editable, editor.gesture == nil,
+              editor.documentID == midiDocumentID,
+              editor.projectionRevision == editor.currentRevision() else { return }
         guard let track = trackID ?? inspectorTrackID ?? selectedMixerID,
               let lane = editor.lanes.first(where: { $0.track == track }) else { return }
         if let index, let midi {
@@ -26,16 +28,17 @@ extension DraftApp {
     }
 
     func canUseArrangementClipboard(_ action: Selector?) -> Bool {
-        guard !isEditingText, !isRecording, !midiTakeArmed,
-              automationGesture == nil, pluginParameterGesture == nil,
-              let editor = window.arrangementEditing as? ArrangementEditingController,
-              let track = inspectorTrackID ?? selectedMixerID,
-              let lane = editor.lanes.first(where: { $0.track == track }) else { return false }
+        guard !isEditingText, let editor = window.arrangementEditing as? ArrangementEditingController,
+              editor.editable, editor.gesture == nil,
+              editor.documentID == midiDocumentID, editor.projectionRevision == editor.currentRevision(),
+              let track = inspectorTrackID ?? selectedMixerID else { return false }
         if action == #selector(menuPasteClip) {
-            guard let board = editor.clipboard, board.document == midiDocumentID else { return false }
-            return lane.kind == nil || lane.kind == board.kind
+            guard let board = editor.clipboard else { return false }
+            let start = board.continuation?.track == track && board.continuation?.frame == playheadFrame ?
+                playheadFrame : editor.snapped(playheadFrame, flags: [])
+            return editor.clipboardDestinations(board, track: track, start: start) != nil
         }
-        return editor.items.contains { $0.key.track == track }
+        return arrangementMenuSelection() != nil
     }
 }
 

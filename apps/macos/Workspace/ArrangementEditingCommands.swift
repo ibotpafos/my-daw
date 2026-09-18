@@ -180,63 +180,6 @@ extension ArrangementEditingController {
         guard end > start, end - start <= UInt64(Int64.max) else { return }
         editSelection(selected, action: UInt32(DAW_CLIP_SELECTION_COPY), delta: Int64(end - start), expected: projectionRevision)
     }
-    func copySelection(cut: Bool) {
-        guard let app, editable, let revision = currentRevision(), revision == projectionRevision,
-              documentID == app.midiDocumentID else {
-            message("Заверши запись и обнови выделение перед копированием."); return
-        }
-        let group = items.filter { selection.contains($0.key) }
-        guard let first = group.first else { message("Сначала выбери клип."); return }
-        guard group.allSatisfy({ $0.key.track == first.key.track && $0.key.kind == first.key.kind }) else {
-            message("Буфер поддерживает группу аудио- или MIDI-клипов одной дорожки. Предыдущий буфер сохранён."); return
-        }
-        let anchor = group.map(\.bounds.start).min() ?? 0
-        let board = Clipboard(document: app.midiDocumentID, kind: first.key.kind,
-            relativeBounds: group.map { item in
-                var bounds = item.bounds; bounds.start -= anchor; return bounds
-            })
-        let indices = group.map { UInt32($0.key.index) }
-        let capture: (DraftApp, UInt64) -> Int32 = { app, revision in
-            indices.withUnsafeBufferPointer {
-                daw_capture_clipboard(app.session, first.key.track, first.key.kind == .midi ? 1 : 0,
-                    $0.baseAddress, UInt32($0.count), cut ? 1 : 0, revision)
-            }
-        }
-        if cut {
-            guard perform(expected: revision, capture) else { return }
-        } else if capture(app, revision) != 0 {
-            message("Копирование отклонено. Предыдущий буфер сохранён."); return
-        }
-        clipboard = board
-        message(cut ? "Вырезано: \(group.count). ⌘V — вставить, ⌘Z — вернуть оригинал." :
-            "Скопировано: \(group.count). ⌘V — вставлять повторно у курсора.")
-    }
-    func paste() {
-        guard let app, let board = clipboard, let track = focusTrack,
-              board.document == app.midiDocumentID else {
-            message("Буфер клипов пуст. Скопируй клип или группу."); return
-        }
-        guard let lane = lanes.first(where: { $0.track == track }),
-              lane.kind == nil || lane.kind == board.kind else {
-            message("Вставь клипы на дорожку того же типа или пустую дорожку."); return
-        }
-        let continuation = board.continuation
-        let start = continuation?.track == track && continuation?.frame == app.playheadFrame ?
-            app.playheadFrame : snapped(app.playheadFrame, flags: [])
-        guard board.relativeBounds.allSatisfy({ $0.end <= Self.limit - min(Self.limit, start) }) else {
-            message("Недостаточно места до конца таймлайна; буфер сохранён."); return
-        }
-        let restoring = board.relativeBounds.map { source -> (UInt64, ArrangementClipKey.Kind, ArrangementClipBounds) in
-            var bounds = source; bounds.start += start; return (track, board.kind, bounds)
-        }
-        if perform(expected: projectionRevision, restoring: restoring, { app, revision in
-            daw_paste_clipboard(app.session, track, start, revision)
-        }) {
-            let end = start + (board.relativeBounds.map(\.end).max() ?? 0)
-            seekPlayhead(end)
-            var next = board; next.continuation = (track, end); clipboard = next
-        }
-    }
     func playableEnd() -> UInt64 {
         guard let app else { return 0 }
         var transport = daw_transport(); transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
