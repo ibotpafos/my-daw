@@ -1,77 +1,66 @@
-name: Diagnose original export order and verify crash collection
+name: Diagnose exact native crash report availability
 on:
   push:
     branches: [codex/diagnose-export-ordered-20260918]
 permissions:
   contents: read
 jobs:
-  original-order:
+  collector:
     runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 46d1cab9023528eb417f9aff1af044cc37bbf09b
-          fetch-depth: 0
+          ref: 6cc52725c154c90bdd87cc81b371c79975d41e2f
           persist-credentials: false
-      - name: Prepare original source with external PID diagnostic runner
+      - name: Exercise one deliberate memory fault and inspect only this test process reports
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 46d1cab9023528eb417f9aff1af044cc37bbf09b
-          test "$(git rev-parse HEAD^{tree})" = f0494a672ab0fc9bf89b458e303b8a17781ec21a
-          mkdir -p build/ordered-evidence
-          git show 6cc52725c154c90bdd87cc81b371c79975d41e2f:scripts/native_test_runner.py > "$RUNNER_TEMP/native_test_runner.py"
-          git archive --format=zip HEAD -o build/ordered-evidence/source.zip
-          { git rev-parse HEAD; sw_vers; xcrun swiftc --version; } > build/ordered-evidence/toolchain.txt
+          mkdir -p build/crash-collector-probe
+          cat > build/crash-collector-probe/fault.c <<'C'
+          #include <sys/mman.h>
+          int main(void) {
+            void *p = mmap(0, 4096, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+            if (p == MAP_FAILED) return 77;
+            return *(volatile int *)p;
+          }
+          C
+          xcrun clang -g build/crash-collector-probe/fault.c -o build/crash-collector-probe/daw-fault-probe
           python3 - <<'PY'
-          import os
+          import importlib.util,json,os,sys,time,traceback,subprocess
           from pathlib import Path
-          path = Path('scripts/test-mix-export-ui.sh')
-          s = path.read_text().replace('xcrun swiftc -swift-version 6', 'xcrun swiftc -g -swift-version 6')
-          s = s[:s.index("python3 - <<'PY'")] + 'xcrun dsymutil build/mix-export-ui/export-tests -o build/mix-export-ui/export-tests.dSYM\nrm -f build/mix-export-ui/proof.json\npython3 "$RUNNER_TEMP/native_test_runner.py" --timeout 120 --evidence build/ordered-evidence/export -- build/mix-export-ui/export-tests\n'
-          path.write_text(s)
+          spec=importlib.util.spec_from_file_location('runner','scripts/native_test_runner.py')
+          runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
+          root=Path('build/crash-collector-probe'); started=time.time()
+          code=runner.run_test([str(root/'daw-fault-probe')],root/'evidence',15,report_wait=20)
+          result=json.loads((root/'evidence/run.json').read_text())
+          print('RESULT',result,'Python',sys.version,'HOME',Path.home())
+          directories=[Path.home()/'Library/Logs/DiagnosticReports',Path('/Library/Logs/DiagnosticReports')]
+          diagnostics=[]
+          for directory in directories:
+            print('REPORT DIRECTORY',str(directory),directory.exists())
+            for path in directory.glob('daw-fault-probe*'):
+              if path.is_symlink() or not path.is_file() or path.stat().st_size>8*1024*1024: continue
+              data=path.read_bytes(); item={'name':path.name,'mtime':path.stat().st_mtime,'bytes':len(data)}
+              try:
+                header,payload=data.split(b'\n',1); h=json.loads(header);r=json.loads(payload)
+                item.update(header=h,pid=r.get('pid'),procName=r.get('procName'),procLaunch=r.get('procLaunch'))
+                if r.get('pid')==result['pid']:
+                  (root/('raw-'+path.name)).write_bytes(data)
+                  item['matched']=runner.matched_report(path,result['pid'],root/'daw-fault-probe',started) is not None
+              except Exception as error: item['parse_error']=str(error)
+              diagnostics.append(item); print('CANDIDATE',item)
+          (root/'candidates.json').write_text(json.dumps(diagnostics,indent=2))
+          for args in [['defaults','read','com.apple.CrashReporter'],['launchctl','print',f'gui/{os.getuid()}/com.apple.ReportCrash'],['launchctl','print','system/com.apple.ReportCrash.Root']]:
+            p=subprocess.run(args,capture_output=True,text=True,timeout=5)
+            print('REPORTER SETUP',args,p.returncode,p.stdout[:16000],p.stderr[:1000])
+          assert code in (138,139),result
+          assert result['crash_report_found'], 'No matching actual OS crash report; see candidate diagnostics'
           PY
-          git diff --exit-code -- apps engine include tests
-      - name: Build original application
-        run: set -o pipefail; bash scripts/build-macos.sh 2>&1 | tee build/ordered-evidence/build.log
-      - name: Original workspace suite
-        run: set -o pipefail; bash scripts/test-workspace-ui.sh 2>&1 | tee build/ordered-evidence/workspace.log
-      - name: Original recording suite
-        run: set -o pipefail; bash scripts/test-recording-ui.sh 2>&1 | tee build/ordered-evidence/recording.log
-      - name: Original export suite once after preceding native suites
-        run: set -o pipefail; bash scripts/test-mix-export-ui.sh 2>&1 | tee build/ordered-evidence/export.log
-      - name: Verify OS crash collector with isolated known failing test child
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          printf '#include <signal.h>\nint main(void) { raise(SIGSEGV); return 1; }\n' > "$RUNNER_TEMP/native-crash-probe.c"
-          xcrun clang -g "$RUNNER_TEMP/native-crash-probe.c" -o build/ordered-evidence/native-crash-probe
-          python3 - <<'PY'
-          import importlib.util, json, os
-          from pathlib import Path
-          p = Path(os.environ['RUNNER_TEMP']) / 'native_test_runner.py'
-          spec = importlib.util.spec_from_file_location('runner', p)
-          runner = importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)
-          out = Path('build/ordered-evidence/collector-probe')
-          code = runner.run_test(['build/ordered-evidence/native-crash-probe'], out, 15, report_wait=20)
-          result = json.loads((out / 'run.json').read_text())
-          assert code == 139 and result['signal'] == 11 and result['attempts'] == 1, result
-          assert result['crash_report_found'], result
-          print('PASS: known isolated SIGSEGV retained as139 and actual OS IPS matched child PID')
-          PY
-      - name: Preserve original executable symbols and final proof
-        if: ${{ !cancelled() }}
-        run: |
-          if test -f build/mix-export-ui/export-tests && test -d build/mix-export-ui/export-tests.dSYM; then
-            tar -czf build/ordered-evidence/export-symbols.tar.gz -C build/mix-export-ui export-tests export-tests.dSYM
-          fi
-          if test -f build/mix-export-ui/proof.json; then cp build/mix-export-ui/proof.json build/ordered-evidence/export-proof.json; fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: ${{ !cancelled() }}
         with:
-          name: original-order-export-${{ github.run_id }}
-          path: build/ordered-evidence/
+          name: exact-crash-collector-${{ github.run_id }}
+          path: build/crash-collector-probe/
           if-no-files-found: error
           retention-days: 7
