@@ -11,7 +11,7 @@ struct CaptureTimestamp {
     bool sampleTimeValid = false;
     bool hostTimeValid = false;
 };
-enum class CaptureClockError : uint32_t { none, sampleTimeUnavailable, sampleTimeInvalid, discontinuity, hostTimeReversed };
+enum class CaptureClockError : uint32_t { none, sampleTimeUnavailable, sampleTimeInvalid, discontinuity, hostTimeReversed, timestampPairInvalid, latencyChanged };
 
 inline const char* captureClockErrorMessage(CaptureClockError error) noexcept {
     switch (error) {
@@ -23,6 +23,10 @@ inline const char* captureClockErrorMessage(CaptureClockError error) noexcept {
         return "Recording stopped: the audio sample clock skipped or repeated frames. Confirmed audio remains recoverable.";
     case CaptureClockError::hostTimeReversed:
         return "Recording stopped: the audio host clock moved backwards or repeated. Confirmed audio remains recoverable.";
+    case CaptureClockError::timestampPairInvalid:
+        return "Recording stopped: input/output timestamps cannot be aligned. Confirmed audio remains recoverable.";
+    case CaptureClockError::latencyChanged:
+        return "Recording stopped: input/output timing changed during the take. Confirmed audio remains recoverable.";
     case CaptureClockError::none: return "";
     }
     return "Recording clock error";

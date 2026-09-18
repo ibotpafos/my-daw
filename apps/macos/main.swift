@@ -167,6 +167,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var hasMidiContent = false
     var waveforms: [WaveformView] = []
     var isPlaying = false
+    var recordingStopPending = false
     var isRecording = false
     var recordingNumber = 1
     let undoButton = NSButton(title: "Отменить", target: nil, action: nil)
@@ -1649,7 +1650,19 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 failRecording(audioConfigurationError().localizedDescription)
                 return
             }
+            var timing = daw_recording_timing()
+            timing.struct_size = UInt32(MemoryLayout<daw_recording_timing>.size)
+            timing.version = UInt32(DAW_RECORDING_TIMING_VERSION)
+            guard daw_get_recording_timing(session, &timing) == 0 else {
+                failRecording(audioConfigurationError().localizedDescription)
+                return
+            }
             presentRecording(recording, progress: progress)
+            presentRecordingTiming(timing)
+            if recordingStopPending {
+                if timing.can_finish != 0 { finishRecording() }
+                return
+            }
             if recording.overflowed != 0 || progress.limit_reached != 0 {
                 finishRecording()
                 if recording.overflowed != 0 {
