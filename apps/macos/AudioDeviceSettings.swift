@@ -15,7 +15,9 @@ struct AudioDeviceChoice {
 final class AudioDeviceSettingsController: NSWindowController {
     let inputDevice = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputDevice = NSPopUpButton(frame: .zero, pullsDown: false)
+    let inputMode = NSPopUpButton(frame: .zero, pullsDown: false)
     let inputChannel = NSPopUpButton(frame: .zero, pullsDown: false)
+    let inputRight = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputLeft = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputRight = NSPopUpButton(frame: .zero, pullsDown: false)
     let inputInfo = NSTextField(wrappingLabelWithString: "")
@@ -65,7 +67,12 @@ final class AudioDeviceSettingsController: NSWindowController {
             line.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -40).isActive = true
         }
         row("Устройство входа", [inputDevice])
-        row("Mono-вход", [inputChannel])
+        inputMode.addItem(withTitle: "Mono")
+        inputMode.lastItem?.tag = 1
+        inputMode.addItem(withTitle: "Stereo")
+        inputMode.lastItem?.tag = 2
+        row("Режим записи", [inputMode])
+        row("Вход L / R", [inputChannel, inputRight])
         let inputState = NSStackView(views: [inputInfo, inputFormat])
         inputInfo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         root.addArrangedSubview(inputState)
@@ -91,7 +98,8 @@ final class AudioDeviceSettingsController: NSWindowController {
         }
         status.setAccessibilityLabel("Результат настройки аудио")
         for (control, title) in [(inputDevice, "Устройство аудиовхода"), (outputDevice, "Устройство аудиовыхода"),
-                                 (inputChannel, "Канал монофонической записи"), (outputLeft, "Левый канал мастера"),
+                                 (inputMode, "Режим записи mono или stereo"), (inputChannel, "Левый или моно канал записи"),
+                                 (inputRight, "Правый канал стереозаписи"), (outputLeft, "Левый канал мастера"),
                                  (outputRight, "Правый канал мастера")] {
             control.target = self
             control.action = #selector(selectionChanged(_:))
@@ -159,7 +167,10 @@ final class AudioDeviceSettingsController: NSWindowController {
         populate(outputDevice, uid: draft.outputUID, input: false)
         let input = choice(uid: draft.inputUID, input: true)
         let output = choice(uid: draft.outputUID, input: false)
+        inputMode.selectItem(withTag: Int(draft.inputChannels))
         populateChannels(inputChannel, count: input?.inputs ?? 0, selection: draft.inputChannel)
+        populateChannels(inputRight, count: input?.inputs ?? 0, selection: draft.inputRight)
+        inputRight.isEnabled = draft.inputChannels == 2
         populateChannels(outputLeft, count: output?.outputs ?? 0, selection: draft.outputLeft)
         populateChannels(outputRight, count: output?.outputs ?? 0, selection: draft.outputRight)
         inputFormat.isEnabled = input != nil && hardwareService != nil
@@ -177,11 +188,15 @@ final class AudioDeviceSettingsController: NSWindowController {
         if sender === inputDevice {
             draft.inputUID = sender.selectedItem?.representedObject as? String ?? draft.inputUID
             draft.inputChannel = 0
+            draft.inputRight = 1
         } else if sender === outputDevice {
             draft.outputUID = sender.selectedItem?.representedObject as? String ?? draft.outputUID
             draft.outputLeft = 0; draft.outputRight = 1
+        } else if sender === inputMode, let channels = UInt32(exactly: sender.selectedItem?.tag ?? 1) {
+            draft.inputChannels = channels
         } else if let selected = sender.selectedItem, let channel = UInt32(exactly: selected.tag) {
             if sender === inputChannel { draft.inputChannel = channel }
+            if sender === inputRight { draft.inputRight = channel }
             if sender === outputLeft { draft.outputLeft = channel }
             if sender === outputRight { draft.outputRight = channel }
         }
@@ -226,6 +241,16 @@ extension AudioDevicePreferences {
         withUnsafeMutableBytes(of: &value.output_uid) { $0.copyBytes(from: outputUID.utf8CString.map { UInt8(bitPattern: $0) }) }
         return value
     }
+    func recordingInputBridgeValue() throws -> daw_record_input_config {
+        try validate()
+        var value = daw_record_input_config()
+        value.struct_size = UInt32(MemoryLayout<daw_record_input_config>.size)
+        value.version = UInt32(DAW_RECORD_INPUT_CONFIG_VERSION)
+        value.channels = inputChannels
+        value.left = inputChannel
+        value.right = inputRight
+        return value
+    }
 }
 
 extension DraftApp {
@@ -238,7 +263,10 @@ extension DraftApp {
     @discardableResult
     func restoreAudioDeviceConfiguration(_ target: OpaquePointer) -> Bool {
         do {
-            var raw = try AudioDevicePreferences.read(from: audioPreferences).bridgeValue()
+            let preferences = try AudioDevicePreferences.read(from: audioPreferences)
+            var input = try preferences.recordingInputBridgeValue()
+            guard daw_set_record_input_config(target, &input) == 0 else { throw audioConfigurationError(target) }
+            var raw = try preferences.bridgeValue()
             guard daw_set_audio_device_config(target, &raw) == 0 else { throw audioConfigurationError(target) }
             return true
         } catch {
@@ -265,6 +293,8 @@ extension DraftApp {
     }
     func applyAudioDeviceConfiguration(_ config: AudioDevicePreferences) throws {
         let data = try config.encoded()
+        var input = try config.recordingInputBridgeValue()
+        guard daw_set_record_input_config(session, &input) == 0 else { throw audioConfigurationError() }
         var raw = try config.bridgeValue()
         guard daw_set_audio_device_config(session, &raw) == 0 else { throw audioConfigurationError() }
         audioPreferences.set(data, forKey: AudioDevicePreferences.key)
