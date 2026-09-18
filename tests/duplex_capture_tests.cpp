@@ -1,0 +1,127 @@
+#include "audio/duplex_capture.hpp"
+#include "audio/hardware_settings.hpp"
+#include "audio/duplex.hpp"
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <limits>
+#include <unistd.h>
+
+using namespace daw;
+int main() {
+    size_t checks = 0;
+    auto check = [&](bool value, const char* message) {
+        ++checks; if (!value) throw std::runtime_error(message);
+    };
+    auto reject = [&](auto fn) {
+        bool rejected = false; try { fn(); } catch (const Error&) { rejected = true; }
+        check(rejected, "expected invalid range rejection");
+    };
+    auto root = std::filesystem::temp_directory_path() / ("daw-duplex-core-" + std::to_string(getpid()));
+    std::filesystem::create_directories(root);
+    try {
+        State empty;
+        Renderer ordinary;
+        reject([&] { ordinary.prepare(empty); }); // normal playback/export contract unchanged
+        reject([&] { ordinary.prepare(empty, 0, 0, 0, 48000ULL * 600 + 1); });
+        const std::vector<float> backing(4096 * 2, 0.125f);
+        Session model;
+        model.importAt("Backing", std::make_shared<Clip>(backing), 0, model.state().revision);
+        // Same production callback body across awkward block edges. Check raw
+        // recording exactly, including when the click and monitored mix sound.
+        std::vector<float> referenceOutput, referenceRaw;
+        for (bool loop : {false, true}) for (bool withBacking : {false, true}) {
+            referenceOutput.clear(); referenceRaw.clear();
+            for (uint32_t block : {64u, 257u, 4096u}) {
+                constexpr uint64_t start = 137, lead = 137, capacity = 4099;
+                const auto path = (root / "partition.mydawtake").string();
+                Renderer render;
+                render.setMetronome(true);
+                DuplexCapture capture(render, withBacking ? model.state() : empty, capacity, path,
+                    start, loop ? start : 0, loop ? start + 777 : 0, lead, true);
+                render.playing = true;
+                std::vector<float> input(lead + capacity);
+                for (size_t f = 0; f < input.size(); ++f) input[f] = float(int(f % 31) - 15) / 64.0f;
+                std::vector<float> output;
+                for (uint32_t offset = 0; offset < input.size();) {
+                    const auto count = std::min<uint32_t>(block, static_cast<uint32_t>(input.size()) - offset);
+                    std::vector<float> l(count), r(count);
+                    capture.process(input.data() + offset, l.data(), r.data(), count);
+                    check(l == r, "mono mix channels equal");
+                    check(std::all_of(l.begin(), l.end(), [](float v) { return std::isfinite(v) && std::abs(v) <= 1; }), "bounded finite monitor output");
+                    output.insert(output.end(), l.begin(), l.end());
+                    offset += count;
+                    const auto p = capture.progress();
+                    check(p.prerollRemaining == (offset < lead ? lead - offset : 0), "sample-exact pre-roll progress");
+                }
+                check(capture.frames() == capacity && !capture.overflowed(), "exact cap without overflow");
+                check(capture.progress().complete && !render.playing, "cap stops backing");
+                check(capture.progress().timelineFrame == (loop ? start + capacity % 777 : start + capacity), "capture clock");
+                std::vector<float> zeroL(17, 99), zeroR(17, 99);
+                capture.process(input.data(), zeroL.data(), zeroR.data(), 17);
+                check(zeroL == std::vector<float>(17, 0) && zeroR == zeroL && capture.frames() == capacity, "late callback after cap is silent");
+                auto raw = capture.finish();
+                check(raw && raw->frames() == capacity, "writer completed exact frames");
+                for (size_t f = 0; f < capacity; ++f)
+                    check(raw->samples()[f * 2] == input[f + lead] && raw->samples()[f * 2 + 1] == input[f + lead], "dry PCM has no backing, click or MON");
+                if (referenceOutput.empty()) { referenceOutput = output; referenceRaw = raw->samples(); }
+                else { check(referenceOutput == output, "callback partition invariant output"); check(referenceRaw == raw->samples(), "callback partition invariant raw audio"); }
+                capture.discard();
+                check(!std::filesystem::exists(path), "recovery discarded only after success");
+            }
+        }
+        {
+            Renderer render;
+            const auto path = (root / "safety.mydawtake").string();
+            DuplexCapture capture(render, empty, 1024, path, 0, 0, 0, 0, false);
+            render.playing = true;
+            std::vector<float> input(512, 0.25f), l(512), r(512);
+            capture.process(input.data(), l.data(), r.data(), 256);
+            check(std::all_of(l.begin(), l.begin() + 256, [](float v) { return v == 0; }), "MON off suppresses input only");
+            capture.setMonitor(true);
+            capture.process(input.data(), l.data(), r.data(), 256);
+            check(l[0] > 0 && l[0] < 0.002 && l[255] == 0.25f, "MON ramps to unity");
+            input[0] = std::numeric_limits<float>::quiet_NaN();
+            input[1] = std::numeric_limits<float>::infinity(); input[2] = -32; input[3] = 32;
+            capture.process(input.data(), l.data(), r.data(), 4);
+            check(l[0] == 0 && l[1] == 0 && l[2] == -1 && l[3] == 1 && r == l, "invalid/extreme monitor input sanitized");
+            check(render.clipped.load() == 2 && render.peak.load() >= 16, "direct monitor clipping reported");
+            capture.setMonitor(false);
+            std::fill(input.begin(), input.end(), 0.25f);
+            capture.process(input.data(), l.data(), r.data(), 256);
+            check(l[0] < 0.25f && l[0] > 0.24f && l[255] == 0, "MON ramps out while capturing");
+            auto raw = capture.finish();
+            check(raw->frames() == 772, "live MON never skips recording");
+            check(raw->samples()[512 * 2] == 0 && raw->samples()[513 * 2] == 0 &&
+                  raw->samples()[514 * 2] == -16 && raw->samples()[515 * 2] == 16, "writer preserves existing finite sample policy");
+            capture.discard();
+        }
+        {
+            Renderer render;
+            const auto path = (root / "preroll-only.mydawtake").string();
+            DuplexCapture capture(render, empty, 100, path, 100, 0, 0, 1000, false);
+            check(capture.progress().prerollRemaining == 100, "pre-roll clamps at project zero");
+            render.playing = true;
+            float in[32]{}, l[32]{}, r[32]{};
+            capture.process(in, l, r, 32);
+            check(!capture.finish(), "pre-roll-only finish yields no audio");
+            capture.discard();
+            check(!std::filesystem::exists(path), "no empty recovery after pre-roll stop");
+        }
+        {
+            const auto path = (root / "bad.mydawtake").string(); Renderer render;
+            for (uint64_t capacity : {uint64_t(0), uint64_t(48000 * 60 + 1), UINT64_MAX})
+                reject([&] { DuplexCapture bad(render, empty, capacity, path, 0, 0, 0, 0, false); });
+            reject([&] { DuplexCapture bad(render, empty, 1, path, 48000 * 600, 0, 0, 0, false); });
+            reject([&] { DuplexCapture bad(render, empty, 2, path, 48000 * 600 - 1, 0, 0, 0, false); });
+            reject([&] { DuplexCapture bad(render, empty, 1, path, 0, 0, 0, 48000 * 30 + 1, false); });
+            reject([&] { DuplexCapture bad(render, empty, 1, path, 0, 1, 8, 0, false); });
+            check(!std::filesystem::exists(path), "invalid preparation does not create recovery file");
+        }
+        std::filesystem::remove_all(root);
+        std::cout << "duplex capture: " << checks << " checks passed (real renderer and disk writer; no physical hardware)\n";
+    } catch (const std::exception& e) {
+        std::filesystem::remove_all(root); std::cerr << e.what() << '\n'; return 1;
+    }
+}

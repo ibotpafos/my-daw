@@ -74,7 +74,6 @@ struct daw_session {
     std::vector<daw::AudioDeviceInfo> audioDevices;
     std::unique_ptr<daw::Output> output;
     std::shared_ptr<PlaybackPreparation> playbackPreparation;
-    std::unique_ptr<daw::Input> input;
     std::unique_ptr<daw::Duplex> duplex;
     std::vector<daw::AudioUnitDescriptor> auCatalog;
     std::vector<daw::Vst3ScanCacheEntry> vst3Catalog;
@@ -82,7 +81,8 @@ struct daw_session {
     std::optional<Vst3ParameterCache> vst3ParameterCache;
     uint64_t playbackGeneration = 1, lastCallbacks = 0, recordLastCallbacks = 0, selectedFrame = 0,
              recordStart = 0, recordTarget = 0, loopStart = 0, loopEnd = 0;
-    bool loopEnabled = false;
+    bool loopEnabled = false, recordLoop = false;
+    uint64_t recordRevision = 0;
     int32_t transientOutputState = 0;
     std::chrono::steady_clock::time_point lastProgress, recordProgress;
     std::shared_ptr<uint8_t> lifetime = std::make_shared<uint8_t>(0);
@@ -381,7 +381,7 @@ void writeExportTailSummary(const daw::ExportTailSummary &summary, daw_export_ta
     out->infinite_tail_detected = summary.infiniteTailDetected ? 1 : 0;
 }
 bool recordingActive(const daw_session *s) {
-    return s->input || s->duplex;
+    return s->duplex != nullptr;
 }
 constexpr daw::AutomationTarget automationTarget(int32_t target) {
     switch (target) {
@@ -490,9 +490,13 @@ void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPat
         throw daw::Error("Finish the mixer gesture before starting playback or recording");
     if (recordingActive(s))
         throw daw::Error("Recording is already active");
+    if (s->midiRecorder)
+        throw daw::Error("Finish MIDI capture before recording audio");
     if (startFrame >= 48000 * 600)
         throw daw::Error("Recording position must be before the 10 minute timeline limit");
-    invalidatePlaybackPreparation(s);
+    auto path = std::string(required(recoveryPath));
+    if (path.empty())
+        throw daw::Error("Missing recording recovery path");
     size_t audioTracks = 0, audioAssets = 0, audioBytes = 0;
     const daw::Track *targetTrack = nullptr;
     for (const auto &track : s->model.state().tracks)
@@ -538,25 +542,22 @@ void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPat
     }
     if (!capacity)
         throw daw::Error("No project capacity remains for recording");
+    invalidatePlaybackPreparation(s);
     if (s->output) {
         s->output->stop();
         s->output.reset();
     }
-    auto path = std::string(required(recoveryPath));
-    if (path.empty())
-        throw daw::Error("Missing recording recovery path");
-    if (loopRecording) {
-        auto duplex =
-            daw::makeDuplex(s->model.state(), capacity, path, startFrame, s->loopStart, s->loopEnd,
-                            s->recordPrerollFrames, s->recordMonitor, s->audioConfiguration);
-        duplex->renderer.setMetronome(s->metronomeEnabled);
-        duplex->start();
-        s->duplex = std::move(duplex);
-    } else {
-        auto input = daw::makeInput(capacity, path, startFrame, s->audioConfiguration);
-        input->start();
-        s->input = std::move(input);
-    }
+    // One AUHAL clock for every recording. A non-loop take/new track must
+    // never inherit an unrelated playback cycle. Commit mode is separate from
+    // the presence of a duplex object (both modes now use that object).
+    auto duplex = daw::makeDuplex(s->model.state(), capacity, path, startFrame,
+                                  loopRecording ? s->loopStart : 0, loopRecording ? s->loopEnd : 0,
+                                  s->recordPrerollFrames, s->recordMonitor, s->audioConfiguration);
+    duplex->renderer.setMetronome(s->metronomeEnabled);
+    duplex->start();
+    s->duplex = std::move(duplex);
+    s->recordLoop = loopRecording;
+    s->recordRevision = s->model.state().revision;
     s->recordStart = startFrame;
     s->recordTarget = target;
     s->selectedFrame = startFrame;
@@ -2678,6 +2679,8 @@ int daw_midi_input_active(daw_session *s, uint32_t *uniqueID) {
 }
 int daw_midi_record_arm(daw_session *s, uint64_t trackID, uint32_t clipIndex) {
     return guard(s, [&] {
+        if (recordingActive(s))
+            throw daw::Error("Finish audio recording before MIDI capture");
         if (daw::audioHardwareChangeActive())
             throw daw::Error("Audio hardware configuration is in progress");
 #ifdef __APPLE__
@@ -2792,6 +2795,8 @@ int daw_set_record_preroll(daw_session *s, uint64_t frames) {
     return guard(s, [&] {
         if (frames > 48000 * 30)
             throw daw::Error("Pre-roll must be 0-30 seconds");
+        if (recordingActive(s))
+            throw daw::Error("Stop recording before changing pre-roll");
         s->recordPrerollFrames = frames;
     });
 }
@@ -2807,6 +2812,8 @@ int daw_set_record_monitor(daw_session *s, int32_t on) {
         if (on != 0 && on != 1)
             throw daw::Error("Record monitor must be 0 or 1");
         s->recordMonitor = on != 0;
+        if (s->duplex)
+            s->duplex->setMonitor(s->recordMonitor);
     });
 }
 int daw_get_record_monitor(daw_session *s, int32_t *out) {
@@ -3225,10 +3232,6 @@ int daw_open_draft(daw_session *s, const char *path) {
         if (s->model.mixerGestureActive())
             throw daw::Error("Finish the mixer gesture before opening a project");
         auto loaded = daw::readDraft(required(path));
-        if (s->input) {
-            s->input->cancel();
-            s->input.reset();
-        }
         if (s->duplex) {
             s->duplex->cancel();
             s->duplex.reset();
@@ -3662,12 +3665,15 @@ int daw_record_stop(daw_session *s, const char *name, uint64_t rev) {
             throw daw::Error("Recording is not active");
         std::string takeName = required(name);
         daw::validateName(takeName);
-        if (rev != s->model.state().revision)
-            throw daw::Error("Revision conflict: refresh the project");
-        auto input = std::move(s->input);
+        if (rev != s->model.state().revision || rev != s->recordRevision)
+            throw daw::Error(
+                "Project changed during recording; cancel and recover the captured audio");
         auto duplex = std::move(s->duplex);
-        auto clip = duplex ? duplex->stop() : input->stop();
-        if (duplex) {
+        auto clip = duplex->stop();
+        if (!clip) {
+            // Stop during pre-roll/no callback: do not create an empty clip.
+            duplex->discardRecovery();
+        } else if (s->recordLoop) {
             auto passes = daw::splitLoopPasses(*clip, s->loopEnd - s->loopStart);
             std::vector<daw::Take> additions;
             additions.reserve(passes.size());
@@ -3687,24 +3693,23 @@ int daw_record_stop(daw_session *s, const char *name, uint64_t rev) {
                 s->model.addTake(s->recordTarget, takeName, std::move(clip), s->recordStart, rev);
             else
                 s->model.importAt(takeName, std::move(clip), s->recordStart, rev);
-            input->discardRecovery();
+            duplex->discardRecovery();
         }
         s->selectedFrame = s->recordStart;
         s->recordTarget = 0;
+        s->recordLoop = false;
         resetTransport(s);
     });
 }
 int daw_record_cancel(daw_session *s) {
     return guard(s, [&] {
-        if (s->input) {
-            s->input->cancel();
-            s->input.reset();
-        }
         if (s->duplex) {
             s->duplex->cancel();
             s->duplex.reset();
+            s->selectedFrame = s->recordStart;
         }
         s->recordTarget = 0;
+        s->recordLoop = false;
     });
 }
 int daw_get_recording(daw_session *s, daw_recording *out) {
@@ -3714,19 +3719,14 @@ int daw_get_recording(daw_session *s, daw_recording *out) {
         *out = {sizeof(daw_recording), 0, 0, 0, 0, 0, 0, 0};
         if (!recordingActive(s))
             return;
-        if (s->duplex) {
-            s->duplex->checkDevices();
-            out->overflowed = s->duplex->overflowed();
-            out->frames = s->duplex->frames();
-            out->callbacks = s->duplex->callbacks();
-            out->loop_recording = 1;
+        s->duplex->checkDevices();
+        out->overflowed = s->duplex->overflowed();
+        out->frames = s->duplex->frames();
+        out->callbacks = s->duplex->callbacks();
+        out->loop_recording = s->recordLoop ? 1 : 0;
+        if (s->recordLoop) {
             const auto loopFrames = s->loopEnd - s->loopStart;
             out->pass_count = static_cast<uint32_t>((out->frames + loopFrames - 1) / loopFrames);
-        } else {
-            s->input->checkDevice();
-            out->overflowed = s->input->overflowed();
-            out->frames = s->input->frames();
-            out->callbacks = s->input->callbacks();
         }
         out->recording = 1;
         out->target_track_id = s->recordTarget;
@@ -3736,12 +3736,24 @@ int daw_get_recording(daw_session *s, daw_recording *out) {
             s->recordProgress = now;
         }
         if (now - s->recordProgress > std::chrono::seconds(2)) {
-            if (s->duplex)
-                s->duplex->markStalled();
-            else
-                s->input->cancel();
+            s->duplex->markStalled();
             throw daw::Error("Input stalled: no audio callbacks for 2 seconds");
         }
+    });
+}
+int daw_get_recording_progress(daw_session *s, daw_recording_progress *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(daw_recording_progress) ||
+            out->version != DAW_RECORDING_PROGRESS_VERSION)
+            throw daw::Error("Recording progress ABI mismatch");
+        *out = {sizeof(daw_recording_progress), DAW_RECORDING_PROGRESS_VERSION, 0, 0, 0, 0};
+        if (!s->duplex)
+            return;
+        const auto progress = s->duplex->progress();
+        out->capacity_frames = progress.capacity;
+        out->preroll_remaining_frames = progress.prerollRemaining;
+        out->timeline_frame = progress.timelineFrame;
+        out->limit_reached = progress.complete ? 1 : 0;
     });
 }
 int daw_recover_take(daw_session *s, const char *path, const char *name, uint64_t rev) {
@@ -3758,7 +3770,7 @@ int daw_recover_take(daw_session *s, const char *path, const char *name, uint64_
 int daw_stop(daw_session *s) {
     return guard(s, [&] {
         if (s->duplex)
-            throw daw::Error("Use recording stop while loop recording is active");
+            throw daw::Error("Use recording stop while recording is active");
         invalidatePlaybackPreparation(s);
         s->transientOutputState = 0;
         if (s->output) {

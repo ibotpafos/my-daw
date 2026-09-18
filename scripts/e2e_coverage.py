@@ -28,7 +28,7 @@ TESTS_DIR = ROOT / "tests"
 CALL_RE = re.compile(r"\bdaw_[a-z0-9_]+(?=\s*\()")
 REF_RE = re.compile(r"[,(\s]\s*(daw_[a-z0-9_]+)\s*[,)=]")
 
-# Functions that cannot be exercised by a headless suite by policy (they would
+# Functions whose PHYSICAL path cannot be proved by a headless suite (they would
 # open a microphone/TCC prompt or need attached MIDI hardware or third-party
 # vendor plug-ins). Each must name its manual gate so the gap is honest, not
 # forgotten.
@@ -66,7 +66,7 @@ def main():
     whitebox_calls = called_in(sorted(TESTS_DIR.glob("*.cpp")))
 
     covered = sorted(abi & e2e_calls)
-    gated = sorted(name for name in abi - e2e_calls if name in MANUAL_GATES)
+    gated = sorted(name for name in abi if name in MANUAL_GATES)
     whitebox_only = sorted(
         name for name in abi - e2e_calls
         if name not in MANUAL_GATES and name in whitebox_calls
@@ -79,7 +79,8 @@ def main():
     print("public ABI functions:        " + str(len(abi)))
     print("covered by e2e scenarios:    " + str(len(covered)) + "  (" +
           str(len(covered) * 100 // max(1, len(abi))) + "%)")
-    print("manual hardware gates:       " + str(len(gated)))
+    print("manual hardware gates:       " + str(len(gated)) + " (additional to simulated-device coverage)")
+    print("ABI call ledger only: not runtime coverage or physical acceptance")
     print("white-box tests only:        " + str(len(whitebox_only)))
     print("not covered anywhere:        " + str(len(missing)))
     if gated:
