@@ -14,7 +14,8 @@ struct DuplexCaptureProgress {
 class DuplexCapture {
     Renderer& renderer_;
     std::unique_ptr<RecordingWriter> writer_;
-    uint64_t start_ = 0, capacity_ = 0, lead_ = 0, loopStart_ = 0, loopEnd_ = 0;\n    uint32_t inputChannels_ = 1;
+    uint64_t start_ = 0, capacity_ = 0, lead_ = 0, loopStart_ = 0, loopEnd_ = 0;
+    uint32_t inputChannels_ = 1;
     std::atomic<uint64_t> elapsed_{0};
     std::atomic<bool> monitor_{false};
     float monitorGain_ = 0;
