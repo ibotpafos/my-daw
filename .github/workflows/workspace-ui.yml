@@ -35,6 +35,10 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/test-workspace-ui.sh 2>&1 | tee build/workspace-ui/tests.log
+      - name: Ordinary recording through the real application and capture core
+        run: |
+          set -o pipefail
+          bash scripts/test-recording-ui.sh 2>&1 | tee build/workspace-ui/recording.log
       - name: MIDI-only export through the actual application action
         run: |
           set -o pipefail
@@ -59,6 +63,7 @@ jobs:
             build/workspace-ui/*.png
             build/workspace-ui/*.txt
             build/workspace-ui/source.zip
+            build/recording-ui/*.png
             build/mix-export-ui/proof.json
             build/mix-export-ui/midi-only.wav
           if-no-files-found: error

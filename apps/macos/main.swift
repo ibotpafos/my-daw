@@ -217,7 +217,9 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var metronomeOn = false
     let metronomeButton = NSButton(title: "", target: nil, action: nil)
     // Мониторинг входа: прямой моно-сигнал микрофона в оба канала во время
-    // луп-записи; флаг живёт в мосте как метроном, в проект не пишется.
+    // любой записи; флаг живёт в мосте как метроном, в проект не пишется.
+    var activeRecordingRevision: UInt64 = 0
+    var activeRecordingTarget: UInt64?
     var recordMonitorOn = false
     let recordMonitorButton = NSButton(title: "MON", target: nil, action: nil)
     // Автоматический мониторинг при вооружении дорожки: по умолчанию включён.
@@ -388,7 +390,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         recordMonitorButton.target = self; recordMonitorButton.action = #selector(toggleRecordMonitor(_:))
         recordMonitorButton.toolTip = "Мониторинг входа: прямой сигнал микрофона в наушники во время записи"
         recordMonitorButton.setAccessibilityLabel("Кнопка мониторинга входа")
-        recordMonitorButton.setAccessibilityHelp("Включает слышимость входа только во время луп-записи: моно-сигнал подаётся в оба канала с unity-уровнем до эффектов и без затухания. Одиночный входной захват его игнорирует.")
+        recordMonitorButton.setAccessibilityHelp("Прямой моно-вход в оба выхода во время обычной и луп-записи, включая преролл. Обходит эффекты и мастер; в файл пишется только сухой вход. Используйте наушники.")
         autoMonitorButton.setButtonType(.toggle)
         autoMonitorButton.font = .systemFont(ofSize: 10, weight: .semibold)
         autoMonitorButton.target = self; autoMonitorButton.action = #selector(toggleAutoMonitorOnArm(_:))
@@ -536,7 +538,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Упаковать проект…", #selector(packageProject), "", false), ("Открыть проект из архива…", #selector(openPackage), "", false), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспортировать стемы…", #selector(exportStems), "", false), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
         menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
         if let projectMenu = main.items.last?.submenu {
-            let prerollRoot=NSMenuItem(title:"Преролл записи (луп-режим)",action:nil,keyEquivalent:""); let prerollMenu=NSMenu(title:"Преролл записи"); prerollMenu.autoenablesItems=false
+            let prerollRoot=NSMenuItem(title:"Преролл записи",action:nil,keyEquivalent:""); let prerollMenu=NSMenu(title:"Преролл записи"); prerollMenu.autoenablesItems=false
             for (label,seconds) in [("Выключен",0.0),("1 секунда",1.0),("2 секунды",2.0),("4 секунды",4.0),("8 секунд",8.0)] {
                 let item=NSMenuItem(title:label,action:#selector(pickRecordPreroll(_:)),keyEquivalent:""); item.target=self; item.representedObject=seconds
                 item.state = UInt64((seconds*48000).rounded())==recordPrerollFrames ? .on:.off
@@ -812,9 +814,13 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard check(daw_set_record_monitor(session, wanted)) else { syncRecordMonitorButton(); return }
         recordMonitorOn = wanted != 0
         syncRecordMonitorButton()
-        status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время луп-записи" : "Мониторинг входа выключен"
+        status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время записи и преролла" : "Мониторинг входа выключен"
     }
-    func syncRecordMonitorButton() { recordMonitorButton.state = recordMonitorOn ? .on : .off }
+    func syncRecordMonitorButton() {
+        var value: Int32 = 0
+        if daw_get_record_monitor(session, &value) == 0 { recordMonitorOn = value != 0 }
+        recordMonitorButton.state = recordMonitorOn ? .on : .off
+    }
     @objc func toggleAutoMonitorOnArm(_ sender: NSButton) {
         let wanted: Int32 = autoMonitorOnArm ? 0 : 1
         guard check(daw_set_auto_monitor_on_arm(session, wanted)) else { syncAutoMonitorButton(); return }
@@ -1414,7 +1420,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         mixerWorkspace.editingEnabled = enabled
         func visit(_ view: NSView) {
             // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
-            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== exportButton { button.isEnabled = enabled }
+            if let button = view as? NSButton, button !== recordButton, button !== stopButton, button !== metronomeButton, button !== recordMonitorButton, button !== exportButton { button.isEnabled = enabled }
             if let popup = view as? NSPopUpButton { popup.isEnabled = enabled }
             if let slider = view as? NSSlider { slider.isEnabled = enabled }
             if let field = view as? NSTextField, field.isEditable { field.isEnabled = enabled }
@@ -1422,6 +1428,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if let contentView = window.contentView { visit(contentView) }
         recordButton.isEnabled = true
+        stopButton.isEnabled = isRecording || isPlaying
+        recordMonitorButton.isEnabled = true
         updateMixExportAvailability()
     }
     func recordingAlert(_ message: String) {
@@ -1624,42 +1632,32 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         commitTempo(value)
     }
     @objc func changeGrid(_ sender:NSPopUpButton) { updateTimelineTools() }
-    func beginRecording() {
-        guard !isRecording else { return }
-        guard let recordingRoot else { recordingAlert("Не удалось подготовить папку восстановления записи."); return }
-        var transport=daw_transport(); transport.struct_size=UInt32(MemoryLayout<daw_transport>.size)
-        guard check(daw_get_transport(session,&transport)) else { return }
-        let recovery=recordingRoot.appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).mydawtake")
-        let start=rangeStart ?? transport.frame
-        let started=armedTrackID.map{daw_record_start_take(session,$0,start,recovery.path)} ?? daw_record_start(session,start,recovery.path)
-        guard check(started) else { return }
-        activeRecordingURL=recovery
-        isRecording=true; updateRecordButton(true); setProjectControlsEnabled(false); pollTransport()
-    }
-    func finishRecording() {
-        guard isRecording else { return }
-        let name="Запись \(recordingNumber)"
-        let target=armedTrackID
-        if check(daw_record_stop(session,name,revision)) {
-            if let target { selectedTakes[target]=Int.max }
-            recordingNumber += 1; activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); refresh(); pollTransport()
-        } else {
-            _=daw_record_cancel(session); activeRecordingURL=nil; isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); pollTransport()
-        }
-    }
     func pollTransport() {
         guard session != nil else { return }
         defer { updateWorkspaceChrome(); updateMixExportAvailability(); for view in midiArrangementViews { view.playhead = playheadFrame } }
         updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
-        guard check(daw_get_recording(session,&recording)) else {
-            _=daw_record_cancel(session); isRecording=false; updateRecordButton(false); setProjectControlsEnabled(true); return
+        guard daw_get_recording(session, &recording) == 0 else {
+            failRecording(audioConfigurationError().localizedDescription)
+            return
         }
         if recording.recording != 0 {
-            isRecording=true; updateRecordButton(true)
-            if recording.loop_recording != 0 {if let start=rangeStart,let end=rangeEnd,end>start{let frame=start+recording.frames%(end-start);for wave in waveforms{wave.playhead=frame}};transportLabel.stringValue=String(format:"● Loop recording  %.1f с · дублей %d · playback + mono input",Double(recording.frames)/48000,recording.pass_count)}
-            else{transportLabel.stringValue=String(format:recording.target_track_id != 0 ? "● Новый дубль  %.1f с · mono / 48 кГц":"● Запись  %.1f с · mono / 48 кГц",Double(recording.frames)/48000)}
-            if recording.overflowed != 0 { finishRecording() }
+            var progress = daw_recording_progress()
+            progress.struct_size = UInt32(MemoryLayout<daw_recording_progress>.size)
+            progress.version = UInt32(DAW_RECORDING_PROGRESS_VERSION)
+            guard daw_get_recording_progress(session, &progress) == 0 else {
+                failRecording(audioConfigurationError().localizedDescription)
+                return
+            }
+            presentRecording(recording, progress: progress)
+            if recording.overflowed != 0 || progress.limit_reached != 0 {
+                finishRecording()
+                if recording.overflowed != 0 {
+                    setProjectMessage("Запись остановлена: входные кадры не успевали сохраняться. Проверьте сохранённую часть и файл восстановления.")
+                } else {
+                    setProjectMessage("Запись завершена на текущем лимите захвата; принятые кадры сохранены.")
+                }
+            }
             return
         }
         var t = daw_transport(); t.struct_size = UInt32(MemoryLayout<daw_transport>.size)
@@ -1828,7 +1826,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard check(daw_set_record_preroll(session,frames)) else{return}
         recordPrerollFrames=frames; UserDefaults.standard.set(seconds,forKey:"transport.prerollSeconds.v1")
         sender.menu?.items.forEach{ $0.state = ($0.representedObject as? Double).map{ UInt64(($0*48000).rounded())==frames } == true ? .on:.off }
-        storageMessage(frames==0 ? "Преролл выключен." : "Преролл \(seconds) с — транспорт и клик начнутся раньше punch-in (запись в луп).")
+        storageMessage(frames==0 ? "Преролл выключен." : "Преролл \(seconds) с — транспорт и клик начнутся раньше записи, ведущие кадры в тейк не попадут.")
     }
     @objc func deleteClipGroupFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
     @objc func pickClipPan(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_clip_pan(session,p.trackID,UInt32(p.clipIndex),p.panValue,revision)){selectedClips[p.trackID]=p.clipIndex;refresh(); pollTransport()} }
@@ -2245,7 +2243,10 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func seekAudio(_ frame: UInt64) { guard !isRecording else{return}; if check(daw_seek_frame(session, frame)) { pollTransport() } }
     @objc func rewindAudio() { finishEditing(); seekAudio(0) }
     @objc func playAudio() { guard !isRecording else{return}; finishEditing(); if check(daw_play(session)) { pollTransport() } }
-    @objc func stopAudio() { _ = check(daw_stop(session)); pollTransport() }
+    @objc func stopAudio() {
+        if isRecording { finishRecording(); return }
+        _ = check(daw_stop(session)); pollTransport()
+    }
     @objc func togglePlayStop() {
         // Пробел — честный тумблер. Во время записи он обязан завершить тейк:
         // голый daw_stop оставил бы активный рекордер «висячим».
