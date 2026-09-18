@@ -271,7 +271,7 @@ int main(){try{
     auto version2=daw::readDraft(path);CHECK(version2.tracks[0].regions[0].start==0 && version2.tracks[0].regions[0].length==4800);
     CHECK(sqlite3_exec(db,"PRAGMA user_version=1; ALTER TABLE tracks DROP COLUMN pcm;",nullptr,nullptr,nullptr)==SQLITE_OK);sqlite3_close(db);
     auto legacy=daw::readDraft(path);CHECK(legacy.tracks.size()==1 && !legacy.tracks[0].audio);
-    daw::Session limits;for(int i=0;i<8;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
+    daw::Session limits;for(int i=0;i<32;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
     // Deterministic malformed-input smoke corpus; not a replacement for sustained fuzzing.
     std::mt19937 rng(7);for(int i=0;i<400;++i){auto mutation=bytes;for(int n=0;n<5;++n)mutation[rng()%44]=static_cast<unsigned char>(rng());try{daw::decodeWav(mutation);}catch(const std::exception&){} }
     // MIDI plan: frame-exact offsets, off-before-on ordering, capacity carry,
