@@ -316,8 +316,10 @@ void validate(const State &state) {
             markerFirst = false;
         }
     }
-    if (audioCount > 8 || audioAssets > 32 || audioBytes > 64 * 1024 * 1024)
-        throw Error("Prototype supports 8 audio tracks, 32 takes and 64 MiB decoded audio");
+    // Track count is no longer the prototype bottleneck: the existing source/take
+    // and decoded-audio budgets remain the authoritative memory guards.
+    if (audioCount > 32 || audioAssets > 32 || audioBytes > 64 * 1024 * 1024)
+        throw Error("Project supports at most 32 audio tracks/sources and 64 MiB decoded audio");
     if (state.buses.size() > 16)
         throw Error("Project supports at most 16 buses");
     std::set<uint64_t> busIDs;
