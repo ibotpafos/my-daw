@@ -23,6 +23,17 @@ MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_CANDIDATES = 32
 
 
+def launch_time(value: str) -> float:
+    """Accept Apple's IPS date (including its space before offset) and ISO dates."""
+    try:
+        parsed = datetime.strptime(value, '%Y-%m-%d %H:%M:%S.%f %z')
+    except ValueError:
+        parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError('Crash launch time must carry its timezone')
+    return parsed.timestamp()
+
+
 def matched_report(path: Path, pid: int, executable: Path, started: float) -> bytes | None:
     """Reject unrelated, stale, incomplete, symlinked or oversized reports."""
     try:
@@ -47,7 +58,7 @@ def matched_report(path: Path, pid: int, executable: Path, started: float) -> by
             return None
         # procLaunch has subsecond precision; allow the scheduler/formatting
         # rounding at the beginning of the launch, never an earlier process.
-        launched = datetime.fromisoformat(report['procLaunch']).timestamp()
+        launched = launch_time(report['procLaunch'])
         if not math.isfinite(launched) or not started - 1 <= launched <= time.time() + 1:
             return None
         return data

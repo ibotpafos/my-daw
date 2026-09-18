@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('native_test_runner', ROOT / 'scripts/native_test_runner.py')
@@ -36,6 +36,26 @@ class NativeTestRunnerTests(unittest.TestCase):
     def test_two_object_report_matches_exact_child(self):
         data = self.write_report()
         self.assertEqual(runner.matched_report(self.report, 123, self.executable, self.started), data)
+
+    def test_real_apple_launch_format_with_timezone_and_fractional_seconds(self):
+        # Format observed in the actual macOS 15 IPS for our isolated child;
+        # this space before the numeric offset is NOT accepted by fromisoformat.
+        for offset in [0, -5, 5.5]:
+            with self.subTest(offset=offset):
+                date = datetime.now(timezone(timedelta(hours=offset)))
+                launch = f'{date:%Y-%m-%d %H:%M:%S}.{date.microsecond // 100:04d} {date:%z}'
+                data = self.write_report(procLaunch=launch)
+                self.assertEqual(runner.matched_report(
+                    self.report, 123, self.executable, self.started), data)
+
+    def test_rejects_naive_or_future_launch_in_both_formats(self):
+        future = datetime.now(timezone.utc) + timedelta(days=1)
+        for launch in [datetime.now().isoformat(), future.isoformat(),
+                       future.strftime('%Y-%m-%d %H:%M:%S.%f %z')]:
+            with self.subTest(launch=launch):
+                self.write_report(procLaunch=launch)
+                self.assertIsNone(runner.matched_report(
+                    self.report, 123, self.executable, self.started))
 
     def test_rejects_other_pid_name_or_earlier_launch(self):
         for changes in [{'pid': 124}, {'pid': '123'}, {'procName': 'another-app'},
