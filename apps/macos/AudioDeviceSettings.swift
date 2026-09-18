@@ -169,7 +169,7 @@ final class AudioDeviceSettingsController: NSWindowController {
         populateChannels(inputChannel, count: input?.inputs ?? 0, selection: draft.inputChannel)
         populateChannels(inputRight, count: input?.inputs ?? 0, selection: draft.inputRight)
         recordingMode.selectItem(withTag: Int(draft.recordingChannels))
-        recordingMode.item(withTag: 2)?.isEnabled = (input?.inputs ?? 0) >= 2
+        recordingMode.itemArray.first(where: { $0.tag == 2 })?.isEnabled = (input?.inputs ?? 0) >= 2
         inputRight.isEnabled = draft.recordingChannels == 2
         populateChannels(outputLeft, count: output?.outputs ?? 0, selection: draft.outputLeft)
         populateChannels(outputRight, count: output?.outputs ?? 0, selection: draft.outputRight)
