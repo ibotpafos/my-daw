@@ -12,22 +12,30 @@ int main() {
         config.version = DAW_AUDIO_DEVICE_CONFIG_VERSION;
         CHECK_OK(session.get(), daw_get_audio_device_config(session.get(), &config));
         CHECK(config.input_uid[0] == 0 && config.output_uid[0] == 0);
-        CHECK(config.input_channel == 0 && config.output_left == 0 && config.output_right == 1);
+        CHECK(config.input_channel == 0 && config.input_right == 1 &&
+              config.recording_channels == 1 && config.output_left == 0 && config.output_right == 1);
         const auto before = dumpOf(session.get());
         const auto revision = rev(session.get());
         std::strcpy(config.input_uid, "unavailable-studio-input");
         std::strcpy(config.output_uid, "unavailable-studio-output");
-        config.input_channel = 3; config.output_left = 2; config.output_right = 5;
+        config.input_channel = 3; config.input_right = 4; config.recording_channels = 2;
+        config.output_left = 2; config.output_right = 5;
         CHECK_OK(session.get(), daw_set_audio_device_config(session.get(), &config));
         CHECK(rev(session.get()) == revision && dumpOf(session.get()) == before);
         auto actual = abi<daw_audio_device_config>(); actual.version = DAW_AUDIO_DEVICE_CONFIG_VERSION;
         CHECK_OK(session.get(), daw_get_audio_device_config(session.get(), &actual));
-        CHECK(std::strcmp(actual.input_uid, config.input_uid) == 0 && actual.output_right == 5);
+        CHECK(std::strcmp(actual.input_uid, config.input_uid) == 0 &&
+              actual.recording_channels == 2 && actual.input_channel == 3 &&
+              actual.input_right == 4 && actual.output_right == 5);
         auto bad = config; bad.output_right = bad.output_left;
         CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
         bad = config; bad.input_channel = UINT32_MAX;
         CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
-        bad = config; bad.version = 2;
+        bad = config; bad.input_right = bad.input_channel;
+        CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
+        bad = config; bad.recording_channels = 3;
+        CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
+        bad = config; bad.version = 99;
         CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
         bad = config; --bad.struct_size;
         CHECK_REJ(session.get(), daw_set_audio_device_config(session.get(), &bad));
