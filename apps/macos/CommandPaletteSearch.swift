@@ -6,6 +6,12 @@ struct DAWCommandSearchItem: Equatable, Sendable {
     let title: String
     let path: String
     let shortcut: String
+    let aliases: [String]
+
+    init(id: String, title: String, path: String, shortcut: String, aliases: [String] = []) {
+        self.id = id; self.title = title; self.path = path
+        self.shortcut = shortcut; self.aliases = aliases
+    }
 }
 
 enum DAWCommandPaletteScope: Int, CaseIterable, Sendable {
@@ -145,7 +151,17 @@ struct DAWCommandPaletteSearch {
         guard !query.isEmpty else { return Array(items.prefix(limit)) }
         let tokens = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         return items.enumerated().compactMap { offset, item -> (Int, Int, DAWCommandSearchItem)? in
-            guard let score = score(item, query: query, tokens: tokens) else { return nil }
+            var best = score(item, query: query, tokens: tokens)
+            // Synonyms are alternate titles, not extra executable commands.
+            // Keep the best match, rather than boosting commands with many aliases.
+            for alias in item.aliases.prefix(8) {
+                let synonym = DAWCommandSearchItem(id: item.id, title: alias,
+                                                   path: item.path, shortcut: item.shortcut)
+                if let rank = score(synonym, query: query, tokens: tokens) {
+                    best = max(best ?? Int.min, rank - 90)
+                }
+            }
+            guard let score = best else { return nil }
             return (score, offset, item)
         }.sorted { lhs, rhs in
             lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 > rhs.0
@@ -176,7 +192,7 @@ struct DAWCommandPaletteSearch {
         return total - min(80, max(0, title.count - query.count))
     }
 
-    private static func normalize(_ value: String) -> String {
+    static func normalize(_ value: String) -> String {
         let locale = Locale(identifier: "en_US_POSIX")
         return value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
             .lowercased(with: locale)
