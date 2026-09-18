@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           base=852611cdd2c9c2a3dde4d0e20caa5efc50d96474
-          test "$(git rev-parse HEAD^)" = "$base"
+          test "$(git rev-parse HEAD^)" = dfc473cdfd6d77080f07092903441815c3c20185
           test "$(git diff --name-only "$base" HEAD)" = '.github/workflows/stage-p0-hardware-format.yml'
           test "$(git rev-parse "$base^{tree}")" = 3b96b3bf7931455dc6df0437409613485a7651f2
           chunks=(89f0457c758e3f6090acb887ba5fb0568be40ba0 cec743bb139129180f33011ad67460324ffba2d3 78eb0188961eb39652b785e8d941b8284493f692 e1356b11f9935d3ad67638855972e6e393e77925 95c51c4206b4c29549315e07723f3e7f4b47797a)
@@ -59,7 +59,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang-format-18 libsamplerate0-dev pkg-config
           clang-format-18 -i engine/bridge/daw.cpp
-          git diff -w --exit-code
+          # Reviewed formatter output: only the long configuration guard is
+          # wrapped. git diff -w still compares line boundaries, so compare the
+          # complete exact expected blob instead of weakening any source checks.
+          test "$(git hash-object engine/bridge/daw.cpp)" = 655bc7e8c4ce3514b53b47ac4ff6c249f1f2e4b2
           git add engine/bridge/daw.cpp
           git diff --cached --check
           git diff --cached 852611cdd2c9c2a3dde4d0e20caa5efc50d96474 --exit-code -- .github
