@@ -29,7 +29,7 @@ class MacDuplex final : public Duplex {
     AudioDeviceIOProcID proc_ = nullptr;
     std::unique_ptr<Context> context_;
     std::unique_ptr<DuplexCapture> capture_;
-    std::array<float, DuplexCapture::maximumSlice> input_{}, left_{}, right_{};
+    std::array<float, DuplexCapture::maximumSlice> inputLeft_{}, inputRight_{}, left_{}, right_{};
     std::atomic<uint64_t> callbacks_{0}, errors_{0};
     OutputState state_ = OutputState::idle;
     uint64_t generation_ = 0;
@@ -64,21 +64,31 @@ class MacDuplex final : public Duplex {
         callbacks_.fetch_add(1, std::memory_order_relaxed);
         if (errors_.load(std::memory_order_acquire) || !capture_ || capture_->progress().complete ||
             capture_->clockError() != CaptureClockError::none) { silence(output); return; }
-        uint32_t inFrames = 0, leftFrames = 0, rightFrames = 0;
+        uint32_t inFrames = 0, inRightFrames = 0, leftFrames = 0, rightFrames = 0;
         if (!shape(input, profile_.inputBuffers) || !shape(output, profile_.outputBuffers) ||
-            !selected(input, profile_.input, inFrames) || !selected(output, profile_.left, leftFrames) ||
-            !selected(output, profile_.right, rightFrames) || inFrames != leftFrames || inFrames != rightFrames) {
+            !selected(input, profile_.input, inFrames) ||
+            (profile_.inputChannels == 2 && !selected(input, profile_.inputRight, inRightFrames)) ||
+            !selected(output, profile_.left, leftFrames) || !selected(output, profile_.right, rightFrames) ||
+            inFrames != leftFrames || inFrames != rightFrames ||
+            (profile_.inputChannels == 2 && inFrames != inRightFrames)) {
             silence(output);
             errors_.fetch_add(1, std::memory_order_release);
             renderer.playing.store(false, std::memory_order_release);
             return;
         }
-        const auto* source = static_cast<const float*>(input->mBuffers[profile_.input.buffer].mData);
-        for (uint32_t f = 0; f < inFrames; ++f)
-            input_[f] = source[f * profile_.input.stride + profile_.input.channel];
+        const auto* sourceLeft = static_cast<const float*>(input->mBuffers[profile_.input.buffer].mData);
+        const auto* sourceRight = profile_.inputChannels == 2
+            ? static_cast<const float*>(input->mBuffers[profile_.inputRight.buffer].mData) : sourceLeft;
+        for (uint32_t f = 0; f < inFrames; ++f) {
+            inputLeft_[f] = sourceLeft[f * profile_.input.stride + profile_.input.channel];
+            inputRight_[f] = profile_.inputChannels == 2
+                ? sourceRight[f * profile_.inputRight.stride + profile_.inputRight.channel]
+                : inputLeft_[f];
+        }
         silence(output);
-        capture_->process(input_.data(), left_.data(), right_.data(), inFrames,
-                          timestamp(outputTime), timestamp(inputTime));
+        capture_->process(inputLeft_.data(), left_.data(), right_.data(), inFrames,
+                          timestamp(outputTime), timestamp(inputTime),
+                          profile_.inputChannels == 2 ? inputRight_.data() : nullptr);
         auto* left = static_cast<float*>(output->mBuffers[profile_.left.buffer].mData);
         auto* right = static_cast<float*>(output->mBuffers[profile_.right.buffer].mData);
         for (uint32_t f = 0; f < inFrames; ++f) {
@@ -134,7 +144,7 @@ public:
                 throw Error("Recording requires one input/output device or a Core Audio aggregate. Select it in Audio Settings.");
             profile_ = readDuplexHardwareProfile(opened_, configuration_);
             capture_ = std::make_unique<DuplexCapture>(renderer, snapshot_, capacity_, path_, start_,
-                loopStart_, loopEnd_, preroll_, monitor_, profile_.latency);
+                loopStart_, loopEnd_, preroll_, monitor_, profile_.latency, profile_.inputChannels);
             context_ = std::make_unique<Context>();
             context_->owner.store(this, std::memory_order_release);
             checkedDuplex(AudioDeviceCreateIOProcID(opened_.id, callback, context_.get(), &proc_), "Create timestamped recording IO");
