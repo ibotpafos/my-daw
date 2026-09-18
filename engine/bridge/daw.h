@@ -243,13 +243,29 @@ enum { DAW_OUTPUT_IDLE=0, DAW_OUTPUT_RUNNING=1, DAW_OUTPUT_STOPPED=2, DAW_OUTPUT
 typedef struct { uint32_t struct_size; int32_t state; uint32_t device_id; uint64_t generation; uint64_t callbacks; uint64_t callback_errors; } daw_output_status;
 typedef struct { uint32_t struct_size; int32_t recording; int32_t overflowed; uint64_t frames; uint64_t callbacks; uint64_t target_track_id; int32_t loop_recording; uint32_t pass_count; } daw_recording;
 #define DAW_RECORDING_PROGRESS_VERSION 1
-/* Captured-frame clock, NOT hardware/PDC latency compensation. Separate from
+/* Recording progress (compensated when timing.enabled). Separate from
  * legacy daw_recording so old structure layouts remain valid. Idle = zeros. */
 typedef struct {
     uint32_t struct_size, version;
     uint64_t capacity_frames, preroll_remaining_frames, timeline_frame;
     int32_t limit_reached;
 } daw_recording_progress;
+#define DAW_RECORDING_TIMING_VERSION 1
+/* Read-only per-take snapshot. Separation is measured from paired HAL stamps;
+ * buffer/safety are diagnostics, NOT additional terms. No project mutation.
+ * Request Stop, keep polling/get_recording for failures, then finalize when
+ * can_finish != 0. While draining no new backing/MON is emitted. */
+typedef struct {
+    uint32_t struct_size, version;
+    int32_t enabled, ready, stop_requested, can_finish;
+    uint32_t device_id, buffer_frames;
+    uint32_t input_device_frames, input_stream_frames, input_safety_frames;
+    uint32_t output_device_frames, output_stream_frames, output_safety_frames;
+    uint32_t input_stream_id, output_left_stream_id, output_right_stream_id;
+    uint64_t timestamp_separation_frames, compensation_frames, graph_frames;
+    uint64_t discarded_leading_frames, drain_remaining_frames;
+} daw_recording_timing;
+
 /* Background PCM-WAV import. A job owns only a source path plus immutable
  * intent; it never retains a session. Poll and cancel are thread-safe while
  * the caller retains the handle; release must be serialized with all handle
@@ -359,6 +375,9 @@ int daw_get_output_status(daw_session*, daw_output_status*);
  * The app must obtain microphone permission before calling start. */
 int daw_record_start(daw_session*, uint64_t start_frame, const char* recovery_path);
 int daw_record_start_take(daw_session*,uint64_t track_id,uint64_t start_frame,const char* recovery_path);
+/* Nonblocking, idempotent while active. Never commits a clip or revision. */
+int daw_record_request_stop(daw_session* s);
+int daw_get_recording_timing(daw_session* s, daw_recording_timing* out);
 int daw_record_stop(daw_session*, const char* name, uint64_t expected_revision);
 int daw_record_cancel(daw_session*);
 int daw_get_recording(daw_session*, daw_recording*);

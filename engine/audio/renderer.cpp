@@ -819,6 +819,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   loopBegin = loopStart;
   loopEnd = loopEndFrame;
   looping = nextLooping;
+  recordingTimeline = recordingEndFrame != 0;
   cursor = start;
   transportStart = start;
   renderedInputFrames = 0;
@@ -948,7 +949,24 @@ void Renderer::processSend(size_t s, float inL, float inR, float postL, float po
                      routeL, routeR);
 }
 
-void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
+// The recording click follows the graph's audible timeline. Its system-clock
+// delay is not added to the audio signal twice: only this post-insert click is
+// scheduled G frames later. Export and ordinary playback keep their contract.
+void Renderer::mixRecordingMetronome(float *left, float *right, uint32_t frames) noexcept {
+  const uint64_t latency = masterLatencyFrames();
+  uint32_t done = static_cast<uint32_t>(std::min<uint64_t>(frames, processTime < latency ? latency - processTime : 0));
+  while (done < frames) {
+    uint64_t frame = transportStart + processTime + done - latency;
+    if (looping && frame >= loopEnd)
+      frame = loopBegin + (frame - loopBegin) % (loopEnd - loopBegin);
+    const auto count = static_cast<uint32_t>(std::min<uint64_t>(frames - done,
+        looping && frame < loopEnd ? loopEnd - frame : frames - done));
+    mixMetronome(metronomeTimeline, frame, count, left + done, right + done);
+    done += count;
+  }
+}
+
+void Renderer::renderTail(float *left, float *right, uint32_t frames, bool recordingClick) noexcept {
   std::fill_n(left, frames, 0.0f);
   std::fill_n(right, frames, 0.0f);
   clearMeters();
@@ -1020,6 +1038,8 @@ void Renderer::renderTail(float *left, float *right, uint32_t frames) noexcept {
     }
     if (!processChain(masterEffects, masterEffectAutomation, masterEffectIDs, outL, outR, count, processTime, std::numeric_limits<uint64_t>::max()))
       pluginErrors.fetch_add(1, std::memory_order_relaxed);
+    if (recordingClick && recordingTimeline && metronomeOn.load(std::memory_order_relaxed))
+      mixRecordingMetronome(outL, outR, count);
     processTime += count;
     done += count;
   }
@@ -1279,8 +1299,10 @@ void Renderer::renderInternal(float *left, float *right, uint32_t frames,
     // The click track joins after master gain and master inserts: monitoring
     // only, never processed, summed to both channels at cursor-relative
     // positions (frame - blockStart). The offline export render suppresses it.
-    if (!suppressMetronome && metronomeOn.load(std::memory_order_relaxed))
-      mixMetronome(metronomeTimeline, cursor, count, outL, outR);
+    if (!suppressMetronome && metronomeOn.load(std::memory_order_relaxed)) {
+      if (recordingTimeline) mixRecordingMetronome(outL, outR, count);
+      else mixMetronome(metronomeTimeline, cursor, count, outL, outR);
+    }
     processTime += count;
     cursor += count;
     done += count;
