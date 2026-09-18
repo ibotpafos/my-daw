@@ -13,7 +13,8 @@ Before audio starts, the adapter resolves the selected UID and input/master
 channels, finds their streams by `kAudioStreamPropertyStartingChannel`, and reads
 device/stream presentation latency, safety offsets, buffer size and virtual
 format. Unreadable values are errors, not assumed zero. Input/output must share
-a device; selected L/R streams must have equal presentation latency. Native
+a device; selected stereo input streams and master L/R streams must report
+matching latency within their respective pair. Native
 48 kHz packed Float32 streams are supported, interleaved or planar. Other virtual
 formats are explicitly rejected without changing hardware or substituting a
 default. This is a narrower format contract than AUHAL's implicit conversion.
@@ -77,8 +78,9 @@ Ordinary clips and loop passes use the same aligned stream. Existing loop
 splitting therefore starts exactly on the requested loop boundary, including
 partial passes. A seamless transport punch interface is not introduced here;
 this implementation handles the existing requested Record In, pre-roll,
-manual Record Out and loop contracts. Recording remains mono, 48 kHz and bounded
-by the existing 60-second/media budget; stereo/disk streaming remain P0-05.
+manual Record Out and loop contracts. P0-05A extends the same timing snapshot to
+an explicit stereo input pair. Recording remains 48 kHz and bounded by the
+existing 60-second/media budget; file-backed long recording remains P0-05B.
 
 ## Real-time and lifetime boundaries
 
