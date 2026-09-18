@@ -62,6 +62,7 @@ int main() {
         bad = config; bad.inputChannels = 2; bad.inputRight = bad.inputChannel;
         rejects([&] { validateAudioDeviceConfiguration(bad); });
         config.inputChannels = 2; config.inputChannel = 0; config.inputRight = 1;
+        devices[0].inputChannels = 2;
         check(resolveAudioDevice(config, devices, AudioDeviceDirection::Input).id == 7);
         config.inputRight = 1; devices[0].inputChannels = 1;
         rejects([&] { resolveAudioDevice(config, devices, AudioDeviceDirection::Input); });
