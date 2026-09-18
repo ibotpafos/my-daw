@@ -2,13 +2,14 @@ import AppKit
 
 // The implementation in DraftApp must be visible to AppKit's Objective-C
 // menu update path; a same-named Swift method alone is not a validator.
+// Menus are installed before the window exists, so validation must tolerate nil.
 extension DraftApp: NSMenuItemValidation {
     /// The menu, context menu and keyboard share the document clipboard. Resolve
     /// selection from the current projection; never copy via a remembered index
     /// from another track or silently reinterpret MIDI as an audio region.
     func copyArrangementClipboard(trackID: UInt64? = nil, index: Int? = nil,
                                   midi: Bool? = nil, cut: Bool) {
-        guard let editor = window.arrangementEditing as? ArrangementEditingController else { return }
+        guard let editor = window?.arrangementEditing as? ArrangementEditingController else { return }
         guard !isEditingText, editor.editable, editor.gesture == nil,
               editor.documentID == midiDocumentID,
               editor.projectionRevision == editor.currentRevision() else { return }
@@ -30,7 +31,7 @@ extension DraftApp: NSMenuItemValidation {
     }
 
     func canUseArrangementClipboard(_ action: Selector?) -> Bool {
-        guard !isEditingText, let editor = window.arrangementEditing as? ArrangementEditingController,
+        guard !isEditingText, let editor = window?.arrangementEditing as? ArrangementEditingController,
               editor.editable, editor.gesture == nil,
               editor.documentID == midiDocumentID, editor.projectionRevision == editor.currentRevision(),
               let track = inspectorTrackID ?? selectedMixerID else { return false }
@@ -52,7 +53,7 @@ extension DraftApp {
                                          [ArrangementEditingController.Item])? {
         guard !isEditingText, !isRecording, !midiTakeArmed,
               automationGesture == nil, pluginParameterGesture == nil,
-              let editor = window.arrangementEditing as? ArrangementEditingController,
+              let editor = window?.arrangementEditing as? ArrangementEditingController,
               editor.gesture == nil, editor.documentID == midiDocumentID,
               editor.projectionRevision == editor.currentRevision(),
               let track = inspectorTrackID ?? selectedMixerID,
