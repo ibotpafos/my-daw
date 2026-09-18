@@ -19,6 +19,12 @@ static std::vector<float> pump(float value, uint32_t frames) {
     CHECK(recording_fixture_pump(in.data(), frames, left.data(), right.data()) == 0);
     CHECK(left == right); return left;
 }
+static void pumpStereo(float leftValue, float rightValue, uint32_t frames) {
+    std::vector<float> inLeft(frames, leftValue), inRight(frames, rightValue);
+    std::vector<float> outLeft(frames, -99), outRight(frames, -99);
+    CHECK(recording_fixture_pump_stereo(inLeft.data(), inRight.data(), frames,
+                                        outLeft.data(), outRight.data()) == 0);
+}
 // Existing renderer start smoothing is part of playback/export, not captured PCM.
 static bool sameContent(Dump a, const Dump& b) {
     a.revision = b.revision; return a == b;
@@ -64,6 +70,32 @@ int main() {
             Bridge reopened; CHECK_OK(reopened.get(), daw_open_draft(reopened.get(), (root / "recorded.mydaw").c_str()));
             CHECK(sameContent(dumpOf(reopened.get()), recorded));
             CHECK(exportProject(reopened.get(), root / "reopen.wav").samples == wave.samples);
+        }
+        // 1b. Stereo source selection is session/machine state, not a project edit.
+        {
+            Bridge session; auto* s = session.get(); const auto before = rev(s);
+            auto config = abi<daw_record_input_config>();
+            config.version = DAW_RECORD_INPUT_CONFIG_VERSION;
+            config.channels = 2; config.left = 0; config.right = 1;
+            CHECK_OK(s, daw_set_record_input_config(s, &config));
+            auto readback = abi<daw_record_input_config>();
+            readback.version = DAW_RECORD_INPUT_CONFIG_VERSION;
+            CHECK_OK(s, daw_get_record_input_config(s, &readback));
+            CHECK(readback.channels == 2 && readback.left == 0 && readback.right == 1 && rev(s) == before);
+            auto invalid = config; invalid.right = invalid.left;
+            CHECK_REJ(s, daw_set_record_input_config(s, &invalid));
+            const auto raw = (root / "stereo.mydawtake").string();
+            CHECK_OK(s, daw_record_start(s, 0, raw.c_str()));
+            CHECK_REJ(s, daw_set_record_input_config(s, &config));
+            pumpStereo(0.25f, -0.5f, 1024);
+            CHECK_OK(s, daw_record_stop(s, "Stereo", before));
+            const auto rendered = exportProject(s, root / "stereo.wav");
+            CHECK(rendered.frames() == 1024);
+            for (size_t frame = 0; frame < rendered.frames(); ++frame) {
+                const float gain = fader(frame + 1);
+                CHECK(std::abs(rendered.samples[2 * frame] - 0.25f * gain) < 1e-7f);
+                CHECK(std::abs(rendered.samples[2 * frame + 1] + 0.5f * gain) < 1e-7f);
+            }
         }
         // 2. Backing playback + dry capture, pre-roll crossing a block boundary,
         // live MON on/off, input safety, and continuing beyond backing duration.
