@@ -89,7 +89,7 @@ class MacDuplex final : public Duplex {
                                 inLeftFrames, timestamp(outputTime), timestamp(inputTime));
         auto* left = static_cast<float*>(output->mBuffers[profile_.left.buffer].mData);
         auto* right = static_cast<float*>(output->mBuffers[profile_.right.buffer].mData);
-        for (uint32_t f = 0; f < inFrames; ++f) {
+        for (uint32_t f = 0; f < inLeftFrames; ++f) {
             left[f * profile_.left.stride + profile_.left.channel] = left_[f];
             right[f * profile_.right.stride + profile_.right.channel] = right_[f];
         }
