@@ -40,7 +40,7 @@ final class AudioDeviceSettingsController: NSWindowController {
         draft = configuration
         loadDevices = load
         applyConfiguration = apply
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 480),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 520),
                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.title = "Настройки аудио"
         panel.isReleasedWhenClosed = false
