@@ -28,6 +28,14 @@ Input and output still have to use one Core Audio device or an explicitly
 configured aggregate device. Stereo recording does not combine unrelated
 clock domains.
 
+## Public configuration
+
+The existing `daw_audio_device_config` remains ABI version 1. Stereo source
+shape is exposed through a separate versioned `daw_record_input_config`
+(channels/left/right). Device routing and recording source are both machine
+state and remain outside project revision/Undo. This avoids breaking existing
+C clients while allowing explicit two-channel capture.
+
 ## Native path
 
 Before starting capture, the macOS adapter resolves both requested input
@@ -47,7 +55,7 @@ recording file.
 
 ## Recovery and compatibility
 
-`RecordingWriter` now accepts canonical stereo frames directly. Its ring,
+`RecordingWriter` accepts canonical stereo frames directly. Its ring,
 checkpoint file and recovery payload remain interleaved two-channel Float32.
 The recovery-file version therefore does not change. Mono callers use the
 same writer by passing the same input for both sides.
