@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "source_archive": "General_Digits_DAW_UI_Screens.zip",
+  "archive_sha256": "f760d5bb87e20a8dea99fe290eeac20c55ad7890ecb8febd4fffe7df9e006a83",
+  "screen_count": 16,
+  "image_count": 17,
+  "files": [
+    {
+      "name": "00_contact_sheet.png",
+      "bytes": 427331,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "f41fe7cc30d2fac75c62cfb4b19526d79c17edc7866f4a91be2fc8607bf19845"
+    },
+    {
+      "name": "01_arrange.png",
+      "bytes": 75873,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "dc961617d265b06dcbd0bdf35e3bac1bc71e9253e21e0feb9862873348657f5e"
+    },
+    {
+      "name": "02_mixer.png",
+      "bytes": 69590,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "60cff01fbf7471f88bddfffa1de8e4a4e6d4688c25224b1b0f397b1aafdc4386"
+    },
+    {
+      "name": "03_piano_roll.png",
+      "bytes": 64536,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "5d811e070d48f8f41173e6542fc539e246e11808ee433bf515576ae98984953e"
+    },
+    {
+      "name": "04_vocal_comping.png",
+      "bytes": 96355,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "8b56c950f568aabfb407506078efb22fbde5ba5a116ae1bf1e4c7e7a25ab3b46"
+    },
+    {
+      "name": "05_audio_editor.png",
+      "bytes": 65759,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "97311775e17e65f0cf8bae3ef9d32b8bccf3055b2bcfc372aff4d6398e4bc145"
+    },
+    {
+      "name": "06_pitch_editor.png",
+      "bytes": 55870,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "132799f6fed34fe214078de141823c1561100dd3fccf9d932bdd7e282a3dbd0d"
+    },
+    {
+      "name": "07_drum_editor.png",
+      "bytes": 63590,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "eaf22c81eb6031766f4cb2aca870575601f317afec2d4e0235f22f1c2914d450"
+    },
+    {
+      "name": "08_sampler.png",
+      "bytes": 74088,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "9625c7b4cd8ecb38c011fb8b8e027191099bd849e521851be727e5a679aa48da"
+    },
+    {
+      "name": "09_automation_editor.png",
+      "bytes": 63588,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "39c0b0b941ae0e3fc629c8a3116c618b3a7a6b27bdbc8cd31592236e91ec472d"
+    },
+    {
+      "name": "10_plugin_rack.png",
+      "bytes": 61679,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "f62eb429b225a0227fa6f337f081e8c4c630f5f9aa67f07e2768b04eb755db3c"
+    },
+    {
+      "name": "11_routing.png",
+      "bytes": 56697,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "2fa6891aa81b12b8fcbef5e5aa49f336a1357f50b73d837c172563ed7d48da95"
+    },
+    {
+      "name": "12_browser.png",
+      "bytes": 95732,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "008a5ee2686edc1f60117e32492cd325c1467c92e99d0c3d17b92b84ae484a2b"
+    },
+    {
+      "name": "13_mastering.png",
+      "bytes": 66314,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "a6ddb11664b22b65f0e1d8c8f96ab3ce09d371c57337c274f40d8afc38a074a6"
+    },
+    {
+      "name": "14_export_center.png",
+      "bytes": 69679,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "3df1fb504387cf35f946a4c99013e6dc5ba2b8720ebcf3ca46a74cd3d36fc0e3"
+    },
+    {
+      "name": "15_session_creative.png",
+      "bytes": 79920,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "59f8f475a888a930e43e8a5450bcc57deeba924eb1c5283a902963e869327d35"
+    },
+    {
+      "name": "16_settings.png",
+      "bytes": 68323,
+      "width": 1600,
+      "height": 1000,
+      "sha256": "2210f489d6cb4a3b07870843787bcbf0491acb56ba1f874e16d4287eeb2c1ae7"
+    }
+  ]
+}
