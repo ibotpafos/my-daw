@@ -5,11 +5,12 @@ import AppKit
 extension DraftApp {
     func makeWorkspaceHeader() -> NSView {
         let surface = WorkspaceSurface()
+        configureWorkspaceScreenPicker()
         workspaceMode.font = .systemFont(ofSize: 11, weight: .semibold)
         workspaceMode.controlSize = .regular
         workspaceMode.segmentStyle = .rounded
         workspaceMode.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        workspaceMode.widthAnchor.constraint(equalToConstant: 208).isActive = true
+        workspaceMode.widthAnchor.constraint(equalToConstant: 344).isActive = true
         projectTitleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         projectTitleLabel.textColor = DAWDesignTokens.Color.text
         projectStateLabel.font = .systemFont(ofSize: 10)
@@ -108,18 +109,21 @@ extension DraftApp {
         wireInspectorSignalChain()
         wireTimelineNavigation()
         wireArrangementOverview()
+        wireWorkspaceScreenNavigation()
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
-            self.workspaceDock?.select(preference.dockTab)
-            if self.workspace?.dockFocused != true { self.mixerWorkspace.resetFocus() }
+            self.workspaceDock?.select(self.workspace?.activeDockTab ?? preference.dockTab)
             self.window.contentView?.layoutSubtreeIfNeeded()
-            self.fitTrackHeaderWidth(); self.fitTimelineViewport(); self.updateWorkspaceChrome()
+            if self.workspace?.screen == .arrange {
+                self.fitTrackHeaderWidth(); self.fitTimelineViewport()
+            }
+            self.updateWorkspaceChrome()
         }
         workspaceDock?.onSelect = { [weak self] tab in self?.workspace?.selectDock(tab) }
         workspaceDock?.onClose = { [weak self] in self?.workspace?.toggle(.dock) }
         inspectorBrowser.onShowDevices = { [weak self] in self?.workspace?.selectDock(.devices) }
         channelRack.onAction = { [weak self] target, action in self?.performRackAction(target, action) }
-        workspaceDock?.select(workspace?.preference.dockTab ?? .devices)
+        workspaceDock?.select(workspace?.activeDockTab ?? .devices)
     }
 
     @objc func toggleWorkspaceLibrary() { workspace?.toggle(.library) }
@@ -134,24 +138,27 @@ extension DraftApp {
         updateWorkspaceChrome()
     }
     func applyWorkspaceMode(_ mode: Int) {
-        // A workspace preset changes presentation only, never starts recording,
-        // rewrites project data or rebuilds the audio graph.
-        workspace?.setDockFocus(false)
-        mixerWorkspace.resetFocus()
-        workspace?.selectDock(mode >= 2 ? .mixer : .devices)
-        if mode == 1 || mode == 3 { workspace?.show(.inspector) }
-        if mode == 3 { selectedMixerID = 0; updateMixerInspector(0) }
+        // Compatibility for existing workflow/command-palette presets. A
+        // recording preset never starts capture; master selects the real channel.
+        if mode >= 2 {
+            guard workspace?.present(.mixer) == true else { return }
+            if mode == 3 { selectedMixerID = 0; updateMixerInspector(0) }
+        } else {
+            guard workspace?.present(.arrange) == true else { return }
+            workspace?.selectDock(.devices)
+            if mode == 1 { workspace?.show(.inspector) }
+        }
     }
     func windowDidResize(_ notification: Notification) {
         guard workspaceLayoutReady else { return }
-        workspace?.applyGeometry(); fitTimelineViewport()
+        workspace?.applyGeometry(); fitTimelineViewport(); updateWorkspaceScreenChrome()
     }
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat, ofSubviewAt index: Int) -> CGFloat { 195 }
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposed: CGFloat, ofSubviewAt index: Int) -> CGFloat { min(260, max(195, splitView.bounds.width - 320)) }
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let split = notification.object as? NSSplitView, split === trackTimelineSplit else { return }
-        if workspaceLayoutReady, !restoringWorkspaceLayout, split.bounds.width > 0 {
+        if workspaceLayoutReady, !restoringWorkspaceLayout, workspace?.screen == .arrange, split.bounds.width > 0 {
             UserDefaults.standard.set(Double(split.subviews[0].frame.width / split.bounds.width), forKey: "workspace.trackHeaderRatio.v3")
         }
         fitTimelineViewport()
@@ -163,6 +170,9 @@ extension DraftApp {
         timelineDocument?.needsLayout = true
     }
     var shouldHandleWorkspaceClipDelete: Bool {
+        // Delete in an expanded rack/browser/mixer must never delete the hidden
+        // arrangement's selected clip when no child editor handles the key.
+        guard workspace?.screen == .arrange else { return false }
         guard let view = window.firstResponder as? NSView else { return true }
         return !(view is TimelineRangeView) && !(view is MidiArrangementView) && !view.isDescendant(of: libraryBrowser) && !view.isDescendant(of: inspectorBrowser.midiEditor) && !view.isDescendant(of: channelRack) && !view.isDescendant(of: mixerWorkspace)
     }
@@ -252,11 +262,7 @@ extension DraftApp {
         let signature = tempoMap.signature(atFrame: playheadFrame)
         signatureLabel.stringValue = "\(signature.numerator)/\(signature.denominator)"
         status.toolTip = status.stringValue; transportLabel.toolTip = transportLabel.stringValue
-        if let preference = workspace?.preference {
-            workspaceToggleButtons[.library]?.state = preference.libraryVisible ? .on : .off
-            workspaceToggleButtons[.inspector]?.state = preference.inspectorVisible ? .on : .off
-            workspaceToggleButtons[.dock]?.state = preference.dockVisible ? .on : .off
-        }
+        updateWorkspaceScreenChrome()
         inspectorBrowser.editingEnabled = !isRecording && !midiTakeArmed
         libraryBrowser.mutationEnabled = !isRecording && !midiTakeArmed
         mixerWorkspace.editingEnabled = !isRecording && !midiTakeArmed
