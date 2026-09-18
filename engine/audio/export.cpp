@@ -296,10 +296,13 @@ void writeWav(const State &snapshot, const std::string &path, WavFormat format,
 
 void writeWav(const State &snapshot, const std::string &path, WavFormat format,
               ExportOptions options, ExportResult *progress) {
-  Renderer renderer;
-  renderer.prepare(snapshot);
-  writeWavRange(snapshot, path, format, 0, renderer.duration(), options,
-                progress);
+  uint64_t duration = 0;
+  {
+    Renderer probe;
+    probe.prepare(snapshot);
+    duration = probe.duration();
+  }
+  writeWavRange(snapshot, path, format, 0, duration, options, progress);
 }
 
 std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
@@ -315,17 +318,22 @@ std::shared_ptr<ExportResult> startExportRange(State snapshot, std::string path,
                                                uint64_t startFrame,
                                                uint64_t endFrame,
                                                ExportOptions options) {
-  Renderer renderer;
-  renderer.prepare(snapshot, startFrame);
-  if (startFrame >= endFrame || endFrame > renderer.duration())
-    throw Error("Invalid WAV export range");
-  const auto tail = resolveExportTail(renderer.tailSummary(), options);
+  uint64_t totalFrames = 0;
+  {
+    // Complete probe teardown BEFORE the worker can instantiate its graph.
+    // Otherwise AU initialization on the worker races uninitialization of
+    // these temporary instances on the caller (observed with Apple DLS).
+    Renderer probe;
+    probe.prepare(snapshot, startFrame);
+    if (startFrame >= endFrame || endFrame > probe.duration())
+      throw Error("Invalid WAV export range");
+    const auto tail = resolveExportTail(probe.tailSummary(), options);
+    totalFrames = endFrame - startFrame + tail.selectedTailFrames;
+  }
   auto permit = tryAcquireBackgroundJob();
   if (!permit)
     throw Error("Background job capacity reached");
-  auto result =
-      std::make_shared<ExportResult>(snapshot.revision,
-                                     endFrame - startFrame + tail.selectedTailFrames);
+  auto result = std::make_shared<ExportResult>(snapshot.revision, totalFrames);
   std::thread([snapshot = std::move(snapshot), path = std::move(path), format,
                startFrame, endFrame, options, result, permit = std::move(permit)] {
     (void)permit;
@@ -355,10 +363,16 @@ std::shared_ptr<ExportResult> startExport(State snapshot, std::string path,
 std::shared_ptr<ExportResult> startExport(State snapshot, std::string path,
                                           WavFormat format,
                                           ExportOptions options) {
-  Renderer renderer;
-  renderer.prepare(snapshot);
+  uint64_t duration = 0;
+  {
+    // The full-project wrapper must not keep another probe alive across the
+    // asynchronous start either. Only immutable scalar metadata crosses it.
+    Renderer probe;
+    probe.prepare(snapshot);
+    duration = probe.duration();
+  }
   return startExportRange(std::move(snapshot), std::move(path), format, 0,
-                          renderer.duration(), options);
+                          duration, options);
 }
 
 namespace {
