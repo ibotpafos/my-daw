@@ -28,11 +28,12 @@ class RecordingWriter {
     void run() noexcept;
     void closeFile() noexcept;
 public:
-    RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames=48000*2,uint64_t skipFrames=0);
+    RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames=48000*2,uint64_t skipFrames=0,uint32_t inputChannels=1);
     ~RecordingWriter();
     RecordingWriter(const RecordingWriter&)=delete;
     RecordingWriter& operator=(const RecordingWriter&)=delete;
     void writeMono(const float* input,uint32_t frames) noexcept;
+    void writeStereo(const float* left,const float* right,uint32_t frames) noexcept;
     std::shared_ptr<const Clip> finish();
     void stopPreserving() noexcept;
     void discard() noexcept;
