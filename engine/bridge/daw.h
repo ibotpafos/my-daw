@@ -242,6 +242,14 @@ typedef struct { uint32_t struct_size; uint32_t version; float momentary_lufs; f
 enum { DAW_OUTPUT_IDLE=0, DAW_OUTPUT_RUNNING=1, DAW_OUTPUT_STOPPED=2, DAW_OUTPUT_DEVICE_LOST=3, DAW_OUTPUT_STALLED=4, DAW_OUTPUT_CALLBACK_ERROR=5, DAW_OUTPUT_PREPARING=6, DAW_OUTPUT_PREPARATION_FAILED=7 };
 typedef struct { uint32_t struct_size; int32_t state; uint32_t device_id; uint64_t generation; uint64_t callbacks; uint64_t callback_errors; } daw_output_status;
 typedef struct { uint32_t struct_size; int32_t recording; int32_t overflowed; uint64_t frames; uint64_t callbacks; uint64_t target_track_id; int32_t loop_recording; uint32_t pass_count; } daw_recording;
+#define DAW_RECORDING_PROGRESS_VERSION 1
+/* Captured-frame clock, NOT hardware/PDC latency compensation. Separate from
+ * legacy daw_recording so old structure layouts remain valid. Idle = zeros. */
+typedef struct {
+    uint32_t struct_size, version;
+    uint64_t capacity_frames, preroll_remaining_frames, timeline_frame;
+    int32_t limit_reached;
+} daw_recording_progress;
 /* Background PCM-WAV import. A job owns only a source path plus immutable
  * intent; it never retains a session. Poll and cancel are thread-safe while
  * the caller retains the handle; release must be serialized with all handle
@@ -341,15 +349,20 @@ int daw_get_transport(daw_session*, daw_transport*);
 int daw_get_channel_meter(daw_session*,int32_t owner,uint64_t owner_id,daw_channel_meter*);
 int daw_get_master_loudness(daw_session*,daw_master_loudness*);
 int daw_get_output_status(daw_session*, daw_output_status*);
-/* Recording is mono input duplicated to stereo, float32 at 48 kHz, at most 60 s.
- * An armed take with an enabled loop uses one AUHAL duplex callback and commits
- * each pass as a take in one revision. It requires one I/O or aggregate device.
+/* All recording uses one AUHAL duplex callback: dry mono to disk, project
+ * playback/click and optional direct MON to the stereo output. At most 60 s,
+ * 48 kHz; one I/O or aggregate device required, no silent input-only fallback.
+ * An armed take with an enabled loop commits each pass in one revision;
+ * otherwise Stop adds one track/take. Pre-roll is excluded from captured media.
+ * Stop before any capture is an empty successful no-op. Stop requires the
+ * revision captured at start; cancel preserves confirmed recovery media.
  * The app must obtain microphone permission before calling start. */
 int daw_record_start(daw_session*, uint64_t start_frame, const char* recovery_path);
 int daw_record_start_take(daw_session*,uint64_t track_id,uint64_t start_frame,const char* recovery_path);
 int daw_record_stop(daw_session*, const char* name, uint64_t expected_revision);
 int daw_record_cancel(daw_session*);
 int daw_get_recording(daw_session*, daw_recording*);
+int daw_get_recording_progress(daw_session*, daw_recording_progress*);
 /* Imports the confirmed part of a stale .mydawtake. File removal is attempted
  * only after the model commit succeeds. */
 int daw_recover_take(daw_session*, const char* path, const char* name, uint64_t expected_revision);
@@ -643,16 +656,16 @@ int daw_midi_record_status(daw_session*, daw_midi_record_status_t* out);
  * a live playback or duplex renderer at once and applied to the next graph this
  * session prepares, so a play started later still clicks. It is never
  * persisted, and export render always suppresses the click. */
-/* Pre-roll for loop recording: the transport rolls this many frames before
+/* Pre-roll for ordinary and loop recording: the transport rolls this many frames before
  * the punch-in point (with the metronome, when enabled) and those frames are
- * discarded from the take. Plain single-pass capture has no playback running,
- * so the setting is ignored there. 0 disables pre-roll; up to 30 seconds. */
+ * discarded from the take. Clamped at project start; 0 disables pre-roll,
+ * up to 30 seconds. Changes during capture are rejected. */
 int daw_set_record_preroll(daw_session*, uint64_t preroll_frames);
 int daw_get_record_preroll(daw_session*, uint64_t* preroll_frames);
-/* Direct input monitor during loop (duplex) recording: the captured mono
- * feed is summed into both output channels at unity right after the render.
- * Plain input-only capture has no output path, so the flag is ignored there.
- * Session-scoped like pre-roll; 0 is the default. */
+/* Direct input monitor during ordinary and loop recording: dry mono input
+ * is summed after project/master FX with a 240-frame ramp, independently of
+ * the dry recording file. Live toggle, session-only; no device-direct-monitor
+ * changes. The output sum is clamped and clipping reported. */
 int daw_set_record_monitor(daw_session*, int32_t on);
 int daw_get_record_monitor(daw_session*, int32_t* on);
 /* Auto-enable monitoring when arming a track (default: on). Session-scoped,
