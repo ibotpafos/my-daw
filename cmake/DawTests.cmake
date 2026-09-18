@@ -1,4 +1,11 @@
 if(BUILD_TESTING)
+  # Link-time AU factory fixture; no test switch enters the shipped application.
+  add_executable(daw_export_lifecycle_tests tests/export_lifecycle_tests.cpp)
+  target_include_directories(daw_export_lifecycle_tests PRIVATE engine)
+  target_link_libraries(daw_export_lifecycle_tests PRIVATE daw_core)
+  target_compile_options(daw_export_lifecycle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME export_graph_lifecycle COMMAND daw_export_lifecycle_tests)
+  set_tests_properties(export_graph_lifecycle PROPERTIES TIMEOUT 20)
   add_executable(daw_duplex_capture_tests tests/duplex_capture_tests.cpp)
   target_include_directories(daw_duplex_capture_tests PRIVATE engine)
   target_link_libraries(daw_duplex_capture_tests PRIVATE daw_core)
