@@ -1,0 +1,36 @@
+name: Merge newest main into arrangement final once
+on:
+  push:
+    branches:
+      - codex/stage-arrangement-final-main-3-20260918
+permissions:
+  contents: write
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Merge newest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature=aedaca02523f00c63d162f6898aa7344bdf755da
+          git config user.name "ibotpafos"
+          git config user.email "73589290+ibotpafos@users.noreply.github.com"
+          git fetch origin main codex/arrangement-mixed-clipboard
+          git checkout -B arrangement-final "$feature"
+          mkdir -p .git/info
+          cat > .git/info/attributes <<'ATTRS'
+          apps/macos/sources.txt merge=union
+          scripts/test-workspace-ui.sh merge=union
+          ATTRS
+          git merge --no-ff origin/main -m "merge(main): include latest workspace screen changes"
+          if grep -nE '^(<<<<<<<|=======|>>>>>>>)' apps/macos/sources.txt scripts/test-workspace-ui.sh; then
+            echo "Conflict markers remain" >&2
+            exit 1
+          fi
+          git diff --check HEAD^1..HEAD
+          git push origin HEAD:refs/heads/codex/arrangement-mixed-clipboard
