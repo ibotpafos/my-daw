@@ -1,6 +1,6 @@
 #include "audio/duplex.hpp"
 #include "platform/macos/audio_device.hpp"
-#include "audio/recording.hpp"
+#include "audio/duplex_render.hpp"
 #include "domain/session.hpp"
 #include <algorithm>
 #include <AudioToolbox/AudioToolbox.h>
@@ -19,7 +19,6 @@ class MacDuplex final:public Duplex {
     AudioDeviceConfiguration configuration;
     AudioDeviceInfo openedDevice;
     uint64_t capacityFrames=0,startFrame=0,loopStart=0,loopEnd=0,prerollFrames=0;
-    bool monitorOn=false;
     std::string recoveryPath;
     AudioUnit unit=nullptr;AudioDeviceID device=0;
     std::unique_ptr<RecordingWriter> capture;
@@ -33,24 +32,23 @@ class MacDuplex final:public Duplex {
         if(!self.unit||!output||frames>maxSlice||output->mNumberBuffers!=2||output->mBuffers[0].mNumberChannels!=1||output->mBuffers[1].mNumberChannels!=1||!output->mBuffers[0].mData||!output->mBuffers[1].mData||frames>output->mBuffers[0].mDataByteSize/sizeof(float)||frames>output->mBuffers[1].mDataByteSize/sizeof(float)){silence(output);self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return kAudio_ParamError;}
         AudioBufferList input{};input.mNumberBuffers=1;input.mBuffers[0].mNumberChannels=1;input.mBuffers[0].mDataByteSize=frames*sizeof(float);input.mBuffers[0].mData=self.inputScratch.data();
         auto status=AudioUnitRender(self.unit,flags,time,1,frames,&input);if(status!=noErr){silence(output);self.callbackErrors.fetch_add(1,std::memory_order_relaxed);return status;}
-        self.capture->writeMono(self.inputScratch.data(),frames);
-        self.renderer.render(static_cast<float*>(output->mBuffers[0].mData),static_cast<float*>(output->mBuffers[1].mData),frames);
-        if(self.monitorOn){auto* outLeft=static_cast<float*>(output->mBuffers[0].mData);auto* outRight=static_cast<float*>(output->mBuffers[1].mData);const float* in=self.inputScratch.data();for(uint32_t f=0;f<frames;++f){outLeft[f]+=in[f];outRight[f]+=in[f];}}
+        renderDuplexBlock(self.renderer, *self.capture, self.monitoring(), self.inputScratch.data(),
+            static_cast<float*>(output->mBuffers[0].mData), static_cast<float*>(output->mBuffers[1].mData), frames);
         self.callbackCount.fetch_add(1,std::memory_order_relaxed);return noErr;
     }
     void shutdown(OutputState reason) noexcept {active=false;renderer.playing.store(false);if(unit){AudioOutputUnitStop(unit);AudioUnitUninitialize(unit);AudioComponentInstanceDispose(unit);unit=nullptr;}device=0;outputState.store(static_cast<uint32_t>(reason));}
 public:
-    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish,uint64_t preroll,bool monitor,const AudioDeviceConfiguration& config):snapshot(state),configuration(config),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),prerollFrames(preroll),monitorOn(monitor),recoveryPath(std::move(path)){}
+    MacDuplex(const State& state,uint64_t capacity,std::string path,uint64_t start,uint64_t loopBegin,uint64_t loopFinish,uint64_t preroll,bool monitor,const AudioDeviceConfiguration& config):snapshot(state),configuration(config),capacityFrames(capacity),startFrame(start),loopStart(loopBegin),loopEnd(loopFinish),prerollFrames(preroll),recoveryPath(std::move(path)){setMonitor(monitor);}
     ~MacDuplex() override {cancel();}
     void start() override {
         if(active)throw Error("Recording is already active");
         try{
             openedDevice=openAudioDevice(configuration,AudioDeviceDirection::Input);
             const auto outputDevice=openAudioDevice(configuration,AudioDeviceDirection::Output);
-            if(openedDevice.id!=outputDevice.id)throw Error("Loop recording requires one input/output device or a Core Audio aggregate. Select it in Audio Settings.");
+            if(openedDevice.id!=outputDevice.id)throw Error("Recording requires one input/output device or a Core Audio aggregate. Select it in Audio Settings.");
             device=openedDevice.id;
-            const uint64_t lead=std::min<uint64_t>(prerollFrames,startFrame); // pre-roll never precedes frame 0
-            capture=std::make_unique<RecordingWriter>(recoveryPath,startFrame,capacityFrames,48000*2,lead);renderer.prepare(snapshot,startFrame-lead,loopStart,loopEnd);
+            capture=prepareDuplexCapture(renderer, snapshot, capacityFrames, recoveryPath,
+                startFrame, loopStart, loopEnd, prerollFrames);
             AudioComponentDescription description{kAudioUnitType_Output,kAudioUnitSubType_HALOutput,kAudioUnitManufacturer_Apple,0,0};auto component=AudioComponentFindNext(nullptr,&description);if(!component)throw Error("Core Audio HAL duplex unavailable");
             checkedDuplex(AudioComponentInstanceNew(component,&unit),"Create HAL duplex");UInt32 enabled=1;
             checkedDuplex(AudioUnitSetProperty(unit,kAudioOutputUnitProperty_EnableIO,kAudioUnitScope_Input,1,&enabled,sizeof(enabled)),"Enable audio input");
@@ -66,7 +64,15 @@ public:
             checkedDuplex(AudioUnitInitialize(unit),"Initialize duplex audio");renderer.playing.store(true);checkedDuplex(AudioOutputUnitStart(unit),"Start duplex audio");active=true;generation.fetch_add(1);outputState.store(static_cast<uint32_t>(OutputState::running));
         }catch(...){shutdown(OutputState::stopped);capture.reset();throw;}
     }
-    std::shared_ptr<const Clip> stop() override {if(!active)throw Error("Recording is not active");AudioOutputUnitStop(unit);active=false;try{auto result=capture->finish();shutdown(OutputState::stopped);return result;}catch(...){shutdown(OutputState::stopped);throw;}}
+    std::shared_ptr<const Clip> stop() override {
+        if(!active)throw Error("Recording is not active");
+        // Dispose/quiesce AUHAL before reading the final accepted frame count or
+        // finishing its writer. A last in-flight callback cannot be discarded
+        // merely because the UI observed zero frames immediately before Stop.
+        shutdown(OutputState::stopped);
+        if(!capture->frames()){capture->discard();return {};}
+        return capture->finish();
+    }
     void cancel() noexcept override {shutdown(OutputState::stopped);if(capture)capture->stopPreserving();}
     void markStalled() noexcept override{shutdown(OutputState::stalled);if(capture)capture->stopPreserving();}
     void checkDevices() override {if(!active)return;if(callbackErrors.load()){shutdown(OutputState::callbackError);throw Error("Duplex callback received an invalid audio buffer");}try{checkAudioDevice(openedDevice,configuration.inputUID.empty(),AudioDeviceDirection::Input);checkAudioDevice(openedDevice,configuration.outputUID.empty(),AudioDeviceDirection::Output);}catch(...){shutdown(OutputState::deviceLost);throw;}}

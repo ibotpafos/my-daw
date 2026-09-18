@@ -388,7 +388,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         recordMonitorButton.target = self; recordMonitorButton.action = #selector(toggleRecordMonitor(_:))
         recordMonitorButton.toolTip = "Мониторинг входа: прямой сигнал микрофона в наушники во время записи"
         recordMonitorButton.setAccessibilityLabel("Кнопка мониторинга входа")
-        recordMonitorButton.setAccessibilityHelp("Включает слышимость входа только во время луп-записи: моно-сигнал подаётся в оба канала с unity-уровнем до эффектов и без затухания. Одиночный входной захват его игнорирует.")
+        recordMonitorButton.setAccessibilityHelp("Включает прямой моно-вход в оба выходных канала во время любой аудиозаписи и преролла. Переключение действует со следующего аудиоблока. Эффекты дорожек не применяются к этому прямому сигналу; используйте наушники.")
         autoMonitorButton.setButtonType(.toggle)
         autoMonitorButton.font = .systemFont(ofSize: 10, weight: .semibold)
         autoMonitorButton.target = self; autoMonitorButton.action = #selector(toggleAutoMonitorOnArm(_:))
@@ -812,7 +812,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard check(daw_set_record_monitor(session, wanted)) else { syncRecordMonitorButton(); return }
         recordMonitorOn = wanted != 0
         syncRecordMonitorButton()
-        status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время луп-записи" : "Мониторинг входа выключен"
+        status.stringValue = recordMonitorOn ? "Мониторинг входа включён · слышен во время записи и преролла" : "Мониторинг входа выключен"
     }
     func syncRecordMonitorButton() { recordMonitorButton.state = recordMonitorOn ? .on : .off }
     @objc func toggleAutoMonitorOnArm(_ sender: NSButton) {
@@ -1413,8 +1413,8 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func setProjectControlsEnabled(_ enabled: Bool) {
         mixerWorkspace.editingEnabled = enabled
         func visit(_ view: NSView) {
-            // Метроном — мониторинг, а не правка проекта: он нужен и во время записи.
-            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== exportButton { button.isEnabled = enabled }
+            // Метроном и MON не меняют проект и доступны во время записи.
+            if let button = view as? NSButton, button !== recordButton, button !== metronomeButton, button !== recordMonitorButton, button !== exportButton { button.isEnabled = enabled }
             if let popup = view as? NSPopUpButton { popup.isEnabled = enabled }
             if let slider = view as? NSSlider { slider.isEnabled = enabled }
             if let field = view as? NSTextField, field.isEditable { field.isEnabled = enabled }
@@ -1657,8 +1657,15 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if recording.recording != 0 {
             isRecording=true; updateRecordButton(true)
-            if recording.loop_recording != 0 {if let start=rangeStart,let end=rangeEnd,end>start{let frame=start+recording.frames%(end-start);for wave in waveforms{wave.playhead=frame}};transportLabel.stringValue=String(format:"● Loop recording  %.1f с · дублей %d · playback + mono input",Double(recording.frames)/48000,recording.pass_count)}
-            else{transportLabel.stringValue=String(format:recording.target_track_id != 0 ? "● Новый дубль  %.1f с · mono / 48 кГц":"● Запись  %.1f с · mono / 48 кГц",Double(recording.frames)/48000)}
+            var transport = daw_transport()
+            transport.struct_size = UInt32(MemoryLayout<daw_transport>.size)
+            guard check(daw_get_transport(session, &transport)) else {
+                _ = daw_record_cancel(session); isRecording = false; updateRecordButton(false)
+                setProjectControlsEnabled(true); return
+            }
+            for wave in waveforms { wave.playhead = transport.frame }
+            syncPlayhead(transport.frame)
+            transportLabel.stringValue = recordingStatusText(recording, monitor: recordMonitorOn)
             if recording.overflowed != 0 { finishRecording() }
             return
         }

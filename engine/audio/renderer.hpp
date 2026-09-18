@@ -270,12 +270,15 @@ public:
   std::atomic<uint64_t> position{0}, callbacks{0}, clipped{0}, pluginErrors{0};
   std::atomic<uint64_t> audiblePosition{0};
   std::atomic<float> peak{0};
+  // Nonzero recordingEndFrame explicitly allows silence for a linear recording.
+  // It is an ephemeral render horizon, never persisted project duration.
   void prepare(const State &, uint64_t startFrame = 0, uint64_t loopStart = 0,
-               uint64_t loopEndFrame = 0);
+               uint64_t loopEndFrame = 0, uint64_t recordingEndFrame = 0);
   // Effect-host slices pass initialized track/bus latency here. This method
   // validates/allocates the PDC plan before the audio callback resumes.
   void prepare(const State &, const GraphLatencyPlan &, uint64_t startFrame = 0,
-               uint64_t loopStart = 0, uint64_t loopEndFrame = 0);
+               uint64_t loopStart = 0, uint64_t loopEndFrame = 0,
+               uint64_t recordingEndFrame = 0);
   void updateMix(const State &) noexcept;
   void updateGains(const State &state) noexcept { updateMix(state); }
   uint64_t duration() const { return length; } // control thread only

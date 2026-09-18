@@ -396,14 +396,17 @@ bool Renderer::insertRuntimeStatus(uint64_t insertID,
 }
 
 void Renderer::prepare(const State &state, uint64_t start, uint64_t loopStart,
-                       uint64_t loopEndFrame) {
+                       uint64_t loopEndFrame, uint64_t recordingEndFrame) {
   static const GraphLatencyPlan zero;
-  prepare(state, zero, start, loopStart, loopEndFrame);
+  prepare(state, zero, start, loopStart, loopEndFrame, recordingEndFrame);
 }
 void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
                        uint64_t start, uint64_t loopStart,
-                       uint64_t loopEndFrame) {
+                       uint64_t loopEndFrame, uint64_t recordingEndFrame) {
   validate(state);
+  if (recordingEndFrame && (recordingEndFrame > 48000 * 600 ||
+      recordingEndFrame <= start || loopStart || loopEndFrame))
+    throw Error("Invalid linear recording render horizon");
   if ((!nodeLatency.trackNodeFrames.empty() &&
        nodeLatency.trackNodeFrames.size() != state.tracks.size()) ||
       (!nodeLatency.busNodeFrames.empty() &&
@@ -427,7 +430,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
   std::vector<Voice> nextVoices;
   std::vector<size_t> nextActive;
   size_t instrumentVoices = 0;
-  uint64_t end = 0;
+  uint64_t end = recordingEndFrame;
   for (size_t i = 0; i < state.tracks.size(); ++i) {
     const auto &track = state.tracks[i];
     if (track.audio) {
@@ -462,7 +465,7 @@ void Renderer::prepare(const State &state, const GraphLatencyPlan &nodeLatency,
     for (const auto &clip : track.midiClips)
       end = std::max(end, clip.start + clip.length);
   }
-  if (nextVoices.empty() && instrumentVoices == 0)
+  if (nextVoices.empty() && instrumentVoices == 0 && !recordingEndFrame)
     throw Error("Import audio or add a MIDI/instrument track");
   // MIDI plans are built for every track ordinal; only active track chains
   // (audio or instrument voices) drain them during render().

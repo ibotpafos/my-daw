@@ -314,6 +314,7 @@ func runWorkspaceIntegrationTests() {
     assertions += runArrangementOverviewTests(controller)
     assertions += runAudioDeviceSettingsTests(controller)
     assertions += runAudioHardwareSettingsTests(controller)
+    assertions += runRecordingControlsTests(controller)
     settle(1536, 1000); screenshot("workspace-overview")
     settle(1060, 700); screenshot("workspace-overview-1060")
     print("PASS: \(assertions) native workspace assertions; actual AppKit composition, model commands, selection and screenshots")

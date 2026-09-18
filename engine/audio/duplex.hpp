@@ -1,16 +1,22 @@
 #pragma once
 #include "audio/hardware_settings.hpp"
 #include "audio/output.hpp"
+#include <atomic>
 #include <memory>
 #include <string>
 
 namespace daw {
 class Duplex {
     AudioIOLease hardwareLease_;
+    std::atomic<bool> monitorInput{false};
 public:
     Renderer renderer;
+    void setMonitor(bool enabled) noexcept { monitorInput.store(enabled, std::memory_order_release); }
+    bool monitoring() const noexcept { return monitorInput.load(std::memory_order_acquire); }
     virtual ~Duplex() = default;
     virtual void start() = 0;
+    // Quiesces callbacks before finalizing. Null means Stop during preroll with
+    // no captured frames; callers must not create an empty asset/Undo command.
     virtual std::shared_ptr<const Clip> stop() = 0;
     virtual void cancel() noexcept = 0;
     virtual void markStalled() noexcept = 0;

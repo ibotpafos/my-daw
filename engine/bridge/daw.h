@@ -345,6 +345,10 @@ int daw_get_output_status(daw_session*, daw_output_status*);
  * An armed take with an enabled loop uses one AUHAL duplex callback and commits
  * each pass as a take in one revision. It requires one I/O or aggregate device.
  * The app must obtain microphone permission before calling start. */
+/* Normal and loop audio capture both use one full-duplex device (or aggregate):
+ * backing playback + optional dry mono monitoring + clamped preroll. The normal
+ * path is linear even when transport loop is enabled; only start_take with loop
+ * enabled creates loop passes. Stopping before capture begins is a no-op. */
 int daw_record_start(daw_session*, uint64_t start_frame, const char* recovery_path);
 int daw_record_start_take(daw_session*,uint64_t track_id,uint64_t start_frame,const char* recovery_path);
 int daw_record_stop(daw_session*, const char* name, uint64_t expected_revision);

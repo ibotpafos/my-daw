@@ -76,3 +76,4 @@ apps/macos/Workspace/ArrangementOverviewBinding.swift
 apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
 apps/macos/AudioHardwareSettings.swift
+apps/macos/RecordingPresentation.swift
