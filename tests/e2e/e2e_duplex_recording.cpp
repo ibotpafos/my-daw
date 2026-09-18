@@ -5,6 +5,7 @@
 #include "../support/recording_device_fixture.h"
 #include <array>
 #include <limits>
+#include <utility>
 using namespace e2e;
 
 static daw_recording capture(daw_session* s) {
