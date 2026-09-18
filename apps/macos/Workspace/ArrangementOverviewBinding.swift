@@ -14,6 +14,7 @@ extension DraftApp {
     }
 
     func updateArrangementOverview() {
+        window?.arrangementEditing?.bindProjectionIfNeeded()
         guard let overview = workspace?.overview else { return }
         let key = ArrangementOverviewContentKey(documentID: midiDocumentID,
             revision: revision, frames: timelineRuler.projectFrames)

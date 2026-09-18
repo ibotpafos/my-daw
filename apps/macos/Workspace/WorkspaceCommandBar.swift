@@ -80,13 +80,15 @@ final class WorkspaceCommandBar: NSView {
     let addMenu: WorkspaceCommandMenu
     let moreMenu: WorkspaceCommandMenu
     let scroll = NSScrollView()
+    let tools = ArrangementToolBar(frame: .zero)
     let commands: NSStackView
+    private var secondaryControls: [NSView] = []
     override var isFlipped: Bool { true }
 
     init(importButton: NSButton, add: [NSButton], history: [NSButton], grid: NSPopUpButton,
          zoom: [NSButton], more: [NSButton], transient: [NSButton]) {
         addMenu = WorkspaceCommandMenu("＋ Дорожка", sources: add)
-        moreMenu = WorkspaceCommandMenu("Ещё", sources: more)
+        moreMenu = WorkspaceCommandMenu("Ещё", sources: [importButton] + add + zoom + more)
         commands = NSStackView()
         super.init(frame: .zero)
         wantsLayer = true
@@ -111,11 +113,13 @@ final class WorkspaceCommandBar: NSView {
         grid.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         grid.widthAnchor.constraint(equalToConstant: 90).isActive = true
         for popup in [addMenu, moreMenu] { popup.heightAnchor.constraint(equalToConstant: 28).isActive = true }
-        var controls: [NSView] = [importButton, addMenu, WorkspaceControlStyle.separator()]
+        var controls: [NSView] = [tools, WorkspaceControlStyle.separator(), grid]
         controls.append(contentsOf: history)
-        controls.append(contentsOf: [WorkspaceControlStyle.separator(), grid])
-        controls.append(contentsOf: zoom)
-        controls.append(contentsOf: [WorkspaceControlStyle.separator(), moreMenu])
+        controls.append(WorkspaceControlStyle.separator())
+        let secondary = NSStackView(views: zoom + [importButton, addMenu])
+        secondary.spacing = 5
+        secondaryControls = [secondary]
+        controls.append(contentsOf: [secondary, moreMenu])
         controls.append(contentsOf: transient)
         controls.forEach { commands.addArrangedSubview($0) }
         commands.orientation = .horizontal
@@ -127,5 +131,10 @@ final class WorkspaceCommandBar: NSView {
         setAccessibilityLabel("Команды аранжировки: импорт, дорожки, история, сетка, масштаб и дополнительные действия")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    override func layout() { super.layout(); scroll.frame = bounds }
+    override func layout() {
+        let compact = bounds.width < 820
+        tools.setCompact(compact)
+        for view in secondaryControls where view.isHidden != compact { view.isHidden = compact }
+        super.layout(); scroll.frame = bounds
+    }
 }

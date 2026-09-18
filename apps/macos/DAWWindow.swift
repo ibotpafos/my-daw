@@ -1,9 +1,18 @@
 import AppKit
 
+/// Keeps the window independent of the session and of the workspace implementation.
+@MainActor
+protocol ArrangementWindowEditing: AnyObject {
+    func handle(_ event: NSEvent) -> Bool
+    func bindProjectionIfNeeded()
+    func cancelGesture()
+}
+
 /// The main DAW window's keyboard boundary. The embedding controller owns the
 /// command implementations; this class only decides whether a key is safe to
 /// treat as a global DAW command.
 final class DAWWindow: NSWindow {
+    var arrangementEditing: (any ArrangementWindowEditing)?
     var onFocusedKeyDown: ((NSEvent) -> Bool)?
     var shouldHandleClipDelete: (() -> Bool)?
     var onPlayStop: (() -> Void)?
@@ -16,6 +25,8 @@ final class DAWWindow: NSWindow {
     private var commandPalette: DAWCommandPaletteController?
 
     override func sendEvent(_ event: NSEvent) {
+        if (event.type != .keyDown || !defersToTextInput),
+           arrangementEditing?.handle(event) == true { return }
         if event.type == .keyDown,
            !defersToTextInput,
            (onFocusedKeyDown?(event) == true || handleUnmodifiedGlobalCommand(event)) {
@@ -37,6 +48,7 @@ final class DAWWindow: NSWindow {
             return true
         }
         guard !defersToTextInput else { return super.performKeyEquivalent(with: event) }
+        if arrangementEditing?.handle(event) == true { return true }
         if onFocusedKeyDown?(event) == true { return true }
         if super.performKeyEquivalent(with: event) { return true }
         if handleTrackDeleteCommand(event) { return true }
@@ -59,12 +71,14 @@ final class DAWWindow: NSWindow {
         for responder in [firstResponder, NSApp.keyWindow?.firstResponder] {
             if let input = responder as? NSTextInputClient, input.hasMarkedText() { return }
         }
+        arrangementEditing?.cancelGesture()
         if commandPalette == nil { commandPalette = DAWCommandPaletteController() }
         commandPalette?.toggle(from: self)
     }
 
     override func close() {
         commandPalette?.dismiss(restoreFocus: false)
+        arrangementEditing?.cancelGesture(); arrangementEditing = nil
         super.close()
     }
 

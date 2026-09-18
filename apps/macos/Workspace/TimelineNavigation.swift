@@ -2,6 +2,9 @@ import AppKit
 
 extension DraftApp {
     func wireTimelineNavigation() {
+        let editor = ArrangementEditingController()
+        window.arrangementEditing = editor
+        editor.attach(to: self)
         let range = timelineRuler.cycleRange
         range.onCommit = { [weak self] in self?.commitTimelineRange($0) ?? false }
         range.onToggle = { [weak self] in self?.toggleLoop() }
@@ -92,7 +95,7 @@ extension DraftApp {
         let anchor = TimelineZoomAnchor(documentWidth: Double(timelineDocument?.bounds.width ?? 1),
             viewportX: Double(oldBounds.minX), viewportWidth: Double(oldBounds.width),
             playheadFraction: Double(playheadFrame) / Double(max(1, timelineRuler.projectFrames)))
-        timelineZoom = zoom.isFinite ? min(8, max(1, zoom)) : 1
+        timelineZoom = zoom.isFinite ? min(256, max(1, zoom)) : 1
         fitTimelineViewport()
         window.contentView?.layoutSubtreeIfNeeded()
         if let scroll, let document = timelineDocument {

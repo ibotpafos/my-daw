@@ -8,7 +8,7 @@ struct MidiArrangementClip {
     let notes: [PianoRollNote]
 }
 
-/// Read-only arrangement projection of the existing MIDI clips, not a second
+/// Arrangement projection of the existing MIDI clips, not a second
 /// editable note model. Selection opens the existing dock editor and C ABI path.
 @MainActor
 final class MidiArrangementView: NSView {
@@ -19,6 +19,7 @@ final class MidiArrangementView: NSView {
     var playhead: UInt64 = 0 { didSet { needsDisplay = true } }
     var cycleSelection: TimelineFrameRange? { didSet { needsDisplay = true } }
     var cycleEnabled = false { didSet { needsDisplay = true } }
+    var selectedIndices = Set<Int>() { didSet { needsDisplay = true } }
     var title = "MIDI"
     var onSelect: ((Int, Bool) -> Void)?
     override var isFlipped: Bool { true }
@@ -43,7 +44,7 @@ final class MidiArrangementView: NSView {
             let rect = clipRect(clip)
             guard rect.intersects(dirtyRect) else { continue }
             clip.color.withAlphaComponent(0.22).setFill(); NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
-            clip.color.withAlphaComponent(0.8).setStroke(); NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).stroke()
+            (selectedIndices.contains(clip.index) ? NSColor.controlAccentColor : clip.color.withAlphaComponent(0.8)).setStroke(); NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).stroke()
             NSGraphicsContext.saveGraphicsState(); NSBezierPath(rect: rect.insetBy(dx: 2, dy: 1)).addClip()
             ("\(title) · \(clip.index + 1)" as NSString).draw(at: NSPoint(x: rect.minX + 6, y: rect.minY + 4), withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: DAWDesignTokens.Color.text])
             let lowest = Int(clip.notes.map(\.pitch).min() ?? 48), highest = Int(clip.notes.map(\.pitch).max() ?? 72)

@@ -76,3 +76,7 @@ apps/macos/Workspace/ArrangementOverviewBinding.swift
 apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
 apps/macos/AudioHardwareSettings.swift
+apps/macos/Workspace/ArrangementEditingModel.swift
+apps/macos/Workspace/ArrangementToolBar.swift
+apps/macos/Workspace/ArrangementEditingController.swift
+apps/macos/Workspace/ArrangementEditingCommands.swift
