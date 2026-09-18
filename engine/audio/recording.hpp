@@ -20,6 +20,8 @@ class RecordingWriter {
     std::string path_;
     uint64_t startFrame_=0, capacityFrames_=0;
     uint64_t skipFrames_=0; // pre-roll: drop this many leading captured frames
+    // Interleaved canonical stereo ring. Mono callers duplicate the selected
+    // source into L/R at the producer boundary; stereo callers preserve both.
     std::vector<float> ring_;
     std::atomic<uint64_t> read_{0}, written_{0}, accepted_{0}, committed_{0};
     std::atomic<bool> stopping_{false}, overflow_{false}, failed_{false};
@@ -32,7 +34,8 @@ public:
     ~RecordingWriter();
     RecordingWriter(const RecordingWriter&)=delete;
     RecordingWriter& operator=(const RecordingWriter&)=delete;
-    void writeMono(const float* input,uint32_t frames) noexcept;
+    void writeStereo(const float* left,const float* right,uint32_t frames) noexcept;
+    void writeMono(const float* input,uint32_t frames) noexcept { writeStereo(input,input,frames); }
     std::shared_ptr<const Clip> finish();
     void stopPreserving() noexcept;
     void discard() noexcept;
