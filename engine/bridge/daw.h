@@ -38,9 +38,38 @@ int daw_get_audio_device(daw_session*, uint32_t index, daw_audio_device*);
  * Set validates syntax without opening hardware (offline preferences allowed).
  * Start re-resolves UID and validates channels/48 kHz/buffer <=4096. Configuration
  * changes are rejected during playback/preparation/recording/MIDI capture.
- * This version reports hardware rate/buffer; it does not change either. */
+ * Selection does not change hardware rate/buffer; use the explicit hardware job. */
 int daw_set_audio_device_config(daw_session*, const daw_audio_device_config*);
 int daw_get_audio_device_config(daw_session*, daw_audio_device_config*);
+
+/* Hardware format controls v1: explicit UID, 48 kHz project target, buffer
+ * 1..4096 within HAL bounds. Selection/preferences/project data are unchanged.
+ * Read is metadata-only. Begin requires idle audio/MIDI; the worker owns a
+ * process-wide exclusive HAL lease and does not capture a session pointer.
+ * Expected snapshot prevents stale panel writes (UID + ID + rate + buffer).
+ * Poll: 0 pending, 1 confirmed, 2 failed. Failure includes best-effort rollback;
+ * restored=0 means manual refresh/recovery is required, NOT successful change.
+ * Release requests cancellation, but never blocks; exclusion lasts through
+ * rollback even after release/session destruction. UI must poll without sleep.
+ * Hardware changes can affect other applications; require explicit user action.
+ * Never call begin automatically on project open or on restoring preferences. */
+enum { DAW_AUDIO_HARDWARE_VERSION = 1 };
+typedef struct {
+    uint32_t struct_size, version, device_id, buffer_frames, minimum_buffer, maximum_buffer;
+    double sample_rate;
+    int32_t supports_48k, rate_writable, buffer_writable;
+    char uid[481];
+} daw_audio_hardware_settings;
+typedef struct daw_audio_hardware_job daw_audio_hardware_job;
+typedef struct {
+    uint32_t struct_size, version, status, restored, actual_known, actual_buffer;
+    double actual_rate;
+    char error[1024];
+} daw_audio_hardware_status;
+int daw_get_audio_hardware_settings(daw_session*, const char* uid, daw_audio_hardware_settings*);
+daw_audio_hardware_job* daw_begin_audio_hardware_change(daw_session*, const daw_audio_hardware_settings* expected, uint32_t buffer);
+int daw_poll_audio_hardware_change(daw_audio_hardware_job*, daw_audio_hardware_status*);
+void daw_release_audio_hardware_change(daw_audio_hardware_job*);
 
 typedef struct daw_save_job daw_save_job;
 typedef struct daw_export_job daw_export_job;

@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/hardware_settings.hpp"
 #include "audio/device.hpp"
 #include "audio/clip.hpp"
 #include <atomic>
@@ -24,6 +25,7 @@ public:
 };
 
 class Input {
+    AudioIOLease hardwareLease_;
 public:
     virtual ~Input() = default;
     virtual void start() = 0;

@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/hardware_settings.hpp"
 #include "audio/device.hpp"
 #include "audio/renderer.hpp"
 #include <memory>
@@ -6,6 +7,7 @@ namespace daw {
 enum class OutputState:uint32_t { idle=0, running=1, stopped=2, deviceLost=3, stalled=4, callbackError=5 };
 struct OutputTelemetry { OutputState state=OutputState::idle; uint32_t deviceID=0; uint64_t generation=0, callbacks=0, callbackErrors=0; };
 class Output {
+    AudioIOLease hardwareLease_;
 public:
     Renderer renderer;
     virtual ~Output() = default;
