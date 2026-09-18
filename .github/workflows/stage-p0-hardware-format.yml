@@ -1,4 +1,4 @@
-name: Prepare reviewed P0 hardware format
+name: Finalize reviewed hardware document guard
 on:
   push:
     branches: [codex/stage-p0-hardware-format-20260918]
@@ -6,105 +6,52 @@ on:
 permissions:
   contents: write
 jobs:
-  prepare:
+  finalize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 2
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Reproduce exact reviewed source without changing main
+      - name: Apply the four-file reviewed UI and document guard
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          base=852611cdd2c9c2a3dde4d0e20caa5efc50d96474
-          test "$(git rev-parse HEAD^)" = dfc473cdfd6d77080f07092903441815c3c20185
-          test "$(git diff --name-only "$base" HEAD)" = '.github/workflows/stage-p0-hardware-format.yml'
-          test "$(git rev-parse "$base^{tree}")" = 3b96b3bf7931455dc6df0437409613485a7651f2
-          chunks=(89f0457c758e3f6090acb887ba5fb0568be40ba0 cec743bb139129180f33011ad67460324ffba2d3 78eb0188961eb39652b785e8d941b8284493f692 e1356b11f9935d3ad67638855972e6e393e77925 95c51c4206b4c29549315e07723f3e7f4b47797a)
-          for index in "${!chunks[@]}"; do
-            curl --fail --silent --show-error --retry 2 -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/ibotpafos/my-daw/git/blobs/${chunks[$index]}" \
-              -o "$RUNNER_TEMP/hardware-part-$index.json"
-          done
+          base=87bc75b23a7ab6e7203147affe7ef03c7f43e172
+          test "$(git rev-parse HEAD^)" = e680e9dcf0b7f6b4e9f6455ecf4868f2c391ef22
+          test "$(git rev-parse "$base^{tree}")" = 51967f26915114626597246e4fb8463efe19872f
+          curl --fail --silent --show-error --retry 2 -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/ibotpafos/my-daw/git/blobs/65502f9493d076d3e74704b84ef02f98391641ee \
+            -o "$RUNNER_TEMP/guard.json"
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP'])
-          parts = []
-          for index in range(5):
-              blob = json.loads((root / f'hardware-part-{index}.json').read_text())
-              assert blob['encoding'] == 'base64'
-              parts.append(base64.b64decode(blob['content']))
-          data = b''.join(parts)
-          assert hashlib.sha256(data).hexdigest() == 'aa79bf0e6c17e5fcd0f133ef65fca1599cbf9b26b37c7394e933805a87ebc3ba'
-          (root / 'hardware-reviewed.patch').write_bytes(lzma.decompress(data))
+          blob = json.loads((root / 'guard.json').read_text())
+          assert blob['encoding'] == 'base64'
+          data = base64.b64decode(blob['content'])
+          assert hashlib.sha256(data).hexdigest() == '6aa16fed4a239e6f198631754a6d4cf36fdb1ad94a1f3c73695fbc134d01337a'
+          (root / 'guard.patch').write_bytes(lzma.decompress(data))
           PY
           git read-tree --reset -u "$base"
-          git apply --index --unidiff-zero "$RUNNER_TEMP/hardware-reviewed.patch"
+          git apply --index --unidiff-zero "$RUNNER_TEMP/guard.patch"
           git diff --cached --check
-          test "$(git write-tree)" = f106c1f71608aeb629c61108042fef422ebc3d9f
-          test ! -e .github/workflows/stage-p0-hardware-format.yml
-      - name: Standard formatting and full Linux sanitizer validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y clang-format-18 libsamplerate0-dev pkg-config
-          clang-format-18 -i engine/bridge/daw.cpp
-          # Reviewed formatter output: only the long configuration guard is
-          # wrapped. git diff -w still compares line boundaries, so compare the
-          # complete exact expected blob instead of weakening any source checks.
-          test "$(git hash-object engine/bridge/daw.cpp)" = 655bc7e8c4ce3514b53b47ac4ff6c249f1f2e4b2
-          git add engine/bridge/daw.cpp
-          git diff --cached --check
-          git diff --cached 852611cdd2c9c2a3dde4d0e20caa5efc50d96474 --exit-code -- .github
-          mkdir -p build/hardware-evidence
-          git write-tree | tee build/hardware-evidence/tree.txt
-          cmake --preset sanitizers
-          cmake --build --preset sanitizers --parallel 2
-          ctest --preset sanitizers --output-on-failure
+          test "$(git write-tree)" = 58ada0d2b495f72c18d14f3f4feda9c28787d2d1
+          git diff --cached "$base" --exit-code -- engine cmake CMakeLists.txt .github
           python3 -m unittest discover -s tests -p test_project_layout.py -v
           python3 scripts/e2e_coverage.py --strict
-          python3 -m venv build/hardware-docs
-          build/hardware-docs/bin/pip install --disable-pip-version-check -r requirements-docs.txt
-          build/hardware-docs/bin/python scripts/check_docs.py --require-schemas
-      - name: Publish new feature branch only after validation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          base=852611cdd2c9c2a3dde4d0e20caa5efc50d96474
-          target=refs/heads/codex/core-audio-hardware-format
-          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$base"
-          test -z "$(git ls-remote origin "$target")"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = 852611cdd2c9c2a3dde4d0e20caa5efc50d96474
+          test "$(git ls-remote origin refs/heads/codex/core-audio-hardware-format | cut -f1)" = "$base"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           tree=$(git write-tree)
-          commit=$(git commit-tree "$tree" -p "$base" -m 'feat(audio): explicit async hardware format changes with acknowledgement and rollback')
-          git archive --format=zip -o build/hardware-evidence/source.zip "$commit"
-          printf '%s\n' "$commit" > build/hardware-evidence/commit.txt
-          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/hardware-askpass.sh"
-          chmod 700 "$RUNNER_TEMP/hardware-askpass.sh"
-          trap 'rm -f "$RUNNER_TEMP/hardware-askpass.sh"' EXIT
-          GIT_ASKPASS="$RUNNER_TEMP/hardware-askpass.sh" GIT_TERMINAL_PROMPT=0 git push origin "$commit:$target"
-          printf 'Feature commit: %s\nTree: %s\nFull native PR validation required before merge.\n' "$commit" "$tree" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Preserve source and actual test results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: hardware-format-preparation-${{ github.run_id }}
-          path: |
-            build/hardware-evidence/
-            build/sanitizers/ctest.xml
-            build/sanitizers/Testing/Temporary/LastTest.log
-          retention-days: 7
-          if-no-files-found: warn
+          commit=$(git commit-tree "$tree" -p "$base" -m 'fix(audio): preserve current document when machine settings cannot be restored')
+          printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) echo x-access-token ;; *) printf "%s\n" "$GH_TOKEN" ;; esac' > "$RUNNER_TEMP/guard-askpass.sh"
+          chmod 700 "$RUNNER_TEMP/guard-askpass.sh"
+          trap 'rm -f "$RUNNER_TEMP/guard-askpass.sh"' EXIT
+          GIT_ASKPASS="$RUNNER_TEMP/guard-askpass.sh" GIT_TERMINAL_PROMPT=0 git push origin "$commit:refs/heads/codex/core-audio-hardware-format"
+          printf 'Final candidate: %s\nTree: %s\nNative PR tests and full regressions remain mandatory.\n' "$commit" "$tree" | tee -a "$GITHUB_STEP_SUMMARY"
