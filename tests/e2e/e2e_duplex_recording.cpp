@@ -216,7 +216,8 @@ int main() {
             CHECK(trackById(s, 1).clip_count == 2 && rev(s) == revision + 1);
             CHECK_OK(s, daw_undo(s, rev(s)));
             CHECK(sameContent(dumpOf(s), before));
-        // 6. A discontinuity must never become a successful stopped take,
+        }
+        // 7. A discontinuity must never become a successful stopped take,
         // even if Stop is called directly before the UI's next status poll.
         for (int fault : {3, 4}) for (bool pollFirst : {false, true}) {
             Bridge session; auto* s = session.get();
@@ -249,7 +250,7 @@ int main() {
             CHECK_OK(s, daw_open_draft(s, (root / "clock-project.mydaw").c_str()));
             CHECK(sameContent(dumpOf(s), recovered));
         }
-        // 7. Timestamped placement with asynchronous Stop and retained tail.
+        // 8. Timestamped placement with asynchronous Stop and retained tail.
         {
             CHECK(recording_fixture_latency(256, 17, 43) == 0);
             Bridge session; auto* s = session.get(); const auto before = rev(s);
