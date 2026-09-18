@@ -1,0 +1,80 @@
+name: Import original UI references
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  import:
+    if: github.repository == 'ibotpafos/my-daw' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/ui-design-references'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: codex/ui-design-references
+          persist-credentials: true
+      - name: Verify and import the original PNG bytes
+        env:
+          SOURCE_ARCHIVE_URL: 'https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-d4fc-8210-8def-25fe27c2dacc/raw?se=2026-09-18T07%3A01%3A22Z&sp=r&sv=2026-02-06&sr=b&scid=66c76c52-ba5e-527c-b145-525606174be8&skoid=a3a8eefe-d4bd-4909-ab1d-2a75a2302fac&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-18T04%3A58%3A21Z&ske=2026-09-19T04%3A58%3A21Z&sks=b&skv=2026-02-06&sig=UfhJqBtZ5bw0Kd5slO8NciwaONuf5QJ5dE4Yg5WxkIE%3D'
+        run: |
+          python3 - <<'PY'
+          import hashlib, io, json, os, struct, urllib.request, zipfile
+          from pathlib import Path
+          root = Path('docs/design/references/general-digits')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          expected = {entry['name']: entry for entry in manifest['files']}
+          assert len(expected) == 17 and manifest['screen_count'] == 16
+          def valid(data, entry):
+              return (len(data) == entry['bytes'] and hashlib.sha256(data).hexdigest() == entry['sha256']
+                      and data[:8] == b'\x89PNG\r\n\x1a\n'
+                      and struct.unpack('>II', data[16:24]) == (entry['width'], entry['height']))
+          if all((root / name).is_file() and valid((root / name).read_bytes(), item) for name,item in expected.items()):
+              print('All 17 original PNGs already verified; no changes needed.')
+              raise SystemExit(0)
+          with urllib.request.urlopen(os.environ['SOURCE_ARCHIVE_URL'], timeout=60) as response:
+              archive = response.read(2_000_001)
+          assert len(archive) <= 2_000_000, 'Unexpected archive size'
+          assert hashlib.sha256(archive).hexdigest() == 'f760d5bb87e20a8dea99fe290eeac20c55ad7890ecb8febd4fffe7df9e006a83', 'Archive checksum mismatch'
+          with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+              assert len(zipped.infolist()) == len(expected)
+              assert set(zipped.namelist()) == set(expected), 'Unexpected or duplicate archive members'
+              assert sum(info.file_size for info in zipped.infolist()) <= 2_000_000
+              pending = {}
+              for name, item in expected.items():
+                  assert '/' not in name and '\\' not in name and name.endswith('.png')
+                  data = zipped.read(name)
+                  assert valid(data, item), f'Invalid original: {name}'
+                  target = root / name
+                  assert not target.exists() or target.read_bytes() == data, f'Refusing to replace a different file: {name}'
+                  pending[name] = data
+          for name, data in pending.items():
+              (root / name).write_bytes(data)
+          readme = root / 'README.md'
+          text = readme.read_text()
+          start = text.index('**Статус переноса:**')
+          end = text.index('\n\n', start)
+          text = text[:start] + '**Статус переноса:** завершён. Все 17 PNG сверены с исходным архивом по SHA-256, размеру и PNG-заголовку. Оригинальные байты сохранены без обрезки или перекодирования.' + text[end:]
+          finish = text.find('\n## Завершение переноса')
+          if finish >= 0:
+              text = text[:finish]
+          text += '\n\n## Галерея\n\n![Обзор всех экранов](00_contact_sheet.png)\n\n'
+          titles = ['Arrange', 'Mixer', 'Piano Roll', 'Vocal Recording / Comping', 'Audio Editor', 'Pitch Editor', 'Drum Editor / Step Sequencer', 'Sampler', 'Automation Editor', 'Plugin Rack / Channel Strip', 'Routing / Signal Flow', 'Browser', 'Mastering', 'Export Center', 'Session / Creative Mode', 'Settings / Preferences']
+          for title, name in zip(titles, sorted(name for name in expected if not name.startswith('00_'))):
+              text += f'### {title}\n\n![{title}]({name})\n\n'
+          text += 'Ход внедрения реальных экранов: [IMPLEMENTATION.md](IMPLEMENTATION.md).\n'
+          readme.write_text(text)
+          implementation = root / 'IMPLEMENTATION.md'
+          text = implementation.read_text().replace('Исходные PNG из [каталога референсов](README.md) пока ожидают отдельного переноса.', 'Исходные PNG доступны в [каталоге референсов](README.md); все 17 файлов проверены по исходному manifest.')
+          implementation.write_text(text)
+          print('PASS: 17 original PNGs verified and imported byte-for-byte.')
+          PY
+      - name: Commit only verified reference documentation to this branch
+        run: |
+          git add -- docs/design/references/general-digits
+          if git diff --cached --quiet; then exit 0; fi
+          git diff --cached --name-only
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'docs(design): import all 17 verified original UI reference PNGs'
+          git push origin HEAD:refs/heads/codex/ui-design-references
