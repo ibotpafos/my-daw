@@ -46,7 +46,8 @@ struct CommandPaletteAppKitTests {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let usage = DAWCommandUsageStore(defaults: defaults)
-        let controller = DAWCommandPaletteController(usageStore: usage)
+        let aliasStore = DAWCommandAliasStore(defaults: defaults)
+        let controller = DAWCommandPaletteController(usageStore: usage, aliasStore: aliasStore)
         let host = DAWWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 650),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         host.isReleasedWhenClosed = false
@@ -203,6 +204,86 @@ struct CommandPaletteAppKitTests {
         expect(host.childWindows?.isEmpty != false, "menu action cannot interrupt marked text")
         host.makeFirstResponder(target)
         marked.removeFromSuperview()
+
+        // Real inline editor -> local preferences -> search -> original action.
+        let (aliasPanel, aliasSearch, aliasTable, _) = openPalette()
+        guard let drawer: DAWCommandAliasEditor = find(in: aliasPanel.contentView!),
+              let edit = descendants(of: aliasPanel.contentView!).compactMap({ $0 as? NSButton })
+                .first(where: { $0.title == "Свои названия…" }) else { fatalError("missing alias editor") }
+        let alphaID = DAWCommandIdentity.make(identifier: "fixture.alpha", parents: ["Test"],
+                                              title: "Alpha", selector: "", tag: 1)
+        let betaID = DAWCommandIdentity.make(identifier: "fixture.beta", parents: ["Test"],
+                                             title: "Beta", selector: "", tag: 2)
+        let invocationsBefore = target.invocations
+        let usageBefore = usage.history
+        expect(drawer.isHidden, "aliases drawer is initially collapsed")
+        filter(aliasSearch, "Alpha")
+        edit.performClick(nil)
+        expect(!drawer.isHidden && drawer.input.currentEditor() != nil, "native alias button opens inline field editor")
+        expect(!edit.isEnabled, "in-progress alias target cannot be replaced")
+        inspectLayoutAndCapture(aliasPanel, name: "command-alias-editor")
+        guard let aliasFieldEditor = drawer.input.currentEditor() as? NSTextView else { fatalError("alias field editor missing") }
+        expect(!drawer.control(drawer.input, textView: PaletteMarkedTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))), "alias editor preserves marked text")
+        aliasFieldEditor.insertText("рендер; bounce", replacementRange: NSRange(location: 0, length: aliasFieldEditor.string.utf16.count))
+        aliasPanel.sendEvent(key(code: 36, characters: "\r", flags: [], window: aliasPanel))
+        expect(drawer.isHidden, "native field-editor insertion and Return save aliases without a DAW action")
+        expect(drawer.isHidden && controller.isVisible, "save returns to palette, not to DAW action")
+        expect(aliasStore.aliases.aliases(for: alphaID) == ["рендер", "bounce"], "inline editor stores aliases for original stable ID")
+        expect(usage.history == usageBefore && target.invocations == invocationsBefore, "editing aliases never dispatches or changes usage history")
+        filter(aliasSearch, "bounce")
+        expect(aliasTable.numberOfRows == 1, "custom alias finds original command")
+        if let row = aliasTable.view(atColumn: 0, row: 0, makeIfNecessary: true) {
+            let labels = descendants(of: row).compactMap { ($0 as? NSTextField)?.stringValue }
+            expect(labels.contains("Alpha") && labels.contains(where: { $0.contains("bounce") }), "result retains original title and shows alias")
+        } else { fatalError("missing aliased row") }
+        inspectLayoutAndCapture(aliasPanel, name: "command-alias-search")
+        edit.performClick(nil)
+        drawer.input.stringValue = String(repeating: "x", count: 49)
+        guard let invalidEditor = drawer.input.currentEditor() as? NSTextView else { fatalError("missing invalid editor") }
+        _ = drawer.control(drawer.input, textView: invalidEditor, doCommandBy: #selector(NSResponder.insertNewline(_:)))
+        expect(!drawer.isHidden && aliasStore.aliases.aliases(for: alphaID) == ["рендер", "bounce"], "invalid name leaves editor open and old aliases intact")
+        _ = drawer.control(drawer.input, textView: invalidEditor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        expect(drawer.isHidden && controller.isVisible, "first Escape cancels preference edit, not palette")
+
+        // Selection can move, but the explicitly labelled edit target stays Alpha.
+        filter(aliasSearch, "Alpha"); edit.performClick(nil)
+        drawer.input.stringValue = "bounce; новый"
+        filter(aliasSearch, "Beta")
+        aliasPanel.makeFirstResponder(aliasTable)
+        aliasTable.keyDown(with: key(code: 36, characters: "\r", flags: [], window: aliasPanel))
+        expect(target.invocations == invocationsBefore, "table Return during alias edit cannot execute a DAW command")
+        guard let save = descendants(of: drawer).compactMap({ $0 as? NSButton })
+            .first(where: { $0.identifier?.rawValue == "commandAliases.save" }) else { fatalError("missing alias save") }
+        save.performClick(nil)
+        expect(aliasStore.aliases.aliases(for: alphaID) == ["bounce", "новый"] && aliasStore.aliases.aliases(for: betaID).isEmpty,
+               "changing selection cannot retarget alias preference write")
+        filter(aliasSearch, "bounce")
+        _ = boundKey(aliasSearch, #selector(NSResponder.insertNewline(_:)))
+        expect(target.invocations == invocationsBefore + [1], "alias executes original Alpha action exactly once")
+        expect(usage.history.entries.first?.id == alphaID, "alias invocation uses ordinary command history ID")
+
+        let (_, restoredSearch, restoredTable, _) = openPalette()
+        filter(restoredSearch, "новый")
+        expect(restoredTable.numberOfRows == 1, "aliases survive close and reopen")
+        alpha.isHidden = true
+        _ = boundKey(restoredSearch, #selector(NSResponder.insertNewline(_:)))
+        expect(target.invocations == invocationsBefore + [1], "aliased action still rejects newly hidden menu command")
+        alpha.isHidden = false
+        let (_, removeSearch, _, _) = openPalette()
+        filter(removeSearch, "bounce")
+        edit.performClick(nil)
+        drawer.input.stringValue = ""
+        save.performClick(nil)
+        expect(aliasStore.aliases.aliases(for: alphaID).isEmpty, "empty field removes saved aliases")
+        filter(removeSearch, "bounce")
+        expect(aliasTable.numberOfRows == 0 && !edit.isEnabled, "removed alias disappears and empty results cannot be edited")
+        filter(removeSearch, "Alpha")
+        expect(aliasTable.numberOfRows == 1, "removing alias does not remove command")
+        edit.performClick(nil)
+        drawer.input.stringValue = "unsaved"
+        expect(aliasPanel.performKeyEquivalent(with: key(code: 40, characters: "k", flags: .command, window: aliasPanel)), "Cmd-K closes inline editor with palette")
+        expect(!controller.isVisible && aliasStore.aliases.aliases(for: alphaID).isEmpty, "closing discards unsaved names")
+
         // Regression for the joined workspace: ordinary editor shortcuts and
         // Delete ownership must survive integrating the palette window boundary.
         var editorDeletes = 0, clipDeletes = 0, focusedShortcuts = 0
@@ -234,11 +315,11 @@ struct CommandPaletteAppKitTests {
         print("command palette AppKit: \(checks) checks passed")
     }
 
-    private static func inspectLayoutAndCapture(_ panel: NSWindow) {
+    private static func inspectLayoutAndCapture(_ panel: NSWindow, name: String = "command-palette") {
         guard let view = panel.contentView else { fatalError("missing palette view") }
         view.layoutSubtreeIfNeeded()
         expect(!view.hasAmbiguousLayout, "palette root has unambiguous layout")
-        for control in view.subviews {
+        for control in view.subviews where !control.isHidden {
             expect(!control.hasAmbiguousLayout && control.frame.width > 0 && control.frame.height > 0,
                    "palette controls have resolved nonempty geometry")
             expect(view.bounds.insetBy(dx: -1, dy: -1).contains(control.frame),
@@ -256,7 +337,7 @@ struct CommandPaletteAppKitTests {
             guard let png = image.representation(using: .png, properties: [:]) else {
                 fatalError("cannot encode palette snapshot")
             }
-            try png.write(to: directory.appendingPathComponent("command-palette.png"))
+            try png.write(to: directory.appendingPathComponent("\(name).png"))
         } catch { fatalError("cannot capture native palette: \(error)") }
     }
 

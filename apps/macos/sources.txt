@@ -71,6 +71,8 @@ apps/macos/MixerRoutingPresenter.swift
 apps/macos/MixerScale.swift
 apps/macos/MixerStripView.swift
 apps/macos/CommandPaletteSearch.swift
+apps/macos/CommandAliases.swift
+apps/macos/CommandAliasEditor.swift
 apps/macos/CommandPalette.swift
 apps/macos/Workspace/ArrangementOverviewGeometry.swift
 apps/macos/Workspace/ArrangementOverviewView.swift
