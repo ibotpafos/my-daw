@@ -265,12 +265,19 @@ DuplexHardwareProfile readDuplexHardwareProfile(const AudioDeviceInfo& device, c
     result.inputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeInput);
     result.outputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeOutput);
     if (!locateRecordingChannel(result.inputBuffers, config.inputChannel, result.input) ||
+        (config.inputChannels == 2 && !locateRecordingChannel(result.inputBuffers, config.inputRight, result.inputRight)) ||
         !locateRecordingChannel(result.outputBuffers, config.outputLeft, result.left) ||
         !locateRecordingChannel(result.outputBuffers, config.outputRight, result.right))
         throw Error("Selected recording channels no longer match hardware buffers");
+    if (config.inputChannels == 1) result.inputRight = result.input;
+    result.inputChannels = config.inputChannels;
     const auto input = recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputChannel);
+    const auto inputRight = config.inputChannels == 2
+        ? recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputRight) : input;
     const auto left = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputLeft);
     const auto right = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputRight);
+    if (input.latency != inputRight.latency)
+        throw Error("Stereo input streams report different latency; select one synchronous input pair");
     if (left.latency != right.latency)
         throw Error("Master L/R streams report different latency; select one synchronous output pair");
     mach_timebase_info_data_t timebase{};
