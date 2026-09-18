@@ -177,7 +177,47 @@ int main() {
             CHECK_OK(s, daw_record_cancel(s)); CHECK(std::filesystem::exists(lost));
             recording_fixture_failure(0);
         }
-        // 6. A discontinuity must never become a successful stopped take,
+        // 6. Clipboard transactions cannot interrupt either ordinary or loop
+        // capture. Rejections retain both the immutable board and the project.
+        for (bool loop : {false, true}) {
+            Bridge session; auto* s = session.get();
+            const auto source = root / (loop ? "clipboard-loop.wav" : "clipboard-normal.wav");
+            writeWavFixture(source, std::vector<float>(4096 * 2, 0.1f), kProjectRate, 2, "f32");
+            CHECK_OK(s, daw_import_wav(s, source.c_str(), "Clipboard source", rev(s)));
+            const uint32_t index = 0;
+            CHECK_OK(s, daw_capture_clipboard(s, 1, 0, &index, 1, 0, rev(s)));
+            const auto before = dumpOf(s);
+            const auto revision = rev(s);
+            if (loop) CHECK_OK(s, daw_set_loop(s, 1, 0, 1024));
+            const auto raw = (root / (loop ? "clipboard-loop.mydawtake" : "clipboard-normal.mydawtake")).string();
+            if (loop) CHECK_OK(s, daw_record_start_take(s, 1, 0, raw.c_str()));
+            else CHECK_OK(s, daw_record_start(s, 0, raw.c_str()));
+            pump(0.2f, 64);
+            CHECK(recording_fixture_active() && capture(s).frames == 64);
+            CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 0, revision));
+            CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 1, revision));
+            CHECK_REJ(s, daw_paste_clipboard(s, 1, 4096, revision));
+            auto selection = abi<daw_clip_selection_ref>();
+            selection.version = DAW_CLIP_SELECTION_REF_VERSION;
+            selection.track_id = 1; selection.clip_index = 0; selection.kind = 1;
+            CHECK_REJ(s, daw_capture_selection_clipboard(s, &selection, 1, 0, revision));
+            CHECK_REJ(s, daw_capture_selection_clipboard(s, &selection, 1, 1, revision));
+            for (uint32_t action : {DAW_CLIP_SELECTION_MOVE, DAW_CLIP_SELECTION_COPY, DAW_CLIP_SELECTION_DELETE})
+                CHECK_REJ(s, daw_edit_clip_selection(s, &selection, 1, action,
+                    action == DAW_CLIP_SELECTION_DELETE ? 0 : 4096, 0, revision));
+            auto board = abi<daw_clipboard_info>();
+            CHECK_OK(s, daw_get_clipboard(s, &board));
+            CHECK(board.kind == 1 && board.clip_count == 1 && board.length == 4096);
+            CHECK(dumpOf(s) == before && rev(s) == revision);
+            CHECK(recording_fixture_active() && capture(s).frames == 64);
+            CHECK_OK(s, daw_record_cancel(s));
+            CHECK(!recording_fixture_active() && std::filesystem::exists(raw));
+            CHECK_OK(s, daw_paste_clipboard(s, 1, 4096, revision));
+            CHECK(trackById(s, 1).clip_count == 2 && rev(s) == revision + 1);
+            CHECK_OK(s, daw_undo(s, rev(s)));
+            CHECK(sameContent(dumpOf(s), before));
+        }
+        // 7. A discontinuity must never become a successful stopped take,
         // even if Stop is called directly before the UI's next status poll.
         for (int fault : {3, 4}) for (bool pollFirst : {false, true}) {
             Bridge session; auto* s = session.get();
@@ -210,7 +250,7 @@ int main() {
             CHECK_OK(s, daw_open_draft(s, (root / "clock-project.mydaw").c_str()));
             CHECK(sameContent(dumpOf(s), recovered));
         }
-        // 7. Timestamped placement with asynchronous Stop and retained tail.
+        // 8. Timestamped placement with asynchronous Stop and retained tail.
         {
             CHECK(recording_fixture_latency(256, 17, 43) == 0);
             Bridge session; auto* s = session.get(); const auto before = rev(s);

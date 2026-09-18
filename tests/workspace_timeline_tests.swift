@@ -132,6 +132,7 @@ func runTimelineEditingTests(_ controller: DraftApp) -> Int {
     expect(revision() == before, "Zoom does not dirty the project")
     _ = controller.commitTimelineRange(TimelineFrameRange(start: 96000, end: 384000, limit: transport().duration)!)
     controller.seekAudio(192000)
+    checks += runArrangementEditingTests(controller)
     print("PASS: \(checks) native timeline editing assertions")
     return checks
 }

@@ -117,8 +117,10 @@ int main(){try{
     rejects([&]{clipOps.setClipFades(1,0,300,300,5);}); CHECK(clipOps.state().revision==5);
     clipOps.duplicateClip(1,0,5); CHECK(clipOps.state().tracks[0].regions.size()==3 && clipOps.state().tracks[0].regions.back().start==1000);
     clipOps.deleteClip(1,1,6); CHECK(clipOps.state().tracks[0].regions.size()==2);
-    clipOps.deleteClip(1,1,7); rejects([&]{clipOps.deleteClip(1,0,8);});
-    clipOps.undo(8); CHECK(clipOps.state().tracks[0].regions.size()==2);
+    clipOps.deleteClip(1,1,7); clipOps.deleteClip(1,0,8);
+    CHECK(clipOps.state().tracks[0].regions.empty() && clipOps.state().tracks[0].audio==transient);
+    clipOps.undo(9); CHECK(clipOps.state().tracks[0].regions.size()==1);
+    clipOps.undo(10); CHECK(clipOps.state().tracks[0].regions.size()==2);
     auto constantClip=std::make_shared<const daw::Clip>(std::vector<float>(2000,0.5f));
     daw::Session crossfade;crossfade.import("X",constantClip,0);crossfade.splitClip(1,0,500,1);crossfade.setCrossfade(1,0,100,2);
     CHECK(crossfade.state().tracks[0].regions==std::vector<daw::Region>({{0,0,500,0,100},{400,400,600,100,0}}));
@@ -269,7 +271,7 @@ int main(){try{
     auto version2=daw::readDraft(path);CHECK(version2.tracks[0].regions[0].start==0 && version2.tracks[0].regions[0].length==4800);
     CHECK(sqlite3_exec(db,"PRAGMA user_version=1; ALTER TABLE tracks DROP COLUMN pcm;",nullptr,nullptr,nullptr)==SQLITE_OK);sqlite3_close(db);
     auto legacy=daw::readDraft(path);CHECK(legacy.tracks.size()==1 && !legacy.tracks[0].audio);
-    daw::Session limits;for(int i=0;i<8;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
+    daw::Session limits;for(int i=0;i<32;++i)limits.import("A",clip,limits.state().revision);rejects([&]{limits.import("B",clip,limits.state().revision);});
     // Deterministic malformed-input smoke corpus; not a replacement for sustained fuzzing.
     std::mt19937 rng(7);for(int i=0;i<400;++i){auto mutation=bytes;for(int n=0;n<5;++n)mutation[rng()%44]=static_cast<unsigned char>(rng());try{daw::decodeWav(mutation);}catch(const std::exception&){} }
     // MIDI plan: frame-exact offsets, off-before-on ordering, capacity carry,

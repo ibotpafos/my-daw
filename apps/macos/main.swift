@@ -175,8 +175,6 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let redoButton = NSButton(title: "Повторить", target: nil, action: nil)
     var trackIDs: [Int: UInt64] = [:]
     var trackNames: [UInt64: String] = [:]
-    /// Собственный буфер обмена клипами: (дорожка-источник, индекс клипа, MIDI ли).
-    var clipClipboard: (trackID: UInt64, index: Int, isMidi: Bool)?
     var recordPrerollFrames: UInt64 = 0
     func applyStoredPreroll(_ session:OpaquePointer?){
         let seconds=min(30,max(0,UserDefaults.standard.double(forKey:"transport.prerollSeconds.v1")))
@@ -538,7 +536,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Настройки аудио…", #selector(showAudioDeviceSettings), ",", false), ("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Упаковать проект…", #selector(packageProject), "", false), ("Открыть проект из архива…", #selector(openPackage), "", false), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспортировать стемы…", #selector(exportStems), "", false), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выделенные клипы (⌘D)", #selector(menuClipDuplicate), "", false), ("Удалить выделенные клипы (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вырезать выбранные клипы (⌘X)", #selector(menuCutClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
         if let projectMenu = main.items.last?.submenu {
             let prerollRoot=NSMenuItem(title:"Преролл записи",action:nil,keyEquivalent:""); let prerollMenu=NSMenu(title:"Преролл записи"); prerollMenu.autoenablesItems=false
             for (label,seconds) in [("Выключен",0.0),("1 секунда",1.0),("2 секунды",2.0),("4 секунды",4.0),("8 секунд",8.0)] {
@@ -606,9 +604,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let selected = inspectorTrackID ?? selectedMixerID
             return !isRecording && automationGesture == nil && pluginParameterGesture == nil && selected.map { mixerKinds[$0] == .track } == true
         }
-        if menuItem.action == #selector(menuClipSplit) || menuItem.action == #selector(menuClipDuplicate) || menuItem.action == #selector(menuClipDelete) || menuItem.action == #selector(menuCopyClip) || menuItem.action == #selector(menuPasteClip) {
-            let selected = inspectorTrackID ?? selectedMixerID
-            return !isRecording && selected.map { mixerKinds[$0] == .track && $0 != 0 } == true && trackIDs.values.contains(selected ?? 0)
+        if menuItem.action == #selector(menuCopyClip) || menuItem.action == #selector(menuCutClip) || menuItem.action == #selector(menuPasteClip) {
+            return canUseArrangementClipboard(menuItem.action)
+        }
+        if menuItem.action == #selector(menuClipSplit) || menuItem.action == #selector(menuClipDuplicate) || menuItem.action == #selector(menuClipDelete) {
+            return canEditArrangementSelection(menuItem.action)
         }
         return true
     }
@@ -1076,11 +1076,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             let totalFrames=clips.reduce(UInt64(0)){$0+$1.length}
             let duration = label(track.audio_frames > 0 ? String(format: "%d клип. · %.1f с", track.clip_count, Double(totalFrames) / 48000) : (midiClipCount > 0 ? "MIDI · (midiClipCount) клип." : "Без аудио"), size: 11, color: .secondaryLabelColor)
             duration.widthAnchor.constraint(equalToConstant: 105).isActive = true
-            let edit = button("Клип…", #selector(editClipPanel(_:))); edit.tag = Int(index); edit.isEnabled = track.audio_frames > 0
+            let edit = button("Клип…", #selector(editClipPanel(_:))); edit.tag = Int(index); edit.isEnabled = track.clip_count > 0
             let arm=button("R",#selector(toggleArm(_:)));arm.tag=Int(index);arm.state=armedTrackID==track.id ? .on:.off;arm.contentTintColor=armedTrackID==track.id ? .systemRed:.secondaryLabelColor;arm.isEnabled=track.audio_frames>0;arm.setAccessibilityLabel("Записывать новые дубли в \(name)");arm.widthAnchor.constraint(equalToConstant:30).isActive=true
-            let split = button("Split", #selector(splitClipAtCursor(_:))); split.tag=Int(index); split.isEnabled=track.audio_frames>0
-            let copy = button("Копия", #selector(duplicateSelectedClip(_:))); copy.tag=Int(index); copy.isEnabled=track.audio_frames>0
-            let remove = button("Удалить", #selector(deleteSelectedClip(_:))); remove.tag=Int(index); remove.isEnabled=track.clip_count>1
+            let split = button("Split", #selector(splitClipAtCursor(_:))); split.tag=Int(index); split.isEnabled=track.clip_count>0
+            let copy = button("Копия", #selector(duplicateSelectedClip(_:))); copy.tag=Int(index); copy.isEnabled=track.clip_count>0
+            let remove = button("Удалить", #selector(deleteSelectedClip(_:))); remove.tag=Int(index); remove.isEnabled=track.clip_count>0
             let crossfade = button("XFade", #selector(toggleSelectedCrossfade(_:))); crossfade.tag=Int(index); crossfade.isEnabled=track.clip_count>1
             var automationCount:UInt32=0;guard check(daw_get_track_volume_automation_count(session,track.id,&automationCount))else{return};var automationPoints:[(frame:UInt64,gain:Double)]=[];for pointIndex in 0..<automationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_volume_automation_point(session,track.id,pointIndex,&point))else{return};automationPoints.append((point.frame,point.gain_db))};let automation=button(automationCount==0 ? "V AUTO":"V \(automationCount)",#selector(editTrackAutomation(_:)));automation.tag=Int(index);automation.contentTintColor=automationCount==0 ? .secondaryLabelColor:.systemCyan
             var panAutomationCount:UInt32=0;guard check(daw_get_track_pan_automation_count(session,track.id,&panAutomationCount))else{return};var panAutomationPoints:[(frame:UInt64,value:Double)]=[];for pointIndex in 0..<panAutomationCount{var point=daw_automation_point();point.struct_size=UInt32(MemoryLayout<daw_automation_point>.size);guard check(daw_get_track_pan_automation_point(session,track.id,pointIndex,&point))else{return};panAutomationPoints.append((point.frame,point.gain_db))};let panAutomation=button(panAutomationCount==0 ? "P AUTO":"P \(panAutomationCount)",#selector(editTrackPanAutomation(_:)));panAutomation.tag=Int(index);panAutomation.contentTintColor=panAutomationCount==0 ? .secondaryLabelColor:.systemPurple
@@ -1803,7 +1803,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         root.submenu=submenu
         return root
     }
-    @objc func copyClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; clipClipboard=(p.trackID,p.clipIndex,false); storageMessage("Клип в буфере обмена — V в фокусе волны или «Вставить клип».") }
+    @objc func copyClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; copyArrangementClipboard(trackID:p.trackID,index:p.clipIndex,midi:false,cut:false) }
     func toggleClipState(_ trackID:UInt64,_ clipIndex:Int,looped:Bool){
         guard !isRecording else{return}
         var state=daw_clip(); state.struct_size=UInt32(MemoryLayout<daw_clip>.size)
@@ -1828,15 +1828,22 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         finishEditing(); stopAudio()
         if check(daw_move_clip_to_track(session,p.trackID,UInt32(p.clipIndex),p.targetTrack,clip.start,revision)){selectedClips[p.targetTrack]=0;refresh(); pollTransport()}
     }
-    func pasteClipboardTo(_ trackID:UInt64,_ startFrame:UInt64){
-        guard !isRecording,let board=clipClipboard else{storageMessage("Буфер обмена клипов пуст — скопируй клип (C).");return}
-        finishEditing(); stopAudio()
-        let snapped=gridSnap(atFrame:Int64(startFrame)).anchor
-        let ok = board.isMidi ? check(daw_copy_midi_clip_to_track(session,board.trackID,UInt32(board.index),trackID,snapped,revision)) : check(daw_copy_clip_to_track(session,board.trackID,UInt32(board.index),trackID,snapped,revision))
-        if ok {selectedClips[trackID]=0;refresh(); pollTransport()}
+    func pasteClipboardTo(_ trackID: UInt64, _ startFrame: UInt64) {
+        guard let editor = window.arrangementEditing as? ArrangementEditingController else { return }
+        editor.bindProjectionIfNeeded()
+        guard let lane = editor.lanes.first(where: { $0.track == trackID }) else { return }
+        editor.focus(lane)
+        // The shared paste action operates at the playhead. The legacy callers
+        // pass that same position; avoid changing the transport as a side effect.
+        guard startFrame == playheadFrame else { return }
+        editor.paste()
     }
-    @objc func menuPasteClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; pasteClipboardTo(id,playheadFrame) }
-    @objc func menuCopyClip(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track,let index=selectedClips[id] else{return}; clipClipboard=(id,index,false); storageMessage("Клип в буфере обмена.") }
+    @objc func menuPasteClip() {
+        guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track else { return }
+        pasteClipboardTo(id, playheadFrame)
+    }
+    @objc func menuCopyClip() { copyArrangementClipboard(cut: false) }
+    @objc func menuCutClip() { copyArrangementClipboard(cut: true) }
     @objc func pickRecordPreroll(_ sender:NSMenuItem){
         guard let seconds=sender.representedObject as? Double else{return}
         let frames=UInt64((seconds*48000).rounded())
@@ -1895,7 +1902,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         finishEditing(); stopAudio()
         if check(daw_move_midi_clip_to_track(session,p.trackID,UInt32(p.clipIndex),p.targetTrack,meta.start,revision)){midiClipIndex=0;refresh(); updateMixerInspector(p.targetTrack)}
     }
-    @objc func copyMidiClipNow(_ id:UInt64){ guard !isRecording,let clip=selectedMidiClip(id) else{return}; clipClipboard=(id,Int(clip),true); storageMessage("MIDI-клип в буфере обмена — V на дорожке или «Вставить клип».") }
+    @objc func copyMidiClipNow(_ id:UInt64){ guard let clip=selectedMidiClip(id) else{return}; copyArrangementClipboard(trackID:id,index:Int(clip),midi:true,cut:false) }
     @objc func pickClipColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_clip_color(session,p.trackID,UInt32(p.clipIndex),p.color,revision)){selectedClips[p.trackID]=p.clipIndex;refresh(); pollTransport()} }
     @objc func editClipGain(_ sender:NSMenuItem){
         guard let p=sender.representedObject as? ClipActionPayload,!isRecording else{return}
@@ -1912,7 +1919,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func splitClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(splitClipAtCursor(_:))) }
     @objc func duplicateClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(duplicateSelectedClip(_:))) }
     @objc func deleteClipFromMenu(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; selectedClips[p.trackID]=p.clipIndex; performTrackAction(p.trackID,#selector(deleteSelectedClip(_:))) }
-    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{clipClipboard=(trackID,index,false);storageMessage("Клип в буфере обмена — V на дорожке или «Вставить клип».")}; case "v": pasteClipboardTo(trackID,playheadFrame); case "m": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:false)}; case "l": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:true)}; default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
+    func clipHotkey(_ trackID:UInt64,_ key:String){ switch key { case "s": performTrackAction(trackID,#selector(splitClipAtCursor(_:))); case "d": performTrackAction(trackID,#selector(duplicateSelectedClip(_:))); case "c": if let index=selectedClips[trackID]{copyArrangementClipboard(trackID:trackID,index:index,midi:false,cut:false)}; case "v": pasteClipboardTo(trackID,playheadFrame); case "m": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:false)}; case "l": if let index=selectedClips[trackID]{stopAudio();toggleClipState(trackID,index,looped:true)}; default: performTrackAction(trackID,#selector(deleteSelectedClip(_:))) } }
     func commitTrackColor(_ id:UInt64,_ color:UInt32){ guard !isRecording else{return}; finishEditing(); stopAudio(); if check(daw_set_track_color(session,id,color,revision)){refresh(); pollTransport()} }
     @objc func pickTrackColor(_ sender:NSMenuItem){ guard let p=sender.representedObject as? ClipActionPayload else{return}; commitTrackColor(p.trackID,p.color) }
     func showTrackPalette(_ id:UInt64){
@@ -2072,11 +2079,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         stopAudio()
         if check(daw_set_midi_clip_color(session,p.trackID,UInt32(p.clipIndex),p.color,revision)){refresh(); updateMixerInspector(p.trackID)}
     }
-    @objc func menuClipSplit(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(splitClipAtCursor(_:))) }
-    @objc func menuClipDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(duplicateSelectedClip(_:))) }
-    @objc func menuClipDelete(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(deleteSelectedClip(_:))) }
+    @objc func menuClipSplit() { editArrangementSelection(#selector(menuClipSplit)) }
+    @objc func menuClipDuplicate() { editArrangementSelection(#selector(menuClipDuplicate)) }
+    @objc func menuClipDelete() { editArrangementSelection(#selector(menuClipDelete)) }
     @objc func menuTrackDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; duplicateTrackNow(id) }
-    func deleteCurrentSelectedClip(){guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return};performTrackAction(id,#selector(deleteSelectedClip(_:)))}
+    func deleteCurrentSelectedClip() { editArrangementSelection(#selector(menuClipDelete)) }
     @objc func deleteCurrentSelectedTrack() {
         guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track else { return }
         deleteTrack(id)

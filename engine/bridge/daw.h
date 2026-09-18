@@ -729,6 +729,28 @@ int daw_remove_marker(daw_session*, uint64_t frame, uint64_t expected_revision);
  * to resolve the same take source at the same take start (take 0 is the base
  * audio; indices are track-local), and region overlap follows the crossfade
  * rule. MIDI clips keep their lane; note and clip limits stay domain-owned. */
+/* Document-owned value clipboard (not the system pasteboard). Audio buffers
+   are retained immutably, MIDI/region properties are copied. Capture reads 1–256
+   indices from ONE track/kind (midi=0/1); cut=1 removes them as one Undo step.
+   Copy does not dirty the project. Paste survives source edits/deletion/Undo and
+   can be repeated. A failed operation preserves both project and old clipboard.
+   Load/destroy/clear releases it. All calls run on the session owner thread;
+   capture and paste reject active audio/MIDI capture and domain gestures. */
+typedef struct daw_clipboard_info {
+    uint32_t struct_size;
+    uint32_t kind;       /* 0 empty, 1 audio-only, 2 MIDI-only, 3 mixed audio/MIDI */
+    uint32_t clip_count;
+    uint32_t reserved;
+    uint64_t length;     /* group span, including gaps */
+} daw_clipboard_info;
+int daw_capture_clipboard(daw_session*, uint64_t track_id, uint32_t midi,
+                         const uint32_t* indices, uint32_t count, uint32_t cut,
+                         uint64_t expected_revision);
+int daw_paste_clipboard(daw_session*, uint64_t target_track, uint64_t start,
+                       uint64_t expected_revision);
+int daw_get_clipboard(daw_session*, daw_clipboard_info*);
+int daw_clear_clipboard(daw_session*);
+
 int daw_copy_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
 int daw_move_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
 int daw_copy_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t source_index, uint64_t target_track, uint64_t start, uint64_t expected_revision);
@@ -737,6 +759,32 @@ int daw_move_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t so
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);
 int daw_commit_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision);
+/* Atomic mixed audio/MIDI selection editing. References name the expected
+ * revision, not durable clip IDs. 1..256 refs, no duplicates. kind: 1 audio/2 MIDI.
+ * All clips use one signed time delta and one signed offset in project track order.
+ * DELETE requires both offsets to be zero. Invalid targets/overlaps/budgets reject
+ * the ENTIRE command without changing project, Undo or the value clipboard. */
+#define DAW_CLIP_SELECTION_REF_VERSION 1u
+enum { DAW_CLIP_SELECTION_MOVE=1, DAW_CLIP_SELECTION_COPY=2, DAW_CLIP_SELECTION_DELETE=3 };
+typedef struct daw_clip_selection_ref {
+    uint32_t struct_size, version;
+    uint64_t track_id;
+    uint32_t clip_index, kind;
+} daw_clip_selection_ref;
+/* Immutable multi-track clipboard, sharing the same slot and paste/clear/info APIs
+ * as daw_capture_clipboard. 1..256 refs from expected_revision, no duplicates.
+ * Capture preserves relative times AND row offsets including unselected gaps.
+ * Paste anchors the top captured row at target_track in CURRENT project order.
+ * Source tracks may be edited/deleted/reordered after capture. Cut commits all
+ * removals in one Undo; failure preserves the previous board and entire project.
+ * daw_get_clipboard.kind is 3 for mixed audio/MIDI, 1/2 for homogeneous content.
+ * No new tracks are created; incompatible/missing/capacity-limited targets reject
+ * the entire paste. Document load/clear/destroy releases this document-only board. */
+int daw_capture_selection_clipboard(daw_session*,const daw_clip_selection_ref* clips,uint32_t count,
+                                     uint32_t cut,uint64_t expected_revision);
+int daw_edit_clip_selection(daw_session*,const daw_clip_selection_ref* clips,uint32_t count,
+                            uint32_t action,int64_t delta_frames,int32_t track_offset,
+                            uint64_t expected_revision);
 /* Built-in vocal.prepare action. selected_track_ids order defines Lead then Doubles.
  * Preview may be queried with items=NULL/capacity=0. Commit recomputes the same
  * deterministic pre-fader analysis against expected_revision. */

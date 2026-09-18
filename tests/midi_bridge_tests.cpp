@@ -100,9 +100,15 @@ int main() { try {
     CHECK(daw_seek_frame(s,58001)!=0);
     CHECK(daw_seek_frame(s,0)==0);
 
-    // split: a note crossing the cut is rejected without mutation
-    CHECK(daw_split_midi_clip(s,1,0,10100,revision())!=0);
-    CHECK(clipCount()==1);
+    // A crossing note becomes two notes; Undo restores the original exactly.
+    const auto beforeCrossing = revision();
+    CHECK(daw_split_midi_clip(s,1,0,10100,beforeCrossing)==0);
+    CHECK(clipCount()==2 && revision()==beforeCrossing+1);
+    out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,0,&out,0,read,4,&written)==0);
+    CHECK(written==1 && read[0].start==0 && read[0].length==100);
+    out=meta(0,0,0,0); CHECK(daw_get_midi_clip(s,1,1,&out,0,read,4,&written)==0);
+    CHECK(written==2 && read[0].start==0 && read[0].length==400 && read[0].pitch==60);
+    CHECK(daw_undo(s,revision())==0 && clipCount()==1);
     // split between notes: right side keeps note 1 at relative 0
     CHECK(daw_split_midi_clip(s,1,0,10500,revision())==0);
     CHECK(clipCount()==2);

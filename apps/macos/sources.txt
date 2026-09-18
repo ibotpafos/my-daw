@@ -78,7 +78,13 @@ apps/macos/Workspace/ArrangementOverviewBinding.swift
 apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
 apps/macos/AudioHardwareSettings.swift
+apps/macos/Workspace/ArrangementEditingModel.swift
+apps/macos/Workspace/ArrangementToolBar.swift
+apps/macos/Workspace/ArrangementEditingController.swift
+apps/macos/Workspace/ArrangementEditingCommands.swift
+apps/macos/Workspace/ArrangementClipboardBinding.swift
 apps/macos/RecordingUI.swift
+apps/macos/Workspace/ArrangementClipboardCommands.swift
 apps/macos/Workspace/RecordCompSelection.swift
 apps/macos/Workspace/RecordTakeLaneView.swift
 apps/macos/Workspace/RecordingWorkspaceView.swift

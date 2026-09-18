@@ -1,5 +1,6 @@
 #include "daw.h"
 #include "domain/session.hpp"
+#include "domain/clip_clipboard.hpp"
 #include "audio/output.hpp"
 #include "audio/import_job.hpp"
 #include "audio/input.hpp"
@@ -35,6 +36,7 @@
 #include <future>
 #include <mutex>
 #include <optional>
+#include <type_traits>
 #include <thread>
 #ifndef DAW_VST3_RUNTIME_AVAILABLE
 #define DAW_VST3_RUNTIME_AVAILABLE 0
@@ -67,6 +69,7 @@ struct PlaybackPreparation {
 }
 struct daw_session {
     daw::Session model;
+    std::optional<daw::ClipClipboard> clipClipboard;
     daw::AudioDeviceConfiguration audioConfiguration;
     std::vector<daw::AudioDeviceInfo> audioDevices;
     std::unique_ptr<daw::Output> output;
@@ -2978,6 +2981,8 @@ int daw_remove_marker(daw_session *s, uint64_t frame, uint64_t rev) {
         s->model.removeMarker(frame, rev);
     });
 }
+#include "clip_clipboard.inc"
+
 int daw_copy_clip_to_track(daw_session *s, uint64_t src, uint32_t index, uint64_t dst,
                            uint64_t start, uint64_t rev) {
     return guard(s, [&] {
@@ -3243,6 +3248,7 @@ int daw_open_draft(daw_session *s, const char *path) {
         s->midiClipStart = 0;
         s->model.replace(std::move(loaded));
         ++s->projectEpoch;
+        s->clipClipboard.reset();
         s->selectedFrame = 0;
     });
 }

@@ -34,6 +34,10 @@ build/workspace-ui/overview-model-tests
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library apps/macos/AudioDevicePreferences.swift tests/audio_device_preferences_tests.swift -o build/workspace-ui/audio-preferences-tests
 build/workspace-ui/audio-preferences-tests
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library \
+  apps/macos/Workspace/ArrangementEditingModel.swift tests/arrangement_editing_model_tests.swift \
+  -o build/workspace-ui/arrangement-model-tests
+build/workspace-ui/arrangement-model-tests
+xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library \
   apps/macos/Workspace/TimelineRangeEditing.swift apps/macos/Workspace/RecordCompSelection.swift \
   tests/record_comp_selection_tests.swift -o build/workspace-ui/comp-model-tests
 build/workspace-ui/comp-model-tests
@@ -44,7 +48,7 @@ while IFS= read -r source || [[ -n "$source" ]]; do
 done < apps/macos/sources.txt
 xcrun swiftc -swift-version 6 -D DAW_WORKSPACE_TESTS \
   -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header apps/macos/DAWBridge.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift tests/workspace_folder_tests.swift tests/workspace_mixer_tests.swift tests/workspace_screen_ui_tests.swift tests/workspace_overview_tests.swift tests/workspace_audio_device_tests.swift tests/workspace_audio_hardware_tests.swift tests/record_comp_workspace_tests.swift \
+  -import-objc-header apps/macos/DAWBridge.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_arrangement_editing_tests.swift tests/workspace_clipboard_tests.swift tests/workspace_mixed_groups_tests.swift tests/workspace_mixed_clipboard_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift tests/workspace_folder_tests.swift tests/workspace_mixer_tests.swift tests/workspace_screen_ui_tests.swift tests/workspace_overview_tests.swift tests/workspace_audio_device_tests.swift tests/workspace_audio_hardware_tests.swift tests/record_comp_workspace_tests.swift \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a \
   -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers \
   -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \

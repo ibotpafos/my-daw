@@ -304,6 +304,11 @@ func runWorkspaceIntegrationTests() {
     workspace.selectDock(.mixer); root.layoutSubtreeIfNeeded(); screenshot("workspace-mixer")
     controller.selectedMixerID = tracks[2]; controller.updateMixerInspector(tracks[2]); workspace.selectDock(.midi)
     root.layoutSubtreeIfNeeded(); screenshot("workspace-midi")
+    // Comping imports a dedicated audio source. Run it before the arrangement
+    // stress fixtures, which intentionally leave many temporary tracks/regions
+    // in this shared integration session. This keeps both suites independent
+    // without weakening either production path or assertion set.
+    assertions += runRecordCompWorkspaceTests(controller)
     assertions += runTimelineEditingTests(controller)
     controller.selectedMixerID = tracks[4]; controller.updateMixerInspector(tracks[4]); workspace.selectDock(.devices)
     settle(1536, 1000); screenshot("workspace-cycle")
@@ -316,6 +321,5 @@ func runWorkspaceIntegrationTests() {
     assertions += runAudioHardwareSettingsTests(controller)
     settle(1536, 1000); screenshot("workspace-overview")
     settle(1060, 700); screenshot("workspace-overview-1060")
-    assertions += runRecordCompWorkspaceTests(controller)
     print("PASS: \(assertions) native workspace assertions; actual AppKit composition, model commands, selection and screenshots")
 }

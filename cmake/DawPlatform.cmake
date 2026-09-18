@@ -101,6 +101,7 @@ if(APPLE)
     add_executable(daw_vst3_runtime_helper
       tools/vst3_runtime_helper.cpp
       engine/domain/session.cpp
+      engine/domain/clip_clipboard.cpp
       engine/domain/mixer_gesture.cpp
       engine/platform/macos/vst3_effect.cpp
       engine/platform/macos/vst3_runtime.cpp

@@ -409,22 +409,26 @@ int main() {
         const auto stillThere = regions(cut, 1);
         CHECK(stillThere.size() == nudged.size());
         for (size_t index = 0; index < stillThere.size(); ++index) CHECK(stillThere[index].start == nudged[index].start);
-        // Deleting the whole group costs one revision, and the last clip of a
-        // track may never go away: its audio would be orphaned (docs/76).
+        // Empty audio lanes keep the source attached, including the last clip.
         const uint32_t doomed[2] = {1, 2};
         const uint32_t allThree[3] = {0, 1, 2};
-        const auto deleteBase = rev(cut);
-        CHECK_REJ(cut, daw_delete_clips(cut, 1, allThree, 3, deleteBase)); // would empty the track
-        CHECK(rev(cut) == deleteBase);
+        const auto emptyBase = rev(cut);
+        CHECK_OK(cut, daw_delete_clips(cut, 1, allThree, 3, emptyBase));
+        CHECK(rev(cut) == emptyBase + 1);
+        CHECK(trackById(cut, 1).clip_count == 0 && trackById(cut, 1).audio_frames > 0);
+        CHECK_OK(cut, daw_undo(cut, rev(cut)));
         CHECK(trackById(cut, 1).clip_count == 3);
+        const auto deleteBase = rev(cut);
         CHECK_OK(cut, daw_delete_clips(cut, 1, doomed, 2, deleteBase));
         CHECK(rev(cut) == deleteBase + 1);
         const auto survivor = regions(cut, 1);
         CHECK(survivor.size() == 1 && survivor[0].start == kProjectRate);
-        CHECK_REJ(cut, daw_delete_clip(cut, 1, 0, rev(cut))); // the last clip stays
-        CHECK(trackById(cut, 1).clip_count == 1);
-        CHECK_REJ(cut, daw_delete_clips(cut, 1, badIndex, 2, rev(cut))); // atomic rejection
-        CHECK(trackById(cut, 1).clip_count == 1 && rev(cut) == deleteBase + 1);
+        CHECK_OK(cut, daw_delete_clip(cut, 1, 0, rev(cut)));
+        CHECK(trackById(cut, 1).clip_count == 0);
+        CHECK_OK(cut, daw_undo(cut, rev(cut)));
+        const auto survivorRevision = rev(cut);
+        CHECK_REJ(cut, daw_delete_clips(cut, 1, badIndex, 2, survivorRevision));
+        CHECK(trackById(cut, 1).clip_count == 1 && rev(cut) == survivorRevision);
 
         // B7. Take lanes and comping over two takes.
         CHECK_OK(cut, daw_import_take_wav(cut, 1, shortPath.string().c_str(), "Take B", kProjectRate, rev(cut)));
@@ -465,7 +469,7 @@ int main() {
         CHECK(trackById(cut, 1).clip_count == 3);
         CHECK(rev(cut) == compBase + 1);
 
-        // B8. Cross-track clipboard: only clips sharing a take may travel.
+        // B8. Cross-track transfers remap source references without changing samples.
         uint64_t copiedTrack = 0;
         const auto duplicateTrackBase = rev(cut);
         CHECK_OK(cut, daw_duplicate_track(cut, 1, &copiedTrack, duplicateTrackBase));
@@ -492,10 +496,12 @@ int main() {
         CHECK(landed.source_offset == 0 && landed.length == 6000); // same slice, new place
         CHECK_OK(cut, daw_import_wav(cut, shortPath.string().c_str(), "Foreign", rev(cut)));
         const auto foreign = trackNamed(cut, "Foreign");
-        CHECK_REJ_KEEPS_REV(cut, daw_copy_clip_to_track(cut, 1, 0, foreign, 3 * kProjectRate, rev(cut))); // different take
-        CHECK(trackById(cut, foreign).clip_count == 1);
+        CHECK_OK(cut, daw_copy_clip_to_track(cut, 1, 0, foreign, 3 * kProjectRate, rev(cut)));
+        CHECK(trackById(cut, foreign).clip_count == 2 && clipAt(cut, foreign, 1).take_index == 1);
+        CHECK_OK(cut, daw_undo(cut, rev(cut)));
+        CHECK(trackById(cut, foreign).clip_count == 1 && trackById(cut, foreign).take_count == 1);
         CHECK_REJ(cut, daw_copy_clip_to_track(cut, 1, 0, 9999, 0, rev(cut))); // no such track
-        CHECK(rev(cut) == copyBase + 2); // import + nothing else
+        CHECK(rev(cut) == copyBase + 4); // import, foreign copy and its exact Undo
         const auto moveBase = rev(cut);
         CHECK_OK(cut, daw_move_clip_to_track(cut, 1, 2, copiedTrack, 5 * kProjectRate, moveBase));
         CHECK(rev(cut) == moveBase + 1);
@@ -504,9 +510,11 @@ int main() {
         const auto arrived = clipAt(cut, copiedTrack, 4);
         CHECK(arrived.start == 5 * kProjectRate && arrived.source_offset == 18000 && arrived.length == 30000);
         CHECK(arrived.take_index == 0); // it kept its take reference
-        CHECK_REJ(cut, daw_move_clip_to_track(cut, foreign, 0, copiedTrack, 6 * kProjectRate, rev(cut)));
-        CHECK(trackById(cut, foreign).clip_count == 1); // the lone region stays on its track
-        CHECK(rev(cut) == moveBase + 1);
+        CHECK_OK(cut, daw_move_clip_to_track(cut, foreign, 0, copiedTrack, 6 * kProjectRate, rev(cut)));
+        CHECK(trackById(cut, foreign).clip_count == 0 && trackById(cut, foreign).audio_frames > 0);
+        CHECK_OK(cut, daw_undo(cut, rev(cut)));
+        CHECK(trackById(cut, foreign).clip_count == 1 && trackById(cut, copiedTrack).clip_count == 5);
+        CHECK(rev(cut) == moveBase + 3);
 
         // B9. Track order, and undo of a whole-track removal.
         const auto ordered = dumpOf(cut);

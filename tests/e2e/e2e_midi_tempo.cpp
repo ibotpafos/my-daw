@@ -397,11 +397,19 @@ int main() {
             CHECK(readAllNotes(s, synth, 0) == shrunk); // exactly A, B and E survive whole
         }
 
-        // 1l. Split: crossing a note rejects; edges reject; a legal split keeps
+        // 1l. Split: a crossing note is cut in two; edges reject; a split keeps
         //     both parts within bounds with exactly the right notes each side.
         {
+            const uint64_t beforeCrossing = rev(s);
+            CHECK_OK(s, daw_split_midi_clip(s, synth, 0, 51100, beforeCrossing));
+            CHECK(rev(s) == beforeCrossing + 1 && midiClipCount(s, synth) == 3);
+            const auto cutLeft = readAllNotes(s, synth, 0);
+            const auto cutRight = readAllNotes(s, synth, 1);
+            CHECK(cutLeft.back() == dumpNote(3000, 100, 73, 0, 60));
+            CHECK(cutRight.back() == dumpNote(0, 140, 73, 0, 60));
+            CHECK_OK(s, daw_undo(s, rev(s)));
+            CHECK(readAllNotes(s, synth, 0) == shrunk);
             const uint64_t beforeSplit = rev(s);
-            CHECK_REJ(s, daw_split_midi_clip(s, synth, 0, 51100, beforeSplit)); // cuts the 3000..3240 note
             CHECK_REJ(s, daw_split_midi_clip(s, synth, 0, 48000, beforeSplit));  // on the clip start
             CHECK_REJ(s, daw_split_midi_clip(s, synth, 0, 63000, beforeSplit));   // on the clip end
             CHECK(rev(s) == beforeSplit && midiClipCount(s, synth) == 2);
