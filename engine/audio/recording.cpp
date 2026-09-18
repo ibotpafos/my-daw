@@ -44,10 +44,11 @@ void confirm(int fd,uint64_t start,uint64_t frames) {
 }
 }
 
-RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames,uint64_t skipFrames)
-    :path_(std::move(path)),startFrame_(startFrame),capacityFrames_(capacityFrames),skipFrames_(skipFrames) {
-    if(path_.empty()||!capacityFrames_||capacityFrames_>48000*60||!ringFrames) throw Error("Invalid recording writer configuration");
-    ringFrames=std::min(ringFrames,capacityFrames_); ring_.resize(static_cast<size_t>(ringFrames));
+RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames,uint64_t skipFrames,uint32_t inputChannels)
+    :path_(std::move(path)),startFrame_(startFrame),capacityFrames_(capacityFrames),skipFrames_(skipFrames),inputChannels_(inputChannels) {
+    if(path_.empty()||!capacityFrames_||capacityFrames_>48000ULL*60*30||!ringFrames||
+       (inputChannels_!=1&&inputChannels_!=2)) throw Error("Invalid recording writer configuration");
+    ringFrames=std::min(ringFrames,capacityFrames_); ring_.resize(static_cast<size_t>(ringFrames*2));
     fd_=open(path_.c_str(),O_CREAT|O_EXCL|O_RDWR,0600); if(fd_<0) throw Error("Cannot create recoverable recording");
     auto h=header(startFrame_,0); if(!writeAll(fd_,h.data(),h.size(),0)||fsync(fd_)!=0){closeFile();removeQuietly(path_);throw Error("Cannot initialize recoverable recording");}
     try{worker_=std::thread([this]{run();});}catch(...){closeFile();removeQuietly(path_);throw;}
