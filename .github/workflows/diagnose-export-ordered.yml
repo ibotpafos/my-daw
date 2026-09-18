@@ -1,4 +1,4 @@
-name: Diagnose exact native crash report availability
+name: Verify exact native crash collection after parser fix
 on:
   push:
     branches: [codex/diagnose-export-ordered-20260918]
@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6cc52725c154c90bdd87cc81b371c79975d41e2f
+          ref: 5e6413a619a7168b6d0d65edfefc7b201a1ad610
           persist-credentials: false
-      - name: Exercise one deliberate memory fault and inspect only this test process reports
+      - name: Verify real process crash, OS report and unchanged failure exit
         run: |
           set -euo pipefail
-          mkdir -p build/crash-collector-probe
-          cat > build/crash-collector-probe/fault.c <<'C'
+          mkdir -p build/crash-collector-proof
+          cat > build/crash-collector-proof/fault.c <<'C'
           #include <sys/mman.h>
           int main(void) {
             void *p = mmap(0, 4096, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -25,42 +25,32 @@ jobs:
             return *(volatile int *)p;
           }
           C
-          xcrun clang -g build/crash-collector-probe/fault.c -o build/crash-collector-probe/daw-fault-probe
+          xcrun clang -g build/crash-collector-proof/fault.c -o build/crash-collector-proof/daw-fault-probe
+          python3 -m unittest discover -s tests -p test_native_test_runner.py -v
           python3 - <<'PY'
-          import importlib.util,json,os,sys,time,traceback,subprocess
+          import importlib.util,json
           from pathlib import Path
           spec=importlib.util.spec_from_file_location('runner','scripts/native_test_runner.py')
           runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
-          root=Path('build/crash-collector-probe'); started=time.time()
+          root=Path('build/crash-collector-proof')
           code=runner.run_test([str(root/'daw-fault-probe')],root/'evidence',15,report_wait=20)
           result=json.loads((root/'evidence/run.json').read_text())
-          print('RESULT',result,'Python',sys.version,'HOME',Path.home())
-          directories=[Path.home()/'Library/Logs/DiagnosticReports',Path('/Library/Logs/DiagnosticReports')]
-          diagnostics=[]
-          for directory in directories:
-            print('REPORT DIRECTORY',str(directory),directory.exists())
-            for path in directory.glob('daw-fault-probe*'):
-              if path.is_symlink() or not path.is_file() or path.stat().st_size>8*1024*1024: continue
-              data=path.read_bytes(); item={'name':path.name,'mtime':path.stat().st_mtime,'bytes':len(data)}
-              try:
-                header,payload=data.split(b'\n',1); h=json.loads(header);r=json.loads(payload)
-                item.update(header=h,pid=r.get('pid'),procName=r.get('procName'),procLaunch=r.get('procLaunch'))
-                if r.get('pid')==result['pid']:
-                  (root/('raw-'+path.name)).write_bytes(data)
-                  item['matched']=runner.matched_report(path,result['pid'],root/'daw-fault-probe',started) is not None
-              except Exception as error: item['parse_error']=str(error)
-              diagnostics.append(item); print('CANDIDATE',item)
-          (root/'candidates.json').write_text(json.dumps(diagnostics,indent=2))
-          for args in [['defaults','read','com.apple.CrashReporter'],['launchctl','print',f'gui/{os.getuid()}/com.apple.ReportCrash'],['launchctl','print','system/com.apple.ReportCrash.Root']]:
-            p=subprocess.run(args,capture_output=True,text=True,timeout=5)
-            print('REPORTER SETUP',args,p.returncode,p.stdout[:16000],p.stderr[:1000])
-          assert code in (138,139),result
-          assert result['crash_report_found'], 'No matching actual OS crash report; see candidate diagnostics'
+          assert code in (138,139) and result['returncode'] in (-10,-11),result
+          assert result['attempts']==1 and not result['timed_out'],result
+          assert result['crash_report_found'] and len(result['crash_reports'])==1,result
+          report=root/'evidence'/result['crash_reports'][0]
+          h,p=report.read_bytes().split(b'\n',1);h=json.loads(h);p=json.loads(p)
+          assert h['bug_type']=='309' and p['pid']==result['pid'] and p['procName']=='daw-fault-probe',p
+          assert p['exception']['type']=='EXC_BAD_ACCESS',p
+          (root/'proof.json').write_text(json.dumps({'collector_verified':True,'pid':result['pid'],
+              'signal':result['signal'],'exit_code':code,'attempts':1,'bug_type':h['bug_type'],
+              'exception':p['exception']['type'],'procLaunch':p['procLaunch']},indent=2))
+          print('PASS: actual OS IPS from a known protected-memory fault, matched exact PID; original failure retained')
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: ${{ !cancelled() }}
         with:
-          name: exact-crash-collector-${{ github.run_id }}
-          path: build/crash-collector-probe/
+          name: verified-crash-collector-${{ github.run_id }}
+          path: build/crash-collector-proof/
           if-no-files-found: error
           retention-days: 7
