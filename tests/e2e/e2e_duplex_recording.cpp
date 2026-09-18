@@ -177,6 +177,39 @@ int main() {
             CHECK_OK(s, daw_record_cancel(s)); CHECK(std::filesystem::exists(lost));
             recording_fixture_failure(0);
         }
+        // 6. A discontinuity must never become a successful stopped take,
+        // even if Stop is called directly before the UI's next status poll.
+        for (int fault : {3, 4}) for (bool pollFirst : {false, true}) {
+            Bridge session; auto* s = session.get();
+            const auto original = dumpOf(s); const auto revision = rev(s);
+            const auto raw = (root / "clock.mydawtake").string();
+            CHECK_OK(s, daw_record_start(s, 100, raw.c_str())); pump(0.25f, 512);
+            recording_fixture_failure(fault);
+            CHECK(pump(0.75f, 64) == std::vector<float>(64, 0));
+            recording_fixture_failure(0);
+            CHECK(pump(0.75f, 64) == std::vector<float>(64, 0));
+            CHECK(progress(s).timeline_frame == 612);
+            if (pollFirst) { auto status = abi<daw_recording>(); CHECK_REJ(s, daw_get_recording(s, &status)); }
+            else CHECK_REJ(s, daw_record_stop(s, "Must not commit", revision));
+            CHECK_OK(s, daw_record_cancel(s));
+            CHECK(!recording_fixture_active() && rev(s) == revision && sameContent(dumpOf(s), original));
+            CHECK(std::filesystem::exists(raw));
+            CHECK_OK(s, daw_recover_take(s, raw.c_str(), "Clock prefix", rev(s)));
+            const auto recovered = dumpOf(s);
+            CHECK(trackById(s, 1).audio_frames == 512);
+            const auto audio = exportProject(s, root / "clock-prefix.wav");
+            CHECK(audio.frames() == 612);
+            for (size_t frame = 0; frame < 612; ++frame) {
+                const float expected = frame < 100 ? 0 : 0.25f * fader(frame + 1);
+                CHECK(std::abs(audio.samples[frame * 2] - expected) < 1e-7f);
+                CHECK(audio.samples[frame * 2] == audio.samples[frame * 2 + 1]);
+            }
+            saveDraftAndWait(s, root / "clock-project.mydaw");
+            CHECK_OK(s, daw_undo(s, rev(s))); CHECK(sameContent(dumpOf(s), original));
+            CHECK_OK(s, daw_redo(s, rev(s))); CHECK(sameContent(dumpOf(s), recovered));
+            CHECK_OK(s, daw_open_draft(s, (root / "clock-project.mydaw").c_str()));
+            CHECK(sameContent(dumpOf(s), recovered));
+        }
         std::cout << "PASS: duplex recording bridge, dry PCM, pre-roll, live MON, loop/normal commit, Undo/reopen/export, cap and recovery (simulated device, real core).\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
