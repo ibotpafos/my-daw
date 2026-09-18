@@ -14,22 +14,25 @@ class DeviceFixture final : public daw::Duplex {
     uint64_t capacity_, start_, loopStart_, loopEnd_, preroll_, callbacks_ = 0, clockFrames_ = 0;
     std::string path_;
     bool monitor_, active_ = false;
+    uint32_t recordingChannels_ = 1;
     daw::RecordingLatency latency_ = fixtureLatency;
     uint32_t separation_ = fixtureSeparation;
     std::unique_ptr<daw::DuplexCapture> capture_;
 public:
     DeviceFixture(const daw::State& state, uint64_t capacity, const std::string& path,
-        uint64_t start, uint64_t loopStart, uint64_t loopEnd, uint64_t preroll, bool monitor)
+        uint64_t start, uint64_t loopStart, uint64_t loopEnd, uint64_t preroll, bool monitor,
+        uint32_t recordingChannels)
         : state_(state), capacity_(capacity), start_(start), loopStart_(loopStart),
-          loopEnd_(loopEnd), preroll_(preroll), path_(path), monitor_(monitor) {}
+          loopEnd_(loopEnd), preroll_(preroll), path_(path), monitor_(monitor),
+          recordingChannels_(recordingChannels) {}
     ~DeviceFixture() override { cancel(); if (current == this) current = nullptr; }
     void start() override {
         if (failure == 1) throw daw::Error("Test device refused to start");
         if (current) throw daw::Error("Test already has an active input device");
-        capture_ = std::make_unique<daw::DuplexCapture>(renderer, state_, capacity_, path_, start_, loopStart_, loopEnd_, preroll_, monitor_, latency_);
+        capture_ = std::make_unique<daw::DuplexCapture>(renderer, state_, capacity_, path_, start_, loopStart_, loopEnd_, preroll_, monitor_, latency_, recordingChannels_);
         renderer.playing = true; active_ = true; current = this;
     }
-    void pump(const float* input, uint32_t frames, float* left, float* right) {
+    void pumpStereo(const float* inputLeft, const float* inputRight, uint32_t frames, float* left, float* right) {
         if (!active_) throw daw::Error("Fixture is not running");
         daw::CaptureTimestamp time{double(clockFrames_), clockFrames_ + 1, true, true};
         if (failure == 3) time.sampleTime += 1; // one missing sample, not device loss
@@ -41,7 +44,7 @@ public:
             time.hostTime = clockFrames_ + 100000 + separation_;
             if (failure == 5) inputTime.sampleTimeValid = false;
         }
-        capture_->process(input, left, right, frames, time, inputTime);
+        capture_->processStereo(inputLeft, inputRight, left, right, frames, time, inputTime);
         clockFrames_ += frames; ++callbacks_;
     }
     void requestStop() noexcept override { if (capture_) capture_->requestStop(); }
@@ -70,13 +73,20 @@ namespace daw {
 // bridge, renderer, capture processor, writer, storage and export are linked.
 std::unique_ptr<Duplex> makeDuplex(const State& state, uint64_t capacity, const std::string& path,
     uint64_t start, uint64_t loopStart, uint64_t loopEnd, uint64_t preroll, bool monitor,
-    const AudioDeviceConfiguration&) {
-    return std::make_unique<DeviceFixture>(state, capacity, path, start, loopStart, loopEnd, preroll, monitor);
+    const AudioDeviceConfiguration& config) {
+    return std::make_unique<DeviceFixture>(state, capacity, path, start, loopStart, loopEnd, preroll, monitor,
+                                           config.recordingChannels);
 }
 }
 extern "C" int recording_fixture_pump(const float* input, uint32_t frames, float* left, float* right) {
     if (!current || !input || !left || !right || !frames || frames > daw::DuplexCapture::maximumSlice) return 1;
-    try { current->pump(input, frames, left, right); return 0; } catch (...) { return 1; }
+    try { current->pumpStereo(input, input, frames, left, right); return 0; } catch (...) { return 1; }
+}
+extern "C" int recording_fixture_pump_stereo(const float* inputLeft, const float* inputRight,
+                                               uint32_t frames, float* left, float* right) {
+    if (!current || !inputLeft || !inputRight || !left || !right || !frames ||
+        frames > daw::DuplexCapture::maximumSlice) return 1;
+    try { current->pumpStereo(inputLeft, inputRight, frames, left, right); return 0; } catch (...) { return 1; }
 }
 extern "C" void recording_fixture_failure(int mode) { failure = mode; }
 extern "C" int recording_fixture_active() { return current != nullptr; }
