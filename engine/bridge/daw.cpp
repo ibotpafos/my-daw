@@ -3659,6 +3659,48 @@ int daw_record_start_take(daw_session *s, uint64_t id, uint64_t startFrame,
         startRecording(s, startFrame, recoveryPath, id);
     });
 }
+int daw_record_request_stop(daw_session *s) {
+    return guard(s, [&] {
+        if (!s->duplex)
+            throw daw::Error("Recording is not active");
+        s->duplex->requestStop();
+    });
+}
+int daw_get_recording_timing(daw_session *s, daw_recording_timing *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(daw_recording_timing) ||
+            out->version != DAW_RECORDING_TIMING_VERSION)
+            throw daw::Error("Recording timing ABI mismatch");
+        *out = {};
+        out->struct_size = sizeof(daw_recording_timing);
+        out->version = DAW_RECORDING_TIMING_VERSION;
+        out->can_finish = 1;
+        if (!s->duplex)
+            return;
+        const auto t = s->duplex->timing();
+        const auto &h = t.hardware;
+        out->enabled = h.enabled;
+        out->ready = t.ready;
+        out->stop_requested = t.stopRequested;
+        out->can_finish = t.canFinish;
+        out->device_id = h.deviceID;
+        out->buffer_frames = h.bufferFrames;
+        out->input_device_frames = h.inputDevice;
+        out->input_stream_frames = h.inputStream;
+        out->input_safety_frames = h.inputSafety;
+        out->output_device_frames = h.outputDevice;
+        out->output_stream_frames = h.outputStream;
+        out->output_safety_frames = h.outputSafety;
+        out->input_stream_id = h.inputStreamID;
+        out->output_left_stream_id = h.outputLeftStreamID;
+        out->output_right_stream_id = h.outputRightStreamID;
+        out->timestamp_separation_frames = t.timestampSeparation;
+        out->compensation_frames = t.compensationFrames;
+        out->graph_frames = t.graphFrames;
+        out->discarded_leading_frames = t.discardedLeadingFrames;
+        out->drain_remaining_frames = t.drainRemainingFrames;
+    });
+}
 int daw_record_stop(daw_session *s, const char *name, uint64_t rev) {
     return guard(s, [&] {
         if (!recordingActive(s))
@@ -3668,6 +3710,10 @@ int daw_record_stop(daw_session *s, const char *name, uint64_t rev) {
         if (rev != s->model.state().revision || rev != s->recordRevision)
             throw daw::Error(
                 "Project changed during recording; cancel and recover the captured audio");
+        s->duplex->checkDevices();
+        s->duplex->requestStop();
+        if (!s->duplex->timing().canFinish)
+            throw daw::Error("Recording input is draining; poll timing before finalizing");
         auto duplex = std::move(s->duplex);
         auto clip = duplex->stop();
         if (!clip) {

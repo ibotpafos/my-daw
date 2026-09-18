@@ -28,6 +28,7 @@ extension DraftApp {
             transportLabel.stringValue = "Запись не началась — проверьте настройки аудио"
             return
         }
+        recordingStopPending = false
         activeRecordingURL = recovery
         activeRecordingRevision = revision
         activeRecordingTarget = target
@@ -41,6 +42,23 @@ extension DraftApp {
 
     func finishRecording() {
         guard isRecording else { return }
+        guard daw_record_request_stop(session) == 0 else {
+            failRecording(audioConfigurationError().localizedDescription)
+            return
+        }
+        recordingStopPending = true
+        var timing = daw_recording_timing()
+        timing.struct_size = UInt32(MemoryLayout<daw_recording_timing>.size)
+        timing.version = UInt32(DAW_RECORDING_TIMING_VERSION)
+        guard daw_get_recording_timing(session, &timing) == 0 else {
+            failRecording(audioConfigurationError().localizedDescription)
+            return
+        }
+        guard timing.can_finish != 0 else {
+            isPlaying = false
+            presentRecordingTiming(timing)
+            return // Polling stays active; no sleep on AppKit's main thread.
+        }
         let previousRevision = activeRecordingRevision
         let target = activeRecordingTarget
         guard daw_record_stop(session, "Запись \(recordingNumber)", previousRevision) == 0 else {
@@ -55,6 +73,7 @@ extension DraftApp {
         }
         activeRecordingURL = nil
         activeRecordingTarget = nil
+        recordingStopPending = false
         isRecording = false
         isPlaying = false
         updateRecordButton(false)
@@ -69,6 +88,7 @@ extension DraftApp {
         _ = daw_record_cancel(session)
         activeRecordingURL = nil
         activeRecordingTarget = nil
+        recordingStopPending = false
         isRecording = false
         isPlaying = false
         updateRecordButton(false)
@@ -80,6 +100,24 @@ extension DraftApp {
         transportLabel.stringValue = "Запись остановлена — " + message
     }
 
+    func presentRecordingTiming(_ timing: daw_recording_timing) {
+        guard timing.enabled != 0 else { return }
+        if recordingStopPending || timing.drain_remaining_frames > 0 {
+            isPlaying = false
+            recordMonitorButton.isEnabled = false
+            transportLabel.stringValue = "Завершение записи · принимаются последние входные кадры…"
+        } else if timing.ready != 0 {
+            transportLabel.stringValue += String(format: " · компенсация %.2f мс", Double(timing.compensation_frames) / 48)
+        } else {
+            transportLabel.stringValue = "Запись · ожидание временных меток устройства…"
+        }
+        transportLabel.toolTip = String(format:
+            "Сэмплы: метки %llu + вход %u + поток %u + выход %u + поток %u + граф %llu. Буфер %u, safety %u/%u уже учтены в метках. Данные драйвера, не измеренная акустическая задержка.",
+            timing.timestamp_separation_frames, timing.input_device_frames, timing.input_stream_frames,
+            timing.output_device_frames, timing.output_stream_frames, timing.graph_frames,
+            timing.buffer_frames, timing.input_safety_frames, timing.output_safety_frames)
+    }
+
     func presentRecording(_ recording: daw_recording, progress: daw_recording_progress) {
         isRecording = true
         isPlaying = true
@@ -87,7 +125,7 @@ extension DraftApp {
         playButton.isEnabled = false
         stopButton.isEnabled = true
         recordMonitorButton.isEnabled = true
-        // This is the capture clock, not a claim of hardware latency correction.
+        // The capture processor publishes the immutable compensated timeline.
         for wave in waveforms { wave.playhead = progress.timeline_frame }
         syncPlayhead(progress.timeline_frame)
         if progress.preroll_remaining_frames > 0 {

@@ -1,5 +1,6 @@
 #pragma once
 #include "audio/recording.hpp"
+#include "audio/recording_timing.hpp"
 #include "audio/renderer.hpp"
 
 namespace daw {
@@ -17,13 +18,24 @@ class DuplexCapture {
     std::atomic<uint64_t> elapsed_{0};
     std::atomic<bool> monitor_{false};
     float monitorGain_ = 0;
+    RecordingLatency latency_;
+    RecordingAlignment alignment_;
+    uint64_t graphFrames_ = 0, stopClock_ = UINT64_MAX; // producer-only
+    std::atomic<uint64_t> compensation_{0}, separation_{0}, publishedStopClock_{UINT64_MAX};
+    std::atomic<bool> timingReady_{false}, stopRequested_{false};
+    CaptureClock clock_;
+    std::atomic<CaptureClockError> clockError_{CaptureClockError::none};
 public:
     static constexpr uint32_t maximumSlice = 4096;
     DuplexCapture(Renderer&, const State&, uint64_t capacity, const std::string& path,
                   uint64_t start, uint64_t loopStart, uint64_t loopEnd,
-                  uint64_t preroll, bool monitor);
+                  uint64_t preroll, bool monitor, RecordingLatency latency = {});
     // Valid buffers, frames <= maximumSlice. Allocation/file I/O-free.
-    void process(const float* input, float* left, float* right, uint32_t frames) noexcept;
+    void process(const float* input, float* left, float* right, uint32_t frames, CaptureTimestamp time, CaptureTimestamp inputTime = {}) noexcept;
+    // Idempotent, nonblocking; a timed take drains at the next callback boundary.
+    void requestStop() noexcept { stopRequested_.store(true, std::memory_order_release); }
+    RecordingTimingInfo timing() const noexcept;
+    CaptureClockError clockError() const noexcept { return clockError_.load(std::memory_order_acquire); }
     void setMonitor(bool on) noexcept { monitor_.store(on, std::memory_order_release); }
     DuplexCaptureProgress progress() const noexcept;
     uint64_t frames() const noexcept { return writer_->frames(); }

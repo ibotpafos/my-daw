@@ -216,6 +216,119 @@ int main() {
             CHECK(trackById(s, 1).clip_count == 2 && rev(s) == revision + 1);
             CHECK_OK(s, daw_undo(s, rev(s)));
             CHECK(sameContent(dumpOf(s), before));
+        // 6. A discontinuity must never become a successful stopped take,
+        // even if Stop is called directly before the UI's next status poll.
+        for (int fault : {3, 4}) for (bool pollFirst : {false, true}) {
+            Bridge session; auto* s = session.get();
+            const auto original = dumpOf(s); const auto revision = rev(s);
+            const auto raw = (root / "clock.mydawtake").string();
+            CHECK_OK(s, daw_record_start(s, 100, raw.c_str())); pump(0.25f, 512);
+            recording_fixture_failure(fault);
+            CHECK(pump(0.75f, 64) == std::vector<float>(64, 0));
+            recording_fixture_failure(0);
+            CHECK(pump(0.75f, 64) == std::vector<float>(64, 0));
+            CHECK(progress(s).timeline_frame == 612);
+            if (pollFirst) { auto status = abi<daw_recording>(); CHECK_REJ(s, daw_get_recording(s, &status)); }
+            else CHECK_REJ(s, daw_record_stop(s, "Must not commit", revision));
+            CHECK_OK(s, daw_record_cancel(s));
+            CHECK(!recording_fixture_active() && rev(s) == revision && sameContent(dumpOf(s), original));
+            CHECK(std::filesystem::exists(raw));
+            CHECK_OK(s, daw_recover_take(s, raw.c_str(), "Clock prefix", rev(s)));
+            const auto recovered = dumpOf(s);
+            CHECK(trackById(s, 1).audio_frames == 512);
+            const auto audio = exportProject(s, root / "clock-prefix.wav");
+            CHECK(audio.frames() == 612);
+            for (size_t frame = 0; frame < 612; ++frame) {
+                const float expected = frame < 100 ? 0 : 0.25f * fader(frame + 1);
+                CHECK(std::abs(audio.samples[frame * 2] - expected) < 1e-7f);
+                CHECK(audio.samples[frame * 2] == audio.samples[frame * 2 + 1]);
+            }
+            saveDraftAndWait(s, root / "clock-project.mydaw");
+            CHECK_OK(s, daw_undo(s, rev(s))); CHECK(sameContent(dumpOf(s), original));
+            CHECK_OK(s, daw_redo(s, rev(s))); CHECK(sameContent(dumpOf(s), recovered));
+            CHECK_OK(s, daw_open_draft(s, (root / "clock-project.mydaw").c_str()));
+            CHECK(sameContent(dumpOf(s), recovered));
+        }
+        // 7. Timestamped placement with asynchronous Stop and retained tail.
+        {
+            CHECK(recording_fixture_latency(256, 17, 43) == 0);
+            Bridge session; auto* s = session.get(); const auto before = rev(s);
+            auto timing = abi<daw_recording_timing>(); timing.version = DAW_RECORDING_TIMING_VERSION;
+            CHECK_OK(s, daw_get_recording_timing(s, &timing)); CHECK(!timing.enabled && timing.can_finish);
+            CHECK_REJ(s, daw_get_recording_timing(s, nullptr));
+            timing.version = 99; CHECK_REJ(s, daw_get_recording_timing(s, &timing));
+            timing.version = DAW_RECORDING_TIMING_VERSION; --timing.struct_size;
+            CHECK_REJ(s, daw_get_recording_timing(s, &timing));
+            timing = abi<daw_recording_timing>(); timing.version = DAW_RECORDING_TIMING_VERSION;
+            CHECK_REJ(s, daw_record_request_stop(s));
+            const auto raw = (root / "latency.mydawtake").string();
+            CHECK_OK(s, daw_set_record_preroll(s, 37));
+            CHECK_OK(s, daw_record_start(s, 100, raw.c_str()));
+            pump(0.25f,512);
+            CHECK_OK(s,daw_get_recording_timing(s,&timing));
+            CHECK(timing.enabled && timing.ready && timing.compensation_frames == 316);
+            CHECK(timing.input_safety_frames == 17 && timing.output_safety_frames == 29);
+            CHECK(capture(s).frames == 159 && progress(s).timeline_frame == 575);
+            CHECK_OK(s,daw_record_request_stop(s)); CHECK_OK(s,daw_record_request_stop(s));
+            CHECK_REJ(s,daw_record_stop(s,"Aligned",before));
+            CHECK(capture(s).recording && rev(s)==before); // no moved/destroyed active take
+            CHECK(pump(0.75f,128)==std::vector<float>(128,0));
+            CHECK_OK(s,daw_get_recording_timing(s,&timing));
+            CHECK(timing.stop_requested && !timing.can_finish && timing.drain_remaining_frames == 188);
+            pump(0.75f,256);
+            CHECK_OK(s,daw_get_recording_timing(s,&timing)); CHECK(timing.can_finish && !timing.drain_remaining_frames);
+            CHECK(capture(s).frames==475 && rev(s)==before);
+            CHECK_OK(s,daw_record_stop(s,"Aligned",before));
+            CHECK(rev(s)==before+1 && !std::filesystem::exists(raw));
+            const auto recorded=dumpOf(s);
+            const auto wave=exportProject(s,root/"aligned.wav");
+            CHECK(wave.frames()==575);
+            for(size_t f=0;f<575;++f) {
+                const auto value = f<100 ? 0.0f : (f<259 ? 0.25f : 0.75f)*fader(f+1);
+                CHECK(std::abs(wave.samples[2*f]-value)<1e-7f);
+            }
+            CHECK_OK(s,daw_undo(s,rev(s))); CHECK(snapshotOf(s).track_count==0);
+            CHECK_OK(s,daw_redo(s,rev(s))); CHECK(sameContent(dumpOf(s),recorded));
+            saveDraftAndWait(s,root/"aligned.mydaw");
+            Bridge reopen; CHECK_OK(reopen.get(),daw_open_draft(reopen.get(),(root/"aligned.mydaw").c_str()));
+            CHECK(sameContent(dumpOf(reopen.get()),recorded));
+            CHECK(exportProject(reopen.get(),root/"aligned-reopen.wav").samples==wave.samples);
+            CHECK(recording_fixture_no_latency()==0);
+        }
+        {
+            CHECK(recording_fixture_latency(256,17,43)==0);
+            Bridge session;auto* s=session.get();
+            writeWavFixture(root/"aligned-bed.wav",std::vector<float>(4096*2,0.1f),kProjectRate,2,"f32");
+            CHECK_OK(s,daw_import_wav(s,(root/"aligned-bed.wav").c_str(),"Lead",rev(s)));
+            const auto original=dumpOf(s);const auto revision=rev(s);
+            CHECK_OK(s,daw_set_loop(s,1,100,356));CHECK_OK(s,daw_set_record_preroll(s,37));
+            CHECK_OK(s,daw_record_start_take(s,1,100,(root/"aligned-loop.mydawtake").c_str()));
+            pump(0.5f,640);CHECK_OK(s,daw_record_request_stop(s));pump(0.5f,512);
+            CHECK(capture(s).frames==603 && progress(s).timeline_frame==191);
+            CHECK_OK(s,daw_record_stop(s,"Aligned loop",revision));
+            CHECK(rev(s)==revision+1 && trackById(s,1).take_count==4);
+            auto take=abi<daw_take>();
+            for(uint32_t i=1;i<=3;++i){CHECK_OK(s,daw_get_take(s,1,i,&take));CHECK(take.start==100 && take.frames==(i==3 ? 91U : 256U));}
+            const auto recorded=dumpOf(s);saveDraftAndWait(s,root/"aligned-loop.mydaw");
+            CHECK_OK(s,daw_undo(s,rev(s)));CHECK(sameContent(dumpOf(s),original));
+            CHECK_OK(s,daw_redo(s,rev(s)));CHECK(sameContent(dumpOf(s),recorded));
+            CHECK_OK(s,daw_open_draft(s,(root/"aligned-loop.mydaw").c_str()));CHECK(sameContent(dumpOf(s),recorded));
+            CHECK(recording_fixture_no_latency()==0);
+        }
+        // A clock fault during drain cannot turn the confirmed prefix into an
+        // implicitly successful recording, even if Stop happens before poll.
+        {
+            CHECK(recording_fixture_latency(256,17,43)==0);
+            Bridge session;auto* s=session.get();const auto revision=rev(s);
+            const auto raw=(root/"latency-fault.mydawtake").string();
+            CHECK_OK(s,daw_record_start(s,100,raw.c_str()));pump(0.25f,512);
+            CHECK_OK(s,daw_record_request_stop(s));recording_fixture_failure(5);pump(0.75f,64);
+            CHECK_REJ(s,daw_record_stop(s,"Never commit",revision));
+            CHECK(rev(s)==revision && std::filesystem::exists(raw));
+            CHECK_OK(s,daw_record_cancel(s));recording_fixture_failure(0);
+            CHECK_OK(s,daw_recover_take(s,raw.c_str(),"Aligned recovery",revision));
+            const auto audio=exportProject(s,root/"aligned-recovery.wav");CHECK(audio.frames()==296);
+            CHECK(recording_fixture_no_latency()==0);
         }
         std::cout << "PASS: duplex recording bridge, dry PCM, pre-roll, live MON, loop/normal commit, Undo/reopen/export, cap and recovery (simulated device, real core).\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

@@ -125,5 +125,60 @@ func runWorkspaceIntegrationTests() {
     expect(!app.isRecording && recording_fixture_active() == 0, "failed start never claims success")
     expect(snapshot().revision == beforeFailure, "failed start preserves project")
     recording_fixture_failure(0)
+    // Timestamp failure takes the same native failure/recovery path, not a
+    // successful Stop. The shared capture processor rejects the bad PCM.
+    for fault in [Int32(3), Int32(4)] {
+        app.rangeStart = 100
+        let before = snapshot().revision
+        app.beginRecording(); _ = pump(512)
+        let clockRecovery = app.activeRecordingURL!
+        recording_fixture_failure(fault)
+        expect(pump(64, 0.75).allSatisfy { $0 == 0 }, "timestamp failure immediately silences output")
+        expect(!app.isRecording && recording_fixture_active() == 0, "clock fault ends device lifetime")
+        expect(snapshot().revision == before, "failed clock never commits partial take implicitly")
+        expect(app.transportLabel.stringValue.contains(fault == 3 ? "sample clock" : "sample timestamp"), "specific clock failure reaches native UI")
+        expect(app.transportLabel.stringValue.contains("восстановления"), "recovery action explained")
+        expect(app.playButton.isEnabled && app.exportButton.isEnabled, "controls restored after clock error")
+        expect(FileManager.default.fileExists(atPath: clockRecovery.path), "clock prefix remains recoverable")
+        recording_fixture_failure(0)
+        expect(daw_recover_take(app.session, clockRecovery.path, "Clock recovery", before) == 0, "real public recovery succeeds")
+        expect(snapshot().revision == before + 1, "recovery is one project command")
+        app.refresh()
+    }
+    // Real Stop controls remain responsive while delayed input drains. Only
+    // the hardware timestamps/PCM are simulated; UI/bridge/writer are actual.
+    expect(recording_fixture_latency(256, 17, 43) == 0, "configure paired-clock device")
+    app.rangeStart = 100
+    app.armedTrackID = nil
+    expect(daw_set_record_preroll(app.session, 0) == 0, "zero preroll for latency scenario")
+    let beforeAligned = snapshot()
+    app.beginRecording()
+    _ = pump(512)
+    expect(app.transportLabel.stringValue.contains("компенсация"), "latency report shown in native transport")
+    app.stopButton.performClick(nil)
+    expect(app.isRecording && app.recordingStopPending && !app.isPlaying, "Stop requests nonblocking drain")
+    expect(!app.recordMonitorButton.isEnabled && app.stopButton.isEnabled, "draining MON disabled, Stop responsive")
+    expect(snapshot().revision == beforeAligned.revision, "drain request does not commit")
+    app.stopButton.performClick(nil)
+    expect(snapshot().revision == beforeAligned.revision, "repeated Stop does not create another command")
+    expect(pump(128).allSatisfy { $0 == 0 }, "draining input never emits backing or MON")
+    expect(app.isRecording && app.transportLabel.stringValue.contains("последние входные кадры"), "pending state visible")
+    screenshot("recording-latency-draining")
+    _ = pump(256, 0.75)
+    expect(!app.isRecording && !app.recordingStopPending, "poll completes drained take")
+    expect(snapshot().revision == beforeAligned.revision + 1, "aligned take is one Undo command")
+    expect(snapshot().track_count == beforeAligned.track_count + 1, "one recorded track")
+    app.undo()
+    expect(snapshot().track_count == beforeAligned.track_count, "aligned UI Undo")
+    app.redo()
+    expect(snapshot().track_count == beforeAligned.track_count + 1, "aligned UI Redo")
+    let beforePreroll = snapshot()
+    expect(daw_set_record_preroll(app.session, 1000) == 0, "set paired-clock preroll")
+    app.rangeStart = 1000
+    app.beginRecording(); _ = pump(64)
+    app.stopButton.performClick(nil); _ = pump(64)
+    expect(!app.isRecording && !app.recordingStopPending, "Stop in preroll ends at next callback")
+    expect(snapshot().revision == beforePreroll.revision && snapshot().track_count == beforePreroll.track_count, "no phantom clip from compensated preroll")
+    expect(recording_fixture_no_latency() == 0, "clear device fixture")
     print("Recording native UI: \(checks) checks passed (simulated device, real AppKit/bridge/writer)")
 }
