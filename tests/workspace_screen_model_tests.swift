@@ -17,7 +17,7 @@ struct WorkspaceScreenModelTests {
         preference.save(to: defaults)
         let encodedLayout = defaults.data(forKey: WorkspaceLayout.defaultsKey)
         expect(WorkspaceScreen.load(from: defaults) == .arrange, "First launch opens arrangement")
-        expect(WorkspaceScreen.allCases.map(\.rawValue) == [0, 1, 2, 3, 4], "Stable screen IDs")
+        expect(WorkspaceScreen.allCases.map(\.rawValue) == [0, 1, 2, 3, 4, 5], "Stable screen IDs")
         expect(WorkspaceScreen.defaultsKey != WorkspaceLayout.defaultsKey, "Separate persistence")
         for screen in WorkspaceScreen.allCases {
             screen.save(to: defaults)
@@ -26,7 +26,7 @@ struct WorkspaceScreenModelTests {
             expect(!screen.title.isEmpty && !screen.accessibilityTitle.isEmpty, "Named accessible destination")
             if let tab = screen.dockTab { expect(WorkspaceScreen(dockTab: tab) == screen, "Dock mapping is bijective") }
         }
-        for invalid: Any in [-1, 5, 999, "unknown-screen", Data([0,1,2])] {
+        for invalid: Any in [-1, 6, 999, "unknown-screen", Data([0,1,2])] {
             defaults.set(invalid, forKey: WorkspaceScreen.defaultsKey)
             expect(WorkspaceScreen.load(from: defaults) == .arrange, "Invalid saved destination has a safe fallback")
         }

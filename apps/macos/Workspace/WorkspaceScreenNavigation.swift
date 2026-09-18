@@ -1,7 +1,7 @@
 import AppKit
 
 /// Presentation actions are kept separate from transport, recording and project
-/// commands. All five destinations contain the existing production controls.
+/// commands. All destinations route to the production session and controls.
 @MainActor
 extension DraftApp {
     func configureWorkspaceScreenPicker() {
@@ -14,14 +14,14 @@ extension DraftApp {
         workspaceMode.target = self
         workspaceMode.action = #selector(changeWorkspaceScreen(_:))
         workspaceMode.setAccessibilityLabel("Рабочий экран")
-        workspaceMode.setAccessibilityHelp("Проект, MIDI, микшер, эффекты или браузер. Переключение не запускает запись и не изменяет проект.")
+        workspaceMode.setAccessibilityHelp("Проект, MIDI, микшер, эффекты, браузер или запись. Переключение не запускает запись и не изменяет проект.")
     }
 
     func wireWorkspaceScreenNavigation() {
         workspace?.mayNavigate = { [weak self] in
             guard let self else { return false }
             guard consoleGesture == nil, automationGesture == nil,
-                  pluginParameterGesture == nil, !mixerWorkspace.linkedLevels.isEditing else {
+                  pluginParameterGesture == nil, !mixerWorkspace.linkedLevels.isEditing, !recordingWorkspace.isGesturing else {
                 status.stringValue = "Заверши текущее изменение параметра перед переключением экрана."
                 return false
             }
@@ -34,6 +34,7 @@ extension DraftApp {
         workspace?.onFocusRequested = { [weak self] screen in
             guard let self else { return }
             switch screen {
+            case .recording: _ = window.makeFirstResponder(recordingWorkspace.tracks)
             case .browser: _ = window.makeFirstResponder(libraryBrowser.search)
             case .mixer: _ = window.makeFirstResponder(mixerWorkspace.search)
             case .pianoRoll: _ = window.makeFirstResponder(inspectorBrowser.midiEditor)

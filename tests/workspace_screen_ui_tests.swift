@@ -55,14 +55,14 @@ func runWorkspaceScreenTests(_ app: DraftApp) -> Int {
     let initialPlaying = app.isPlaying
     let initialRecording = app.isRecording
     let initialLayout = workspace.preference
-    expect(app.workspaceMode.segmentCount == 5, "Five real destinations in the header")
+    expect(app.workspaceMode.segmentCount == 6, "Six real destinations in the header")
     expect(app.workspaceMode.action == #selector(DraftApp.changeWorkspaceScreen(_:)),
            "Header no longer dispatches the legacy transport preset action")
     guard let menu = NSApp.mainMenu?.items.first(where: {
         $0.identifier?.rawValue == "workspace.screens"
     })?.submenu else { fatalError("Missing native screen menu") }
     let destinations = menu.items.filter { $0.action == #selector(DraftApp.pickWorkspaceScreen(_:)) }
-    expect(destinations.count == 5, "Every screen has a discoverable native command")
+    expect(destinations.count == 6, "Every screen has a discoverable native command")
     expect(destinations.allSatisfy { $0.keyEquivalentModifierMask == [.control, .command] },
            "Screen shortcuts do not replace existing mixer or tool shortcuts")
 
@@ -89,6 +89,10 @@ func runWorkspaceScreenTests(_ app: DraftApp) -> Int {
                 expect(g.library == workspace.bounds.width && g.center == 0 && g.dock == 0,
                        "Browser receives all available workspace")
                 expect(!app.libraryBrowser.isHiddenOrHasHiddenAncestor, "Actual library is visible")
+            } else if screen == .recording {
+                expect(g.dock == workspace.bounds.height, "Recording fills workspace")
+                expect(!app.recordingWorkspace.isHiddenOrHasHiddenAncestor, "Real recording screen visible")
+                expect(dock.isHiddenOrHasHiddenAncestor, "Ordinary dock is hidden in recording screen")
             } else if let tab = screen.dockTab {
                 expect(g.dock == workspace.bounds.height && g.center == workspace.bounds.width,
                        "Editor receives all workspace width and height")

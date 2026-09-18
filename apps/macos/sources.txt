@@ -79,3 +79,7 @@ apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
 apps/macos/AudioHardwareSettings.swift
 apps/macos/RecordingUI.swift
+apps/macos/Workspace/RecordCompSelection.swift
+apps/macos/Workspace/RecordTakeLaneView.swift
+apps/macos/Workspace/RecordingWorkspaceView.swift
+apps/macos/Workspace/RecordingWorkspaceBinding.swift

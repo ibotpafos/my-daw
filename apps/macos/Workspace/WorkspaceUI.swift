@@ -110,6 +110,7 @@ extension DraftApp {
         wireTimelineNavigation()
         wireArrangementOverview()
         wireWorkspaceScreenNavigation()
+        wireRecordingWorkspace()
         workspace?.onChange = { [weak self] preference in
             guard let self else { return }
             self.workspaceDock?.select(self.workspace?.activeDockTab ?? preference.dockTab)
@@ -118,6 +119,7 @@ extension DraftApp {
                 self.fitTrackHeaderWidth(); self.fitTimelineViewport()
             }
             self.updateWorkspaceChrome()
+            self.refreshRecordingWorkspace()
         }
         workspaceDock?.onSelect = { [weak self] tab in self?.workspace?.selectDock(tab) }
         workspaceDock?.onClose = { [weak self] in self?.workspace?.toggle(.dock) }
