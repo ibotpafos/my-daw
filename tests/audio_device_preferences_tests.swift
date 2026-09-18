@@ -14,7 +14,8 @@ struct AudioPreferencesTests {
         expect(try AudioDevicePreferences.read(from: defaults) == AudioDevicePreferences())
         var config = AudioDevicePreferences()
         config.inputUID = "Студия:микрофон"; config.outputUID = "Studio:output"
-        config.inputChannel = 3; config.outputLeft = 4; config.outputRight = 5
+        config.inputChannel = 3; config.inputRight = 4; config.inputChannels = 2
+        config.outputLeft = 4; config.outputRight = 5
         defaults.set(try config.encoded(), forKey: AudioDevicePreferences.key)
         expect(try AudioDevicePreferences.read(from: defaults) == config)
         let reopened = UserDefaults(suiteName: name)!
@@ -29,6 +30,18 @@ struct AudioPreferencesTests {
         rejects { _ = try bad.encoded() }
         bad = config; bad.inputChannel = 128
         rejects { _ = try bad.encoded() }
+        bad = config; bad.inputChannels = 3
+        rejects { _ = try bad.encoded() }
+        bad = config; bad.inputChannels = 2; bad.inputRight = bad.inputChannel
+        rejects { _ = try bad.encoded() }
+        let legacy = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "inputUID": "legacy", "outputUID": "legacy-out",
+            "inputChannel": 7, "outputLeft": 2, "outputRight": 3
+        ])
+        defaults.set(legacy, forKey: AudioDevicePreferences.key)
+        let migrated = try AudioDevicePreferences.read(from: defaults)
+        expect(migrated.version == 2 && migrated.inputChannels == 1 && migrated.inputChannel == 7 &&
+               migrated.inputRight == 8 && migrated.inputUID == "legacy")
         for payload in [Data("{}".utf8), Data("[]".utf8), Data(repeating: 0, count: 8193)] {
             defaults.set(payload, forKey: AudioDevicePreferences.key)
             rejects { _ = try AudioDevicePreferences.read(from: defaults) }
@@ -36,7 +49,9 @@ struct AudioPreferencesTests {
         defaults.set("not data", forKey: AudioDevicePreferences.key)
         rejects { _ = try AudioDevicePreferences.read(from: defaults) }
         for channel in 0..<128 {
+            config.inputChannels = 1
             config.inputChannel = UInt32(channel)
+            config.inputRight = UInt32((channel + 1) % 128)
             config.outputLeft = UInt32(channel)
             config.outputRight = UInt32((channel + 1) % 128)
             defaults.set(try config.encoded(), forKey: AudioDevicePreferences.key)
