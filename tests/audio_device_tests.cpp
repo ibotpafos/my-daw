@@ -25,6 +25,13 @@ int main() {
         config.inputChannel = 7; config.outputLeft = 6; config.outputRight = 7;
         check(resolveAudioDevice(config, devices, AudioDeviceDirection::Input).id == 9);
         check(resolveAudioDevice(config, devices, AudioDeviceDirection::Output).id == 9);
+        config.recordingChannels = 2; config.inputChannel = 6; config.inputRight = 7;
+        check(resolveAudioDevice(config, devices, AudioDeviceDirection::Input).id == 9);
+        auto badStereo = config; badStereo.inputRight = badStereo.inputChannel;
+        rejects([&] { validateAudioDeviceConfiguration(badStereo); });
+        badStereo = config; badStereo.inputRight = 128;
+        rejects([&] { validateAudioDeviceConfiguration(badStereo); });
+        config.recordingChannels = 1; config.inputChannel = 7;
         // A system default change cannot reroute an explicit UID or same-name device.
         devices[0].defaultInput = devices[0].defaultOutput = false;
         check(resolveAudioDevice(config, devices, AudioDeviceDirection::Output).id == 9);
@@ -56,6 +63,10 @@ int main() {
         bad = config; bad.outputLeft = bad.outputRight;
         rejects([&] { validateAudioDeviceConfiguration(bad); });
         bad = config; bad.inputChannel = 128;
+        rejects([&] { validateAudioDeviceConfiguration(bad); });
+        bad = config; bad.recordingChannels = 0;
+        rejects([&] { validateAudioDeviceConfiguration(bad); });
+        bad = config; bad.recordingChannels = 3;
         rejects([&] { validateAudioDeviceConfiguration(bad); });
         // Every legal stereo pair routes exactly once, with silence everywhere else.
         for (uint32_t channels : {2u, 4u, 8u, 128u}) {
