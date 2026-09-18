@@ -75,3 +75,4 @@ apps/macos/Workspace/ArrangementOverviewView.swift
 apps/macos/Workspace/ArrangementOverviewBinding.swift
 apps/macos/AudioDevicePreferences.swift
 apps/macos/AudioDeviceSettings.swift
+apps/macos/AudioHardwareSettings.swift

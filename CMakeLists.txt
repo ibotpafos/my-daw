@@ -21,6 +21,7 @@ endif()
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 add_library(daw_core STATIC
+  engine/audio/hardware_settings.cpp
   engine/audio/device.cpp
   engine/audio/analysis.cpp
   engine/audio/clip.cpp

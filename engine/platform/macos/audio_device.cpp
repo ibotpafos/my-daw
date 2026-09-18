@@ -1,4 +1,7 @@
 #include "platform/macos/audio_device.hpp"
+#include "audio/hardware_settings.hpp"
+#include <chrono>
+#include <thread>
 #include "domain/session.hpp"
 #include <CoreAudio/CoreAudio.h>
 #include <array>
@@ -121,5 +124,82 @@ void mapAudioOutput(AudioUnit unit, const AudioDeviceInfo& device, uint32_t left
     const auto map = audioOutputChannelMap(device.outputChannels, left, right);
     checked(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_ChannelMap, kAudioUnitScope_Output,
                                 0, map.data(), static_cast<UInt32>(map.size() * sizeof(SInt32))), "Map stereo output channels");
+}
+}
+
+// Hardware format control remains separate from selection and audio callbacks.
+namespace daw {
+namespace {
+bool writable(AudioDeviceID device, AudioObjectPropertySelector selector) {
+    AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    Boolean value = false;
+    if (!AudioObjectHasProperty(device, &property)) return false;
+    checked(AudioObjectIsPropertySettable(device, &property, &value), "Read hardware setting permissions");
+    return value;
+}
+bool supportsProjectRate(AudioDeviceID device, double current) {
+    AudioObjectPropertyAddress property{kAudioDevicePropertyAvailableNominalSampleRates,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    if (!AudioObjectHasProperty(device, &property)) return std::abs(current - 48000) <= 0.5;
+    UInt32 size = 0;
+    checked(AudioObjectGetPropertyDataSize(device, &property, 0, nullptr, &size), "Read supported sample rates");
+    if (size % sizeof(AudioValueRange) || size / sizeof(AudioValueRange) > 64)
+        throw Error("Invalid sample-rate capability list");
+    if (!size) return std::abs(current - 48000) <= 0.5;
+    std::vector<AudioValueRange> ranges(size / sizeof(AudioValueRange));
+    const auto capacity = size;
+    checked(AudioObjectGetPropertyData(device, &property, 0, nullptr, &size, ranges.data()), "Read supported sample-rate ranges");
+    if (size > capacity || size % sizeof(AudioValueRange)) throw Error("Audio sample-rate capabilities changed");
+    bool supported = false;
+    for (size_t i = 0; i < size / sizeof(AudioValueRange); ++i) {
+        const auto& range = ranges[i];
+        if (!std::isfinite(range.mMinimum) || !std::isfinite(range.mMaximum) ||
+            range.mMinimum <= 0 || range.mMinimum > range.mMaximum)
+            throw Error("Invalid sample-rate range");
+        if (range.mMinimum <= 48000 && range.mMaximum >= 48000) supported = true;
+    }
+    return supported;
+}
+AudioHardwareSettings hardwareSettings(AudioDeviceID id, const std::string& uid) {
+    const auto device = describe(id);
+    if (device.uid != uid) throw Error("Audio device UID changed; refresh settings");
+    const auto range = read<AudioValueRange>(id, kAudioDevicePropertyBufferFrameSizeRange);
+    if (!std::isfinite(range.mMinimum) || !std::isfinite(range.mMaximum) ||
+        range.mMinimum < 1 || range.mMinimum > range.mMaximum || range.mMaximum > 1048576 ||
+        std::ceil(range.mMinimum) > std::floor(range.mMaximum))
+        throw Error("Audio driver returned invalid buffer bounds");
+    return {id, uid, device.sampleRate, device.bufferFrames,
+        static_cast<uint32_t>(std::ceil(range.mMinimum)), static_cast<uint32_t>(std::floor(range.mMaximum)),
+        supportsProjectRate(id, device.sampleRate), writable(id, kAudioDevicePropertyNominalSampleRate),
+        writable(id, kAudioDevicePropertyBufferFrameSize)};
+}
+class HALHardwareBackend final : public AudioHardwareBackend {
+    AudioHardwareSettings expected_;
+    template<class T> void set(AudioObjectPropertySelector selector, T value) {
+        // Check the captured identity immediately before EVERY write, including
+        // rollback. A recycled AudioDeviceID must never configure a new device.
+        read();
+        if (!writable(expected_.deviceID, selector)) throw Error("Audio hardware property is read-only");
+        AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        checked(AudioObjectSetPropertyData(expected_.deviceID, &property, 0, nullptr, sizeof(value), &value),
+                "Audio driver rejected the requested setting");
+    }
+public:
+    explicit HALHardwareBackend(const AudioHardwareSettings& expected) : expected_(expected) {}
+    AudioHardwareSettings read() override { return hardwareSettings(expected_.deviceID, expected_.uid); }
+    void setRate(double value) override { set<Float64>(kAudioDevicePropertyNominalSampleRate, value); }
+    void setBuffer(uint32_t value) override { set<UInt32>(kAudioDevicePropertyBufferFrameSize, value); }
+    void wait() override { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+};
+}
+AudioHardwareSettings readAudioHardwareSettings(const std::string& uid) {
+    if (uid.empty() || uid.size() > audioDeviceUIDBytes || uid.find('\0') != std::string::npos)
+        throw Error("Select an explicit available device before changing its hardware format");
+    for (const auto& device : enumerateAudioDevices())
+        if (device.uid == uid) return hardwareSettings(device.id, uid);
+    throw Error("The selected audio device is unavailable; no default replacement was made");
+}
+std::unique_ptr<AudioHardwareBackend> makeAudioHardwareBackend(const AudioHardwareSettings& expected) {
+    return std::make_unique<HALHardwareBackend>(expected);
 }
 }

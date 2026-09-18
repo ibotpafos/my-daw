@@ -36,7 +36,7 @@ while IFS= read -r source || [[ -n "$source" ]]; do
 done < apps/macos/sources.txt
 xcrun swiftc -swift-version 6 -D DAW_WORKSPACE_TESTS \
   -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
-  -import-objc-header apps/macos/DAWBridge.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift tests/workspace_folder_tests.swift tests/workspace_mixer_tests.swift tests/workspace_overview_tests.swift tests/workspace_audio_device_tests.swift \
+  -import-objc-header apps/macos/DAWBridge.h "${sources[@]}" tests/workspace_ui_tests.swift tests/workspace_timeline_tests.swift tests/workspace_signal_chain_tests.swift tests/workspace_parameter_tests.swift tests/workspace_library_tests.swift tests/workspace_folder_tests.swift tests/workspace_mixer_tests.swift tests/workspace_overview_tests.swift tests/workspace_audio_device_tests.swift tests/workspace_audio_hardware_tests.swift \
   build/debug/libdaw_core.a build/debug/libdaw_au_scanner.a \
   -Xlinker -lc++ -lsqlite3 -framework AppKit -framework UniformTypeIdentifiers \
   -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreMIDI \

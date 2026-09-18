@@ -1,10 +1,12 @@
 #pragma once
+#include "audio/hardware_settings.hpp"
 #include "audio/output.hpp"
 #include <memory>
 #include <string>
 
 namespace daw {
 class Duplex {
+    AudioIOLease hardwareLease_;
 public:
     Renderer renderer;
     virtual ~Duplex() = default;

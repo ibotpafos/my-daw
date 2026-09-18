@@ -191,6 +191,8 @@ void cancelStalePlaybackPreparation(daw_session *s) noexcept {
         invalidatePlaybackPreparation(s);
 }
 void beginPlaybackPreparation(daw_session *s) {
+    if (daw::audioHardwareChangeActive())
+        throw daw::Error("Audio hardware configuration is in progress");
     if (s->model.mixerGestureActive())
         throw daw::Error("Finish the mixer gesture before starting playback or recording");
     invalidatePlaybackPreparation(s);
@@ -479,6 +481,8 @@ VocalPlan vocalPlan(daw_session *s, const uint64_t *selected, uint32_t count, co
 }
 void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPath,
                     uint64_t target) {
+    if (daw::audioHardwareChangeActive())
+        throw daw::Error("Audio hardware configuration is in progress");
     if (s->model.mixerGestureActive())
         throw daw::Error("Finish the mixer gesture before starting playback or recording");
     if (recordingActive(s))
@@ -878,7 +882,8 @@ int daw_set_audio_device_config(daw_session *s, const daw_audio_device_config *r
         if (!raw || raw->struct_size != sizeof(daw_audio_device_config) ||
             raw->version != DAW_AUDIO_DEVICE_CONFIG_VERSION)
             throw daw::Error("Audio configuration ABI mismatch");
-        if (recordingActive(s) || s->midiRecorder || s->playbackPreparation ||
+        if (daw::audioHardwareChangeActive() || recordingActive(s) || s->midiRecorder ||
+            s->playbackPreparation ||
             (s->output && s->output->renderer.playing.load(std::memory_order_acquire)))
             throw daw::Error(
                 "Stop playback, recording and MIDI capture before changing audio devices");
@@ -911,6 +916,8 @@ int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
         *out = result;
     });
 }
+#include "audio_hardware.inc"
+
 int daw_get_snapshot(daw_session *s, daw_snapshot *out) {
     return guard(s, [&] {
         if (!out || out->struct_size != sizeof(daw_snapshot))
@@ -2668,6 +2675,8 @@ int daw_midi_input_active(daw_session *s, uint32_t *uniqueID) {
 }
 int daw_midi_record_arm(daw_session *s, uint64_t trackID, uint32_t clipIndex) {
     return guard(s, [&] {
+        if (daw::audioHardwareChangeActive())
+            throw daw::Error("Audio hardware configuration is in progress");
 #ifdef __APPLE__
         if (!s->midiInput)
             throw daw::Error("Open a MIDI input before arming a take");

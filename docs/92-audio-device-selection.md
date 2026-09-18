@@ -88,3 +88,11 @@ StreamConfiguration, AUHAL CurrentDevice/ChannelMap, AppKit и Foundation.
 - [Apple: Common Core Audio tasks](https://developer.apple.com/library/archive/documentation/MusicAudio/Conceptual/CoreAudioOverview/ARoadmaptoCommonTasks/ARoadmaptoCommonTasks.html)
 - [Buffer frame size](https://developer.apple.com/documentation/coreaudio/kaudiodevicepropertybufferframesize)
 - [Nominal sample rate](https://developer.apple.com/documentation/coreaudio/kaudiodevicepropertynominalsamplerate)
+
+
+## Следующий срез: аппаратный формат
+
+[48 kHz и размер буфера](94-audio-hardware-format.md) добавлены отдельной
+явной операцией. Выбор UID/каналов и чтение preferences по-прежнему не меняют
+аппаратный формат автоматически. Исторические ограничения среза выше не
+подменяют статус нового PR и физическую приёмку.
