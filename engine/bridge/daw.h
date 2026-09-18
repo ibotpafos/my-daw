@@ -17,7 +17,7 @@ extern "C" {
  * Snapshot sizes must equal sizeof(struct). All mutations use expected_revision.
  */
 typedef struct daw_session daw_session;
-enum { DAW_AUDIO_DEVICE_VERSION = 1, DAW_AUDIO_DEVICE_CONFIG_VERSION = 1 };
+enum { DAW_AUDIO_DEVICE_VERSION = 1, DAW_AUDIO_DEVICE_CONFIG_VERSION = 2 };
 typedef struct {
     uint32_t struct_size, version, device_id, input_channels, output_channels, buffer_frames;
     double sample_rate;
@@ -25,7 +25,9 @@ typedef struct {
     char uid[481], name[481];
 } daw_audio_device;
 typedef struct {
-    uint32_t struct_size, version, input_channel, output_left, output_right;
+    uint32_t struct_size, version;
+    uint32_t input_channel, input_right, recording_channels;
+    uint32_t output_left, output_right;
     char input_uid[481], output_uid[481];
 } daw_audio_device_config;
 /* Owner-thread, read-only hardware discovery. Refresh atomically replaces the
@@ -34,8 +36,10 @@ typedef struct {
 int daw_refresh_audio_devices(daw_session*, uint32_t* count);
 int daw_get_audio_device(daw_session*, uint32_t index, daw_audio_device*);
 /* Machine/session preference, not project/Undo state. Zero-based channels.
- * Empty UID follows system default; explicit missing UID MUST NOT fall back.
- * Set validates syntax without opening hardware (offline preferences allowed).
+ * recording_channels is 1 (mono: input_channel only) or 2 (stereo:
+ * input_channel/input_right). Empty UID follows system default; explicit missing
+ * UID MUST NOT fall back. Set validates syntax without opening hardware (offline
+ * preferences allowed).
  * Start re-resolves UID and validates channels/48 kHz/buffer <=4096. Configuration
  * changes are rejected during playback/preparation/recording/MIDI capture.
  * Selection does not change hardware rate/buffer; use the explicit hardware job. */
