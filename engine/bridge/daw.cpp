@@ -895,7 +895,8 @@ int daw_set_audio_device_config(daw_session *s, const daw_audio_device_config *r
             return std::string(bytes, end);
         };
         daw::AudioDeviceConfiguration config{uid(raw->input_uid), uid(raw->output_uid),
-                                             raw->input_channel, raw->output_left,
+                                             raw->input_channel, raw->input_right,
+                                             raw->recording_channels, raw->output_left,
                                              raw->output_right};
         daw::validateAudioDeviceConfiguration(config);
         s->audioConfiguration = std::move(config);
@@ -910,6 +911,8 @@ int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
         result.struct_size = sizeof(result);
         result.version = DAW_AUDIO_DEVICE_CONFIG_VERSION;
         result.input_channel = s->audioConfiguration.inputChannel;
+        result.input_right = s->audioConfiguration.inputRight;
+        result.recording_channels = s->audioConfiguration.recordingChannels;
         result.output_left = s->audioConfiguration.outputLeft;
         result.output_right = s->audioConfiguration.outputRight;
         copyText(result.input_uid, s->audioConfiguration.inputUID);
