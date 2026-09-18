@@ -19,6 +19,11 @@ static std::vector<float> pump(float value, uint32_t frames) {
     CHECK(recording_fixture_pump(in.data(), frames, left.data(), right.data()) == 0);
     CHECK(left == right); return left;
 }
+static std::pair<std::vector<float>,std::vector<float>> pumpStereo(float lValue,float rValue,uint32_t frames) {
+    std::vector<float> inL(frames,lValue),inR(frames,rValue),left(frames,-99),right(frames,-99);
+    CHECK(recording_fixture_pump_stereo(inL.data(),inR.data(),frames,left.data(),right.data())==0);
+    return {std::move(left),std::move(right)};
+}
 // Existing renderer start smoothing is part of playback/export, not captured PCM.
 static bool sameContent(Dump a, const Dump& b) {
     a.revision = b.revision; return a == b;
@@ -64,6 +69,28 @@ int main() {
             Bridge reopened; CHECK_OK(reopened.get(), daw_open_draft(reopened.get(), (root / "recorded.mydaw").c_str()));
             CHECK(sameContent(dumpOf(reopened.get()), recorded));
             CHECK(exportProject(reopened.get(), root / "reopen.wav").samples == wave.samples);
+        }
+        // Stereo mode crosses the public audio-config ABI into the same
+        // recording factory and preserves the two dry channels end-to-end.
+        {
+            Bridge session; auto* s=session.get(); const auto before=rev(s);
+            auto config=abi<daw_audio_device_config>(); config.version=DAW_AUDIO_DEVICE_CONFIG_VERSION;
+            CHECK_OK(s,daw_get_audio_device_config(s,&config));
+            config.recording_channels=2;config.input_channel=0;config.input_right=1;
+            CHECK_OK(s,daw_set_audio_device_config(s,&config));
+            const auto raw=(root/"stereo-e2e.mydawtake").string();
+            CHECK_OK(s,daw_record_start(s,0,raw.c_str()));
+            auto monitored=pumpStereo(0.2f,-0.4f,256);
+            CHECK(std::all_of(monitored.first.begin(),monitored.first.end(),[](float v){return v==0;}));
+            CHECK(std::all_of(monitored.second.begin(),monitored.second.end(),[](float v){return v==0;}));
+            CHECK_OK(s,daw_record_stop(s,"Stereo",before));
+            const auto wave=exportProject(s,root/"stereo-e2e.wav");
+            CHECK(wave.frames()==256);
+            for(size_t frame=0;frame<wave.frames();++frame){
+                const float gain=fader(frame+1);
+                CHECK(std::abs(wave.samples[frame*2]-0.2f*gain)<1e-7f);
+                CHECK(std::abs(wave.samples[frame*2+1]+0.4f*gain)<1e-7f);
+            }
         }
         // 2. Backing playback + dry capture, pre-roll crossing a block boundary,
         // live MON on/off, input safety, and continuing beyond backing duration.
