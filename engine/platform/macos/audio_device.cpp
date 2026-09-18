@@ -1,7 +1,9 @@
 #include "platform/macos/audio_device.hpp"
+#include "audio/device_settings.hpp"
 #include "domain/session.hpp"
 #include <CoreAudio/CoreAudio.h>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -98,6 +100,126 @@ std::vector<AudioDeviceInfo> enumerateAudioDevices() {
         }
     }
     return result;
+}
+namespace {
+bool writable(AudioDeviceID id, AudioObjectPropertySelector selector) {
+    AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    Boolean value = false;
+    checked(AudioObjectIsPropertySettable(id, &property, &value), "Read audio property access");
+    return value;
+}
+std::vector<AudioValueRange> availableRates(AudioDeviceID id) {
+    AudioObjectPropertyAddress property{kAudioDevicePropertyAvailableNominalSampleRates,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    checked(AudioObjectGetPropertyDataSize(id, &property, 0, nullptr, &size), "Read supported sample rates");
+    if (size % sizeof(::AudioValueRange) || size > 64 * sizeof(::AudioValueRange))
+        throw Error("Invalid or oversized sample rate catalog");
+    if (!size) return {};
+    std::array<::AudioValueRange, 64> ranges{};
+    const auto capacity = size;
+    checked(AudioObjectGetPropertyData(id, &property, 0, nullptr, &size, ranges.data()), "Read supported sample rates");
+    if (size > capacity || size % sizeof(::AudioValueRange)) throw Error("Sample rate catalog changed; refresh");
+    std::vector<AudioValueRange> result;
+    for (size_t i = 0; i < size / sizeof(::AudioValueRange); ++i)
+        result.push_back({ranges[i].mMinimum, ranges[i].mMaximum});
+    return result;
+}
+// The C callback never dereferences a destroyed controller. This trivial state
+// has process lifetime, including notifications queued before listener removal.
+// Production hardware writes are serialized by the bridge's single coordinator;
+// read-only capability adapters do not register listeners or change this state.
+struct FormatNotifications {
+    std::atomic<AudioObjectID> device{0};
+    std::atomic<uint64_t> rate{0}, buffer{0};
+};
+FormatNotifications formatNotifications;
+OSStatus formatChanged(AudioObjectID device, UInt32 count,
+                       const AudioObjectPropertyAddress* addresses, void*) {
+    if (device != formatNotifications.device.load(std::memory_order_acquire)) return noErr;
+    for (UInt32 i = 0; i < count; ++i) {
+        if (addresses[i].mSelector == kAudioDevicePropertyNominalSampleRate)
+            formatNotifications.rate.fetch_add(1, std::memory_order_release);
+        if (addresses[i].mSelector == kAudioDevicePropertyBufferFrameSize)
+            formatNotifications.buffer.fetch_add(1, std::memory_order_release);
+    }
+    return noErr;
+}
+class HALDeviceControl final : public AudioDeviceControl {
+    AudioDeviceID id;
+    std::string uid;
+    bool rateListener = false, bufferListener = false;
+    uint64_t rateTicket = 0, bufferTicket = 0;
+    void listen(AudioObjectPropertySelector selector, bool& registered) {
+        formatNotifications.device.store(id, std::memory_order_release);
+        if (registered) return;
+        AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        checked(AudioObjectAddPropertyListener(id, &property, formatChanged, nullptr), "Observe audio format acknowledgement");
+        registered = true;
+    }
+    void removeListener(AudioObjectPropertySelector selector, bool registered) noexcept {
+        if (!registered) return;
+        AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        // Device removal can make deregistration fail; callback storage still lives.
+        (void)AudioObjectRemovePropertyListener(id, &property, formatChanged, nullptr);
+    }
+    void checkIdentity() {
+        if (!read<UInt32>(id, kAudioDevicePropertyDeviceIsAlive) || text(id, kAudioDevicePropertyDeviceUID) != uid)
+            throw Error("Selected audio device disconnected or was replaced");
+    }
+    template<class T> void write(AudioObjectPropertySelector selector, T value) {
+        checkIdentity();
+        if (read<UInt32>(id, kAudioDevicePropertyDeviceIsRunningSomewhere))
+            throw Error("Stop all audio applications using this device first");
+        if (!writable(id, selector)) throw Error("Audio device property is read-only");
+        AudioObjectPropertyAddress property{selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        checked(AudioObjectSetPropertyData(id, &property, 0, nullptr, sizeof(value), &value), "Set audio device format");
+        // A successful setter is only submission. AudioDeviceChange reads back
+        // both properties on later owner-thread polls before publishing success.
+    }
+public:
+    explicit HALDeviceControl(const AudioDeviceInfo& device) : id(device.id), uid(device.uid) {}
+    ~HALDeviceControl() override {
+        removeListener(kAudioDevicePropertyNominalSampleRate, rateListener);
+        removeListener(kAudioDevicePropertyBufferFrameSize, bufferListener);
+    }
+    AudioDeviceCapabilities inspect() override {
+        checkIdentity();
+        AudioDeviceCapabilities caps;
+        caps.device = describe(id);
+        caps.sampleRates = availableRates(id);
+        const auto range = read<::AudioValueRange>(id, kAudioDevicePropertyBufferFrameSizeRange);
+        caps.bufferRange = {range.mMinimum, range.mMaximum};
+        caps.rateWritable = writable(id, kAudioDevicePropertyNominalSampleRate);
+        caps.bufferWritable = writable(id, kAudioDevicePropertyBufferFrameSize);
+        caps.running = read<UInt32>(id, kAudioDevicePropertyDeviceIsRunningSomewhere) != 0;
+        checkIdentity();
+        validateAudioDeviceCapabilities(caps);
+        return caps;
+    }
+    void setSampleRate(double rate) override {
+        listen(kAudioDevicePropertyNominalSampleRate, rateListener);
+        rateTicket = formatNotifications.rate.load(std::memory_order_acquire);
+        write<Float64>(kAudioDevicePropertyNominalSampleRate, rate);
+    }
+    void setBufferFrames(uint32_t frames) override {
+        listen(kAudioDevicePropertyBufferFrameSize, bufferListener);
+        bufferTicket = formatNotifications.buffer.load(std::memory_order_acquire);
+        write<UInt32>(kAudioDevicePropertyBufferFrameSize, frames);
+    }
+    bool sampleRateAcknowledged() const override {
+        return !rateListener || formatNotifications.rate.load(std::memory_order_acquire) != rateTicket;
+    }
+    bool bufferAcknowledged() const override {
+        return !bufferListener || formatNotifications.buffer.load(std::memory_order_acquire) != bufferTicket;
+    }
+};
+}
+std::unique_ptr<AudioDeviceControl> makeAudioDeviceControl(const std::string& uid) {
+    validateAudioDeviceUID(uid);
+    for (const auto& device : enumerateAudioDevices())
+        if (device.uid == uid) return std::make_unique<HALDeviceControl>(device);
+    throw Error("Selected audio device is unavailable; no default-device fallback");
 }
 AudioDeviceInfo openAudioDevice(const AudioDeviceConfiguration& config, AudioDeviceDirection direction) {
     const auto devices = enumerateAudioDevices();

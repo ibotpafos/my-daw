@@ -9,7 +9,7 @@
 | Очередь | Задача | Реальный пробел / критерий закрытия |
 |---|---|---|
 | P0-01 | Выбор аудиоустройств и каналов | [Текущий срез](92-audio-device-selection.md): UID, явные input/output maps, persistence, missing-device и busy guards. До него все три hardware paths жёстко брали system defaults. Физическая приёмка отдельна. |
-| P0-02 | Управление rate/buffer | Явная установка поддержанной частоты/буфера с подтверждённым HAL состоянием, timeout/error и запретом изменения при записи. Не путать проектные 48 kHz и аппаратный режим. Сейчас значения читаются. |
+| P0-02 | Управление rate/buffer | Явная установка поддержанной частоты/буфера с подтверждённым HAL состоянием, timeout/error и запретом изменения при записи. Не путать проектные 48 kHz и аппаратный режим. [Реализация и проверки](94-audio-device-rate-buffer.md): native editor, ranges/settable, notification + readback, ошибки/timeout, transport guards. Физическая HAL-приёмка отдельна. |
 | P0-03 | Обычная запись поверх проекта | В `startRecording` duplex пока используется только для loop takes; обычный Record открывает input-only и выключает playback. Нужен единый full-duplex путь с backing playback, MON и preroll для обычной записи тоже. |
 | P0-04 | Компенсация записи | Sample/host timestamps, input/output latency/safety offsets, подтверждённое размещение capture, loop/punch boundaries. PDC плагинов не подменяет этот пункт. |
 | P0-05 | Два канала и длительная запись | Сейчас mono input, минутный лимит capture, 8 audio tracks / 32 assets / 64 MiB. Сначала bounded streaming/read-ahead и recovery, затем снять ограничения без RT allocation. Приёмка REC-02: 30 минут двух каналов с playback. |

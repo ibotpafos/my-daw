@@ -23,6 +23,10 @@ final class AudioDeviceSettingsController: NSWindowController {
     let status = NSTextField(wrappingLabelWithString: "")
     let applyButton = NSButton(title: "Применить", target: nil, action: nil)
     let refreshButton = NSButton(title: "Обновить устройства", target: nil, action: nil)
+    let inputFormatButton = NSButton(title: "Частота / буфер входа…", target: nil, action: nil)
+    let outputFormatButton = NSButton(title: "Частота / буфер выхода…", target: nil, action: nil)
+    var hardwareSettings: AudioHardwareSettingsController?
+    var makeHardwareSettings: ((String) -> AudioHardwareSettingsController)?
     private(set) var devices: [AudioDeviceChoice] = []
     private(set) var draft: AudioDevicePreferences
     var loadDevices: () throws -> [AudioDeviceChoice]
@@ -34,7 +38,7 @@ final class AudioDeviceSettingsController: NSWindowController {
         draft = configuration
         loadDevices = load
         applyConfiguration = apply
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 480),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.title = "Настройки аудио"
         panel.isReleasedWhenClosed = false
@@ -66,8 +70,13 @@ final class AudioDeviceSettingsController: NSWindowController {
         row("Устройство выхода", [outputDevice])
         row("Стереовыход L / R", [outputLeft, outputRight])
         root.addArrangedSubview(outputInfo)
+        let hardwareActions = NSStackView(views: [inputFormatButton, outputFormatButton])
+        hardwareActions.spacing = 10
+        root.addArrangedSubview(hardwareActions)
+        inputFormatButton.target = self; inputFormatButton.action = #selector(openHardwareSettings(_:))
+        outputFormatButton.target = self; outputFormatButton.action = #selector(openHardwareSettings(_:))
         let note = NSTextField(wrappingLabelWithString:
-            "Проект: 48 кГц. Частота и буфер ниже — реальные настройки устройства, а не измеренная задержка. В этой версии они изменяются в системной утилите или панели интерфейса. Для loop-записи вход и выход должны принадлежать одному устройству.")
+            "Проект: 48 кГц. Частоту и буфер можно изменить отдельными кнопками выше только при остановленном аудио. Для общего интерфейса изменяются и вход, и выход. Это не измеренная задержка. Для loop-записи требуется одно устройство.")
         note.textColor = .secondaryLabelColor
         note.font = .systemFont(ofSize: 11)
         root.addArrangedSubview(note)
@@ -152,6 +161,8 @@ final class AudioDeviceSettingsController: NSWindowController {
         populateChannels(outputRight, count: output?.outputs ?? 0, selection: draft.outputRight)
         inputInfo.stringValue = details(input, title: "Вход")
         outputInfo.stringValue = details(output, title: "Выход")
+        inputFormatButton.isEnabled = input != nil
+        outputFormatButton.isEnabled = output != nil
     }
     private func details(_ device: AudioDeviceChoice?, title: String) -> String {
         guard let device else { return "\(title): устройство недоступно; автоматической замены не будет." }
@@ -180,6 +191,20 @@ final class AudioDeviceSettingsController: NSWindowController {
             try applyConfiguration(draft)
             status.stringValue = "Настройки сохранены. Доступность устройства и каналов проверяется перед Play / Record."
         } catch { status.stringValue = error.localizedDescription }
+    }
+    @objc func openHardwareSettings(_ sender: NSButton) {
+        if let existing = hardwareSettings, existing.pending {
+            existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return
+        }
+        let input = sender === inputFormatButton
+        guard let selected = choice(uid: input ? draft.inputUID : draft.outputUID, input: input),
+              let makeHardwareSettings else { return }
+        hardwareSettings?.close()
+        let settings = makeHardwareSettings(selected.uid) // Freeze the resolved UID; never follow a new OS default.
+        settings.didFinish = { [weak self] in self?.refreshDevices() }
+        hardwareSettings = settings
+        settings.window?.center()
+        settings.showWindow(nil); settings.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func openSystemSettings() {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.audio.AudioMIDISetup") else {
@@ -254,6 +279,18 @@ extension DraftApp {
             guard let self, self.session != nil else { throw AudioDevicePreferences.Failure.invalid }
             try self.applyAudioDeviceConfiguration(config)
         })
+        settings.makeHardwareSettings = { [weak self] uid in
+            AudioHardwareSettingsController(uid: uid, load: { [weak self] in
+                guard let self, self.session != nil else { throw AudioDevicePreferences.Failure.invalid }
+                return try self.hardwareFormat(uid: uid)
+            }, begin: { [weak self] frames in
+                guard let self, self.session != nil else { throw AudioDevicePreferences.Failure.invalid }
+                try self.beginHardwareFormat(uid: uid, frames: frames)
+            }, poll: { [weak self] in
+                guard let self, self.session != nil else { throw AudioDevicePreferences.Failure.invalid }
+                return try self.pollHardwareFormat()
+            })
+        }
         audioDeviceSettings = settings
         settings.window?.center()
         settings.showWindow(nil); settings.window?.makeKeyAndOrderFront(nil)

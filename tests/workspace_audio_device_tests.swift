@@ -81,5 +81,5 @@ func runAudioDeviceSettingsTests(_ app: DraftApp) -> Int {
         expect(controller.inputDevice.frame.width > 40 && controller.applyButton.frame.width > 40, "controls have usable frames")
     } else { fatalError("audio settings screenshot") }
     print("PASS: audio device settings AppKit: \(checks) checks")
-    return checks
+    return checks + runAudioHardwareSettingsTests(app)
 }

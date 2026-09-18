@@ -1,4 +1,5 @@
 #include "daw.h"
+#include "audio/device_settings.hpp"
 #include "domain/session.hpp"
 #include "audio/output.hpp"
 #include "audio/import_job.hpp"
@@ -156,6 +157,19 @@ template <class Fn> int guard(daw_session *s, Fn fn) noexcept {
     }
     return 1;
 }
+// Device format is process-wide hardware state, not musical project state.
+// Retain a submitted operation across New/Open/session destruction. The mutex
+// protects control callers only; no audio callback touches it or this object.
+std::mutex audioDeviceChangeMutex;
+std::unique_ptr<daw::AudioDeviceChange> audioDeviceChange;
+void requireNoAudioDeviceChange(daw_session *) {
+    std::lock_guard lock(audioDeviceChangeMutex);
+    if (!audioDeviceChange)
+        return;
+    audioDeviceChange->poll(daw::AudioDeviceChange::Clock::now());
+    if (audioDeviceChange->pending())
+        throw daw::Error("Wait for the audio device rate/buffer acknowledgement");
+}
 uint64_t duration(daw_session *s) {
     uint64_t frames = 0;
     for (const auto &t : s->model.state().tracks) {
@@ -191,6 +205,7 @@ void cancelStalePlaybackPreparation(daw_session *s) noexcept {
         invalidatePlaybackPreparation(s);
 }
 void beginPlaybackPreparation(daw_session *s) {
+    requireNoAudioDeviceChange(s);
     if (s->model.mixerGestureActive())
         throw daw::Error("Finish the mixer gesture before starting playback or recording");
     invalidatePlaybackPreparation(s);
@@ -479,6 +494,7 @@ VocalPlan vocalPlan(daw_session *s, const uint64_t *selected, uint32_t count, co
 }
 void startRecording(daw_session *s, uint64_t startFrame, const char *recoveryPath,
                     uint64_t target) {
+    requireNoAudioDeviceChange(s);
     if (s->model.mixerGestureActive())
         throw daw::Error("Finish the mixer gesture before starting playback or recording");
     if (recordingActive(s))
@@ -908,6 +924,81 @@ int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
         result.output_right = s->audioConfiguration.outputRight;
         copyText(result.input_uid, s->audioConfiguration.inputUID);
         copyText(result.output_uid, s->audioConfiguration.outputUID);
+        *out = result;
+    });
+}
+int daw_get_audio_device_capabilities(daw_session *s, const char *uid,
+                                      daw_audio_device_capabilities *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(*out) ||
+            out->version != DAW_AUDIO_DEVICE_CAPABILITIES_VERSION)
+            throw daw::Error("Audio capabilities ABI mismatch");
+        auto control = daw::makeAudioDeviceControl(required(uid));
+        const auto caps = control->inspect();
+        daw::validateAudioDeviceCapabilities(caps);
+        daw_audio_device_capabilities result{};
+        result.struct_size = sizeof(result);
+        result.version = DAW_AUDIO_DEVICE_CAPABILITIES_VERSION;
+        result.sample_rate = caps.device.sampleRate;
+        result.buffer_frames = caps.device.bufferFrames;
+        result.buffer_minimum = caps.bufferRange.minimum;
+        result.buffer_maximum = caps.bufferRange.maximum;
+        result.rate_writable = caps.rateWritable;
+        result.buffer_writable = caps.bufferWritable;
+        result.running = caps.running;
+        result.rate_count = static_cast<uint32_t>(caps.sampleRates.size());
+        for (size_t i = 0; i < caps.sampleRates.size(); ++i)
+            result.sample_rates[i] = {caps.sampleRates[i].minimum, caps.sampleRates[i].maximum};
+        *out = result;
+    });
+}
+int daw_begin_audio_device_change(daw_session *s, const daw_audio_device_change *request) {
+    return guard(s, [&] {
+        if (!request || request->struct_size != sizeof(*request) ||
+            request->version != DAW_AUDIO_DEVICE_CHANGE_VERSION)
+            throw daw::Error("Audio device change ABI mismatch");
+        requireNoAudioDeviceChange(s);
+        if (recordingActive(s) || s->midiRecorder || s->playbackPreparation ||
+            (s->output && s->output->renderer.playing.load(std::memory_order_acquire)))
+            throw daw::Error(
+                "Stop playback, recording and MIDI capture before changing rate/buffer");
+        const auto end =
+            static_cast<const char *>(std::memchr(request->uid, 0, sizeof(request->uid)));
+        if (!end)
+            throw daw::Error("Unterminated audio device UID");
+        const std::string uid(request->uid, end);
+        daw::validateAudioDeviceUID(uid);
+        daw::validateAudioDeviceRequest(request->sample_rate, request->buffer_frames);
+        std::lock_guard lock(audioDeviceChangeMutex);
+        if (audioDeviceChange && audioDeviceChange->pending())
+            throw daw::Error("Another audio device change is pending");
+        // Release a stopped HAL unit before querying whether the device is idle.
+        s->output.reset();
+        auto change = std::make_unique<daw::AudioDeviceChange>(
+            daw::makeAudioDeviceControl(uid), request->sample_rate, request->buffer_frames,
+            daw::AudioDeviceChange::Clock::now());
+        audioDeviceChange = std::move(change);
+    });
+}
+int daw_poll_audio_device_change(daw_session *s, daw_audio_device_change_status *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(*out) ||
+            out->version != DAW_AUDIO_DEVICE_CHANGE_VERSION)
+            throw daw::Error("Audio device change status ABI mismatch");
+        daw_audio_device_change_status result{};
+        result.struct_size = sizeof(result);
+        result.version = DAW_AUDIO_DEVICE_CHANGE_VERSION;
+        std::lock_guard lock(audioDeviceChangeMutex);
+        if (audioDeviceChange) {
+            auto &change = *audioDeviceChange;
+            change.poll(daw::AudioDeviceChange::Clock::now());
+            result.state = static_cast<uint32_t>(change.state);
+            result.sample_rate = change.actual.sampleRate;
+            result.buffer_frames = change.actual.bufferFrames;
+            result.actual_known = change.actualKnown;
+            result.may_have_changed = change.mayHaveChanged;
+            copyText(result.error, change.error);
+        }
         *out = result;
     });
 }
@@ -2668,6 +2759,7 @@ int daw_midi_input_active(daw_session *s, uint32_t *uniqueID) {
 }
 int daw_midi_record_arm(daw_session *s, uint64_t trackID, uint32_t clipIndex) {
     return guard(s, [&] {
+        requireNoAudioDeviceChange(s);
 #ifdef __APPLE__
         if (!s->midiInput)
             throw daw::Error("Open a MIDI input before arming a take");

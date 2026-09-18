@@ -28,6 +28,42 @@ typedef struct {
     uint32_t struct_size, version, input_channel, output_left, output_right;
     char input_uid[481], output_uid[481];
 } daw_audio_device_config;
+enum { DAW_AUDIO_DEVICE_CAPABILITIES_VERSION = 1, DAW_AUDIO_DEVICE_CHANGE_VERSION = 1 };
+enum { DAW_DEVICE_CHANGE_IDLE = 0, DAW_DEVICE_CHANGE_PENDING = 1,
+       DAW_DEVICE_CHANGE_APPLIED = 2, DAW_DEVICE_CHANGE_FAILED = 3 };
+typedef struct { double minimum, maximum; } daw_audio_value_range;
+typedef struct {
+    uint32_t struct_size, version, buffer_frames, rate_count;
+    double sample_rate, buffer_minimum, buffer_maximum;
+    int32_t rate_writable, buffer_writable, running;
+    daw_audio_value_range sample_rates[64];
+} daw_audio_device_capabilities;
+typedef struct {
+    uint32_t struct_size, version, buffer_frames;
+    double sample_rate;
+    char uid[481];
+} daw_audio_device_change;
+typedef struct {
+    uint32_t struct_size, version, state, buffer_frames;
+    double sample_rate;
+    int32_t actual_known, may_have_changed;
+    char error[512];
+} daw_audio_device_change_status;
+/* Explicit UID only; discovery does not change hardware or launch I/O.
+ * Begin validates 48000 Hz / 1..4096 frames and hardware capabilities before
+ * any write. It requires stopped audio/MIDI and no playback preparation.
+ * Poll drives a non-blocking, two-second acknowledgement state machine.
+ * Return 0 from begin/poll is NOT success of the hardware change: inspect state.
+ * Play/Record/config changes reject while pending. No project/Undo mutation,
+ * automatic retry/rollback or saved desired format. On error, hardware may be
+ * partially changed (or a driver may acknowledge late); refresh before retrying.
+ * One process-wide operation survives New/Open/session destruction.
+ * Poll must run on the same owner thread; no callbacks/sleeping/private queues.
+ * actual_known means the last poll read both properties; it is not continuous
+ * monitoring. Non-Apple: discovery/begin fail explicitly, idle poll works. */
+int daw_get_audio_device_capabilities(daw_session*, const char* uid, daw_audio_device_capabilities*);
+int daw_begin_audio_device_change(daw_session*, const daw_audio_device_change*);
+int daw_poll_audio_device_change(daw_session*, daw_audio_device_change_status*);
 /* Owner-thread, read-only hardware discovery. Refresh atomically replaces the
  * enumeration snapshot used by get; indices are not persistent identities.
  * Non-Apple: empty catalog. No microphone is opened and no TCC prompt requested. */
