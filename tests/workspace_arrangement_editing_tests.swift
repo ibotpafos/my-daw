@@ -30,7 +30,7 @@ func runArrangementEditingTests(_ app: DraftApp) -> Int {
         return clip
     }
     var clip = daw_midi_clip(); clip.struct_size = UInt32(MemoryLayout<daw_midi_clip>.size)
-    clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.start = 48_000; clip.length = 96_000; clip.lane = 0
+    clip.version = UInt32(DAW_MIDI_CLIP_VERSION); clip.start = 48_000; clip.length = 96_000; clip.lane = 0; clip.note_count = 1
     var note = daw_midi_note(); note.struct_size = UInt32(MemoryLayout<daw_midi_note>.size); note.version = UInt32(DAW_MIDI_NOTE_VERSION); note.start = 24_000; note.length = 12_000; note.pitch = 60; note.velocity = 100
     expect(daw_add_midi_clip(app.session, track, &clip, &note, 1, revision()) == 0, "Seed MIDI through ABI")
     app.refresh(); app.setTimelineZoom(1); settle()
@@ -165,6 +165,58 @@ func runArrangementEditingTests(_ app: DraftApp) -> Int {
     send(mouse(.leftMouseDown, frame: 430_000, trackID: emptyTrack)); settle()
     expect(daw_get_midi_clip_count(app.session, emptyTrack, &count) == 0 && count == 0, "Eraser removes last MIDI clip")
     app.undo(); settle(); expect(meta(trackID: emptyTrack).start == 400_000, "Undo restores erased MIDI clip")
+
+    // Use the fixture's real audio clips: no simulated gesture callbacks.
+    guard let audioTrack = editor.lanes.first(where: { $0.kind == .audio })?.track else { fatalError("Missing audio fixture") }
+    func audioMeta(_ index: UInt32 = 0) -> daw_clip {
+        var value = daw_clip(); value.struct_size = UInt32(MemoryLayout<daw_clip>.size)
+        expect(daw_get_clip(app.session, audioTrack, index, &value) == 0, "Read actual audio clip")
+        return value
+    }
+    func audioClick(_ frame: UInt64) {
+        visible(audioTrack)
+        send(mouse(.leftMouseDown, frame: frame, trackID: audioTrack, flags: [.shift]))
+        send(mouse(.leftMouseUp, frame: frame, trackID: audioTrack, flags: [.shift]))
+    }
+    let audio = audioMeta(), audioFrame = audio.start + audio.length / 4
+    editor.selectTool(.pointer); audioClick(audioFrame)
+    expect(editor.selection.count == 1 && editor.selection.first?.kind == .audio, "Audio selection has correct kind")
+    let beforeMute = revision()
+    editor.selectTool(.mute); audioClick(audioFrame); settle()
+    expect(audioMeta().muted != audio.muted && revision() == beforeMute + 1, "Audio mute commits once")
+    app.undo(); settle(); expect(audioMeta().muted == audio.muted, "Undo restores mute")
+
+    editor.selectTool(.fade); visible(audioTrack)
+    let beforeFade = revision(), fadeEnd = audio.start + audio.length / 3
+    send(mouse(.leftMouseDown, frame: audioFrame, trackID: audioTrack, flags: [.shift]))
+    send(mouse(.leftMouseDragged, frame: fadeEnd, trackID: audioTrack, flags: [.shift]))
+    expect(!editor.overlay.ramps.isEmpty && revision() == beforeFade, "Audio fade has a visual-only ramp preview")
+    send(mouse(.leftMouseUp, frame: fadeEnd, trackID: audioTrack, flags: [.shift])); settle()
+    expect(audioMeta().fade_in == audio.length / 3 && revision() == beforeFade + 1, "Audio fade commits one edit")
+    app.undo(); settle(); expect(audioMeta().fade_in == audio.fade_in, "Undo restores fade")
+
+    editor.selectTool(.pointer); audioClick(audioFrame)
+    send(key(0, flags: [.command]))
+    let selectedAudio = editor.items.filter { editor.selection.contains($0.key) }
+    expect(selectedAudio.count >= 2 && selectedAudio.allSatisfy { $0.key.track == audioTrack }, "Cmd-A selects the focused audio track")
+    let beforeNudge = revision()
+    send(key(124, flags: [.option])); settle()
+    let shifted = audioMeta().start - audio.start
+    expect(shifted > 0 && revision() == beforeNudge + 1, "Audio group nudge uses one transaction")
+    for item in selectedAudio {
+        expect(audioMeta(UInt32(item.key.index)).start == item.bounds.start + shifted, "Group spacing is preserved")
+    }
+    app.undo(); settle(); expect(audioMeta().start == audio.start, "Undo restores audio group")
+
+    editor.selectTool(.split); visible(audioTrack)
+    let beforeAudioSplit = revision()
+    let originalCount = editor.items.filter { $0.key.track == audioTrack }.count
+    audioClick(audioFrame); settle()
+    expect(editor.items.filter { $0.key.track == audioTrack }.count == originalCount + 1 && revision() == beforeAudioSplit + 1, "Audio scissors split at the clicked position")
+    app.undo(); settle()
+    editor.selectTool(.erase); audioClick(audioFrame); settle()
+    expect(editor.items.filter { $0.key.track == audioTrack }.count == originalCount - 1, "Audio eraser deletes the hit clip")
+    app.undo(); settle(); expect(audioMeta().length == audio.length, "Undo restores erased audio clip")
 
     // Document identity invalidates clipboard and gesture even at an equal revision.
     selectFirst(); send(key(8, flags: [.command])); let oldDocument = app.midiDocumentID
