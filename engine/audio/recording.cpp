@@ -56,25 +56,52 @@ RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t c
 RecordingWriter::~RecordingWriter(){stopPreserving();if(!committedFrames())removeQuietly(path_);}
 
 void RecordingWriter::writeMono(const float* input,uint32_t count) noexcept {
-    if(!input||!count||stopping_.load(std::memory_order_relaxed)||failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
+    if(!input||!count||inputChannels_!=1||stopping_.load(std::memory_order_relaxed)||
+       failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
     if(skipFrames_>0){const uint64_t drop=std::min<uint64_t>(skipFrames_,count);skipFrames_-=drop;input+=drop;count-=static_cast<uint32_t>(drop);if(!count)return;}
     auto write=written_.load(std::memory_order_relaxed),read=read_.load(std::memory_order_acquire);
+    const auto ringFrames=ring_.size()/2;
     auto remaining=capacityFrames_-std::min(accepted_.load(std::memory_order_relaxed),capacityFrames_);
-    auto free=ring_.size()-std::min<uint64_t>(write-read,ring_.size());
+    auto free=ringFrames-std::min<uint64_t>(write-read,ringFrames);
     auto accepted=std::min<uint64_t>({count,remaining,free});
-    for(uint64_t i=0;i<accepted;++i){auto value=std::isfinite(input[i])?std::clamp(input[i],-16.0f,16.0f):0.0f;ring_[static_cast<size_t>((write+i)%ring_.size())]=value;}
+    for(uint64_t i=0;i<accepted;++i){
+        const auto value=std::isfinite(input[i])?std::clamp(input[i],-16.0f,16.0f):0.0f;
+        const auto frame=static_cast<size_t>((write+i)%ringFrames)*2;
+        ring_[frame]=value;ring_[frame+1]=value;
+    }
+    accepted_.fetch_add(accepted,std::memory_order_relaxed);written_.store(write+accepted,std::memory_order_release);
+    if(accepted<count)overflow_.store(true,std::memory_order_release);
+}
+void RecordingWriter::writeStereo(const float* left,const float* right,uint32_t count) noexcept {
+    if(!left||!right||!count||inputChannels_!=2||stopping_.load(std::memory_order_relaxed)||
+       failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
+    if(skipFrames_>0){const uint64_t drop=std::min<uint64_t>(skipFrames_,count);skipFrames_-=drop;
+        left+=drop;right+=drop;count-=static_cast<uint32_t>(drop);if(!count)return;}
+    auto write=written_.load(std::memory_order_relaxed),read=read_.load(std::memory_order_acquire);
+    const auto ringFrames=ring_.size()/2;
+    auto remaining=capacityFrames_-std::min(accepted_.load(std::memory_order_relaxed),capacityFrames_);
+    auto free=ringFrames-std::min<uint64_t>(write-read,ringFrames);
+    auto accepted=std::min<uint64_t>({count,remaining,free});
+    for(uint64_t i=0;i<accepted;++i){
+        const auto l=std::isfinite(left[i])?std::clamp(left[i],-16.0f,16.0f):0.0f;
+        const auto r=std::isfinite(right[i])?std::clamp(right[i],-16.0f,16.0f):0.0f;
+        const auto frame=static_cast<size_t>((write+i)%ringFrames)*2;
+        ring_[frame]=l;ring_[frame+1]=r;
+    }
     accepted_.fetch_add(accepted,std::memory_order_relaxed);written_.store(write+accepted,std::memory_order_release);
     if(accepted<count)overflow_.store(true,std::memory_order_release);
 }
 
 void RecordingWriter::run() noexcept {
     try{
-        std::vector<float> stereo(std::min<uint64_t>(4096,ring_.size())*2); uint64_t lastConfirmed=0;
+        const auto ringFrames=ring_.size()/2;
+        std::vector<float> stereo(std::min<uint64_t>(4096,ringFrames)*2); uint64_t lastConfirmed=0;
         for(;;){
             auto read=read_.load(std::memory_order_relaxed),write=written_.load(std::memory_order_acquire);
             if(read==write){if(stopping_.load(std::memory_order_acquire))break;std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
-            auto count=std::min<uint64_t>({write-read,ring_.size()-read%ring_.size(),stereo.size()/2});
-            for(uint64_t i=0;i<count;++i){auto value=ring_[static_cast<size_t>((read+i)%ring_.size())];stereo[static_cast<size_t>(i*2)]=value;stereo[static_cast<size_t>(i*2+1)]=value;}
+            auto count=std::min<uint64_t>({write-read,ringFrames-read%ringFrames,stereo.size()/2});
+            const auto first=static_cast<size_t>(read%ringFrames)*2;
+            std::copy_n(ring_.begin()+static_cast<std::ptrdiff_t>(first),static_cast<std::ptrdiff_t>(count*2),stereo.begin());
             auto offset=static_cast<off_t>(headerSize+read*2*sizeof(float));
             if(!writeAll(fd_,stereo.data(),static_cast<size_t>(count*2*sizeof(float)),offset))throw Error("Cannot write recording audio");
             read+=count;read_.store(read,std::memory_order_release);
@@ -99,7 +126,7 @@ RecoveredTake recoverTake(const std::string& path){
     std::array<unsigned char,headerSize> h{};if(!readAll(fd,h.data(),h.size(),0)||!std::equal(magic.begin(),magic.end(),h.begin())||get32(h.data()+8)!=1||get32(h.data()+12)!=headerSize||get32(h.data()+16)!=48000||get32(h.data()+20)!=2)throw Error("Invalid recoverable recording header");
     auto frames=get64(h.data()+32);struct stat info{};if(fstat(fd,&info)!=0||info.st_size<static_cast<off_t>(headerSize))throw Error("Cannot inspect recoverable recording");
     auto available=static_cast<uint64_t>(info.st_size-headerSize)/(2*sizeof(float));frames=std::min(frames,available);
-    if(!frames||frames>48000*60)throw Error("Recoverable recording contains no confirmed audio");
+    if(!frames||frames>48000ULL*60*30)throw Error("Recoverable recording contains no confirmed audio");
     std::vector<float> samples(static_cast<size_t>(frames*2));if(!readAll(fd,samples.data(),samples.size()*sizeof(float),headerSize))throw Error("Recoverable recording is truncated");
     return {get64(h.data()+24),std::make_shared<const Clip>(std::move(samples))};
 }
