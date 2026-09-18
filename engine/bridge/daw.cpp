@@ -894,10 +894,12 @@ int daw_set_audio_device_config(daw_session *s, const daw_audio_device_config *r
                 throw daw::Error("Unterminated audio device UID");
             return std::string(bytes, end);
         };
-        daw::AudioDeviceConfiguration config{uid(raw->input_uid), uid(raw->output_uid),
-                                             raw->input_channel, raw->input_right,
-                                             raw->recording_channels, raw->output_left,
-                                             raw->output_right};
+        auto config = s->audioConfiguration;
+        config.inputUID = uid(raw->input_uid);
+        config.outputUID = uid(raw->output_uid);
+        config.inputChannel = raw->input_channel;
+        config.outputLeft = raw->output_left;
+        config.outputRight = raw->output_right;
         daw::validateAudioDeviceConfiguration(config);
         s->audioConfiguration = std::move(config);
     });
@@ -911,12 +913,42 @@ int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
         result.struct_size = sizeof(result);
         result.version = DAW_AUDIO_DEVICE_CONFIG_VERSION;
         result.input_channel = s->audioConfiguration.inputChannel;
-        result.input_right = s->audioConfiguration.inputRight;
-        result.recording_channels = s->audioConfiguration.recordingChannels;
         result.output_left = s->audioConfiguration.outputLeft;
         result.output_right = s->audioConfiguration.outputRight;
         copyText(result.input_uid, s->audioConfiguration.inputUID);
         copyText(result.output_uid, s->audioConfiguration.outputUID);
+        *out = result;
+    });
+}
+int daw_set_record_input_config(daw_session *s, const daw_record_input_config *raw) {
+    return guard(s, [&] {
+        if (!raw || raw->struct_size != sizeof(daw_record_input_config) ||
+            raw->version != DAW_RECORD_INPUT_CONFIG_VERSION)
+            throw daw::Error("Recording input configuration ABI mismatch");
+        if (daw::audioHardwareChangeActive() || recordingActive(s) || s->midiRecorder ||
+            s->playbackPreparation ||
+            (s->output && s->output->renderer.playing.load(std::memory_order_acquire)))
+            throw daw::Error(
+                "Stop playback, recording and MIDI capture before changing recording inputs");
+        auto config = s->audioConfiguration;
+        config.recordingChannels = raw->channels;
+        config.inputChannel = raw->left;
+        config.inputRight = raw->right;
+        daw::validateAudioDeviceConfiguration(config);
+        s->audioConfiguration = std::move(config);
+    });
+}
+int daw_get_record_input_config(daw_session *s, daw_record_input_config *out) {
+    return guard(s, [&] {
+        if (!out || out->struct_size != sizeof(daw_record_input_config) ||
+            out->version != DAW_RECORD_INPUT_CONFIG_VERSION)
+            throw daw::Error("Recording input configuration ABI mismatch");
+        daw_record_input_config result{};
+        result.struct_size = sizeof(result);
+        result.version = DAW_RECORD_INPUT_CONFIG_VERSION;
+        result.channels = s->audioConfiguration.recordingChannels;
+        result.left = s->audioConfiguration.inputChannel;
+        result.right = s->audioConfiguration.inputRight;
         *out = result;
     });
 }
