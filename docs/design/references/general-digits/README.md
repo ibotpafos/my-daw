@@ -4,9 +4,7 @@
 Это референсы компоновки и визуального языка, а не скриншоты работающего
 приложения и не подтверждение реализации показанных функций.
 
-**Статус переноса:** подготовлены каталог и контрольные суммы; сами PNG ещё
-не добавлены в эту ветку. Не считать перенос завершённым до появления всех
-17 изображений из `manifest.json`.
+**Статус переноса:** завершён. Все 17 PNG сверены с manifest исходного архива по SHA-256, размеру и PNG-заголовку. Оригинальные байты сохранены без обрезки или перекодирования.
 
 ## Комплект
 
@@ -50,8 +48,73 @@ hover/selected/disabled/error-состояния и действия drag & drop
 Эта папка относится только к документации. Не включать изображения в ресурсы
 приложения, сборку или runtime; исходный ZIP не дублировать в Git.
 
-## Завершение переноса
 
-Добавить 17 PNG из исходного архива рядом с этим README, сверить SHA-256
-каждого файла с manifest, заменить статус переноса на завершённый и добавить
-относительные ссылки на изображения. Не менять исходный код приложения.
+## Галерея
+
+![Обзор всех экранов](00_contact_sheet.png)
+
+### Arrange
+
+![Arrange](01_arrange.png)
+
+### Mixer
+
+![Mixer](02_mixer.png)
+
+### Piano Roll
+
+![Piano Roll](03_piano_roll.png)
+
+### Vocal Recording / Comping
+
+![Vocal Recording / Comping](04_vocal_comping.png)
+
+### Audio Editor
+
+![Audio Editor](05_audio_editor.png)
+
+### Pitch Editor
+
+![Pitch Editor](06_pitch_editor.png)
+
+### Drum Editor / Step Sequencer
+
+![Drum Editor / Step Sequencer](07_drum_editor.png)
+
+### Sampler
+
+![Sampler](08_sampler.png)
+
+### Automation Editor
+
+![Automation Editor](09_automation_editor.png)
+
+### Plugin Rack / Channel Strip
+
+![Plugin Rack / Channel Strip](10_plugin_rack.png)
+
+### Routing / Signal Flow
+
+![Routing / Signal Flow](11_routing.png)
+
+### Browser
+
+![Browser](12_browser.png)
+
+### Mastering
+
+![Mastering](13_mastering.png)
+
+### Export Center
+
+![Export Center](14_export_center.png)
+
+### Session / Creative Mode
+
+![Session / Creative Mode](15_session_creative.png)
+
+### Settings / Preferences
+
+![Settings / Preferences](16_settings.png)
+
+Ход внедрения реальных экранов: [IMPLEMENTATION.md](IMPLEMENTATION.md).
