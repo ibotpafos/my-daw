@@ -251,7 +251,8 @@ extension DraftApp {
         clockLabel.stringValue = String(format: "%02llu:%02llu.%03llu", milliseconds / 60000, (milliseconds / 1000) % 60, milliseconds % 1000)
         let signature = tempoMap.signature(atFrame: playheadFrame)
         signatureLabel.stringValue = "\(signature.numerator)/\(signature.denominator)"
-        status.toolTip = status.stringValue; transportLabel.toolTip = transportLabel.stringValue
+        status.toolTip = status.stringValue
+        if !isRecording { transportLabel.toolTip = transportLabel.stringValue }
         if let preference = workspace?.preference {
             workspaceToggleButtons[.library]?.state = preference.libraryVisible ? .on : .off
             workspaceToggleButtons[.inspector]?.state = preference.inspectorVisible ? .on : .off

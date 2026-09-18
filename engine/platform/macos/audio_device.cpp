@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
+#include <mach/mach_time.h>
 
 namespace daw {
 namespace {
@@ -201,5 +202,91 @@ AudioHardwareSettings readAudioHardwareSettings(const std::string& uid) {
 }
 std::unique_ptr<AudioHardwareBackend> makeAudioHardwareBackend(const AudioHardwareSettings& expected) {
     return std::make_unique<HALHardwareBackend>(expected);
+}
+}
+
+namespace daw {
+namespace {
+std::vector<uint32_t> recordingBufferLayout(AudioDeviceID id, AudioObjectPropertyScope scope) {
+    AudioObjectPropertyAddress property{kAudioDevicePropertyStreamConfiguration, scope, kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    checked(AudioObjectGetPropertyDataSize(id, &property, 0, nullptr, &size), "Read recording buffer layout size");
+    if (size < offsetof(AudioBufferList, mBuffers) || size > 65536) throw Error("Invalid recording buffer layout");
+    auto storage = std::unique_ptr<AudioBufferList, decltype(&std::free)>(
+        static_cast<AudioBufferList*>(std::calloc(1, size)), &std::free);
+    if (!storage) throw std::bad_alloc();
+    const auto capacity = size;
+    checked(AudioObjectGetPropertyData(id, &property, 0, nullptr, &size, storage.get()), "Read recording buffer layout");
+    if (size > capacity || size < offsetof(AudioBufferList, mBuffers) ||
+        storage->mNumberBuffers > (size - offsetof(AudioBufferList, mBuffers)) / sizeof(AudioBuffer) ||
+        storage->mNumberBuffers > 128) throw Error("Recording buffer layout changed; retry recording");
+    std::vector<uint32_t> result;
+    for (UInt32 i = 0; i < storage->mNumberBuffers; ++i) result.push_back(storage->mBuffers[i].mNumberChannels);
+    return result;
+}
+struct RecordingStream { uint32_t id = 0, latency = 0; };
+RecordingStream recordingStream(AudioDeviceID id, AudioObjectPropertyScope scope, uint32_t channel) {
+    AudioObjectPropertyAddress property{kAudioDevicePropertyStreams, scope, kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    checked(AudioObjectGetPropertyDataSize(id, &property, 0, nullptr, &size), "Read recording streams size");
+    if (!size || size % sizeof(AudioStreamID) || size / sizeof(AudioStreamID) > 128)
+        throw Error("Invalid recording stream list");
+    std::vector<AudioStreamID> streams(size / sizeof(AudioStreamID));
+    const auto capacity = size;
+    checked(AudioObjectGetPropertyData(id, &property, 0, nullptr, &size, streams.data()), "Read recording streams");
+    if (size > capacity || size % sizeof(AudioStreamID)) throw Error("Recording stream list changed");
+    RecordingStream selected;
+    for (size_t i = 0; i < size / sizeof(AudioStreamID); ++i) {
+        const auto stream = streams[i];
+        const auto first = read<UInt32>(stream, kAudioStreamPropertyStartingChannel);
+        const auto format = read<AudioStreamBasicDescription>(stream, kAudioStreamPropertyVirtualFormat);
+        if (!first || !format.mChannelsPerFrame || first > 128 || format.mChannelsPerFrame > 129 - first)
+            throw Error("Invalid recording stream channels");
+        if (channel + 1 < first || channel + 1 - first >= format.mChannelsPerFrame) continue;
+        if (selected.id) throw Error("Ambiguous recording channel stream");
+        const auto permittedFlags = UInt32(kAudioFormatFlagsNativeFloatPacked) | UInt32(kAudioFormatFlagIsNonInterleaved);
+        const bool planar = (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+        if (!std::isfinite(format.mSampleRate) || std::abs(format.mSampleRate - 48000) > 0.5 ||
+            format.mFormatID != kAudioFormatLinearPCM || format.mBitsPerChannel != 32 ||
+            (format.mFormatFlags & ~permittedFlags) != 0 ||
+            (format.mFormatFlags & kAudioFormatFlagsNativeFloatPacked) != kAudioFormatFlagsNativeFloatPacked ||
+            format.mFramesPerPacket != 1 || format.mBytesPerFrame != 4 * (planar ? 1 : format.mChannelsPerFrame) ||
+            format.mBytesPerPacket != format.mBytesPerFrame)
+            throw Error("Timestamped recording requires a native 48 kHz Float32 stream; hardware format was not changed");
+        selected = {stream, read<UInt32>(stream, kAudioStreamPropertyLatency)};
+    }
+    if (!selected.id) throw Error("Selected recording channel has no readable stream; no zero-latency fallback");
+    return selected;
+}
+}
+DuplexHardwareProfile readDuplexHardwareProfile(const AudioDeviceInfo& device, const AudioDeviceConfiguration& config) {
+    checkAudioDevice(device, false, AudioDeviceDirection::Input);
+    DuplexHardwareProfile result;
+    result.inputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeInput);
+    result.outputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeOutput);
+    if (!locateRecordingChannel(result.inputBuffers, config.inputChannel, result.input) ||
+        !locateRecordingChannel(result.outputBuffers, config.outputLeft, result.left) ||
+        !locateRecordingChannel(result.outputBuffers, config.outputRight, result.right))
+        throw Error("Selected recording channels no longer match hardware buffers");
+    const auto input = recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputChannel);
+    const auto left = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputLeft);
+    const auto right = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputRight);
+    if (left.latency != right.latency)
+        throw Error("Master L/R streams report different latency; select one synchronous output pair");
+    mach_timebase_info_data_t timebase{};
+    if (mach_timebase_info(&timebase) != KERN_SUCCESS || !timebase.numer || !timebase.denom)
+        throw Error("Host timestamp frequency is unavailable");
+    auto& l = result.latency;
+    l.enabled = true; l.deviceID = device.id; l.bufferFrames = device.bufferFrames;
+    l.inputDevice = read<UInt32>(device.id, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeInput);
+    l.outputDevice = read<UInt32>(device.id, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeOutput);
+    l.inputSafety = read<UInt32>(device.id, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyScopeInput);
+    l.outputSafety = read<UInt32>(device.id, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyScopeOutput);
+    l.inputStream = input.latency; l.outputStream = left.latency;
+    l.inputStreamID = input.id; l.outputLeftStreamID = left.id; l.outputRightStreamID = right.id;
+    l.hostTicksPerSecond = 1e9 * double(timebase.denom) / timebase.numer;
+    l.validate();
+    checkAudioDevice(device, false, AudioDeviceDirection::Output);
+    return result;
 }
 }
