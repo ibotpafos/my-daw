@@ -20,6 +20,8 @@ class RecordingWriter {
     std::string path_;
     uint64_t startFrame_=0, capacityFrames_=0;
     uint64_t skipFrames_=0; // pre-roll: drop this many leading captured frames
+    uint32_t inputChannels_=1;
+    // Final interleaved stereo frames; capacity remains bounded by ringFrames.
     std::vector<float> ring_;
     std::atomic<uint64_t> read_{0}, written_{0}, accepted_{0}, committed_{0};
     std::atomic<bool> stopping_{false}, overflow_{false}, failed_{false};
