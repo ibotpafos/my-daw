@@ -50,6 +50,7 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     private let arrangementPane = NSView(), dockPane = NSView()
     private var applying = false
     private let defaults: UserDefaults
+    private let recordingContent: NSView, dockContent: NSView
     private var scrollBookmarks: [WorkspaceScreen: [WorkspaceScrollBookmark]] = [:]
     private var focusBookmarks: [WorkspaceScreen: WorkspaceFocusBookmark] = [:]
     private(set) var preference: WorkspaceLayout
@@ -69,8 +70,9 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
     override var acceptsFirstResponder: Bool { true }
 
     init(library: NSView, arrangement: NSView, inspector: NSView, dock: NSView,
-         defaults: UserDefaults = .standard) {
+         recording: NSView = NSView(), defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        recordingContent = recording; dockContent = dock
         preference = WorkspaceLayout.load(from: defaults)
         screen = WorkspaceScreen.load(from: defaults)
         super.init(frame: .zero)
@@ -84,7 +86,7 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
         }
         mount(library, in: libraryPane); mount(inspector, in: inspectorPane)
         mount(ArrangementOverviewContainer(arrangement: arrangement, overview: overview), in: arrangementPane)
-        mount(dock, in: dockPane)
+        mount(dock, in: dockPane); mount(recording, in: dockPane)
         center.addArrangedSubview(arrangementPane); center.addArrangedSubview(dockPane)
         columns.addArrangedSubview(libraryPane); columns.addArrangedSubview(center); columns.addArrangedSubview(inspectorPane)
         addSubview(columns)
@@ -221,6 +223,8 @@ final class WorkspaceView: NSView, NSSplitViewDelegate {
         guard !applying, bounds.width > 0, bounds.height > 0 else { return }
         applying = true; defer { applying = false }
         let g = geometry
+        dockContent.isHidden = screen == .recording
+        recordingContent.isHidden = screen != .recording
         libraryPane.isHidden = g.library == 0
         inspectorPane.isHidden = g.inspector == 0
         center.isHidden = g.center == 0

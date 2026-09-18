@@ -8,6 +8,7 @@ enum WorkspaceScreen: Int, CaseIterable, Codable {
     case mixer = 2
     case devices = 3
     case browser = 4
+    case recording = 5
 
     var title: String {
         switch self {
@@ -16,6 +17,7 @@ enum WorkspaceScreen: Int, CaseIterable, Codable {
         case .mixer: return "Микшер"
         case .devices: return "Эффекты"
         case .browser: return "Браузер"
+        case .recording: return "Запись"
         }
     }
     var accessibilityTitle: String {
@@ -25,6 +27,7 @@ enum WorkspaceScreen: Int, CaseIterable, Codable {
         case .mixer: return "Микшер"
         case .devices: return "Цепочка эффектов выбранного канала"
         case .browser: return "Библиотека аудио и установленных плагинов"
+        case .recording: return "Запись вокала и сборка дублей"
         }
     }
     var dockTab: WorkspaceDockTab? {
@@ -32,7 +35,7 @@ enum WorkspaceScreen: Int, CaseIterable, Codable {
         case .pianoRoll: return .midi
         case .mixer: return .mixer
         case .devices: return .devices
-        case .arrange, .browser: return nil
+        case .arrange, .browser, .recording: return nil
         }
     }
     init(dockTab: WorkspaceDockTab) {

@@ -71,7 +71,7 @@ extension DraftApp {
             dialogOpen: mixExportDialogToken != nil && mixExportDialogToken != token,
             recording: isRecording, midiCapture: midiTakeArmed,
             gesture: consoleGesture != nil || automationGesture != nil || pluginParameterGesture != nil
-                || inspectorBrowser.midiEditor.hasUncommittedEdit
+                || inspectorBrowser.midiEditor.hasUncommittedEdit || recordingWorkspace.isGesturing
                 || timelineRuler.cycleRange.isGesturing || waveforms.contains { $0.isGesturing },
             start: rangeStart, end: rangeEnd)
         guard let session else { policy.available = false; return policy }
