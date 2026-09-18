@@ -17,7 +17,18 @@ struct AudioDevicePreferences: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case version, inputUID, outputUID, inputChannel, inputRight, inputChannels, outputLeft, outputRight
     }
-    init() {}
+    init(version: Int = 2, inputUID: String = "", outputUID: String = "",
+         inputChannel: UInt32 = 0, inputRight: UInt32 = 1, inputChannels: UInt32 = 1,
+         outputLeft: UInt32 = 0, outputRight: UInt32 = 1) {
+        self.version = version
+        self.inputUID = inputUID
+        self.outputUID = outputUID
+        self.inputChannel = inputChannel
+        self.inputRight = inputRight
+        self.inputChannels = inputChannels
+        self.outputLeft = outputLeft
+        self.outputRight = outputRight
+    }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let storedVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
