@@ -8,12 +8,15 @@ static_assert(std::atomic<CaptureClockError>::is_always_lock_free);
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
 DuplexCapture::DuplexCapture(Renderer& renderer, const State& state, uint64_t capacity,
                              const std::string& path, uint64_t start, uint64_t loopStart,
-                             uint64_t loopEnd, uint64_t preroll, bool monitor, RecordingLatency latency)
+                             uint64_t loopEnd, uint64_t preroll, bool monitor, RecordingLatency latency,
+                             uint32_t recordingChannels)
     : renderer_(renderer), start_(start), capacity_(capacity), lead_(std::min(preroll, start)),
-      loopStart_(loopStart), loopEnd_(loopEnd), monitor_(monitor), latency_(latency), alignment_(latency) {
+      loopStart_(loopStart), loopEnd_(loopEnd), channels_(recordingChannels),
+      monitor_(monitor), latency_(latency), alignment_(latency) {
     constexpr uint64_t timelineLimit = 48000ULL * 600;
     const bool looping = loopStart != 0 || loopEnd != 0;
-    if (!capacity || capacity > 48000ULL * 60 || start >= timelineLimit || preroll > 48000ULL * 30 ||
+    if (!capacity || capacity > 48000ULL * 60 || (channels_ != 1 && channels_ != 2) ||
+        start >= timelineLimit || preroll > 48000ULL * 30 ||
         (looping ? (loopEnd <= loopStart || loopEnd > timelineLimit || start != loopStart)
                  : capacity > timelineLimit - start))
         throw Error("Invalid duplex recording range");
@@ -22,12 +25,13 @@ DuplexCapture::DuplexCapture(Renderer& renderer, const State& state, uint64_t ca
     graphFrames_ = latency_.enabled ? renderer_.masterLatencyFrames() : 0;
     writer_ = std::make_unique<RecordingWriter>(path, start, capacity, 48000 * 2);
 }
-void DuplexCapture::process(const float* input, float* left, float* right, uint32_t frames,
-                            CaptureTimestamp time, CaptureTimestamp inputTime) noexcept {
+void DuplexCapture::processStereo(const float* inputLeft, const float* inputRight,
+                                  float* left, float* right, uint32_t frames,
+                                  CaptureTimestamp time, CaptureTimestamp inputTime) noexcept {
     if (!left || !right) return;
     std::fill_n(left, frames, 0.0f);
     std::fill_n(right, frames, 0.0f);
-    if (!input || !frames || frames > maximumSlice || clockError() != CaptureClockError::none) return;
+    if (!inputLeft || !inputRight || !frames || frames > maximumSlice || clockError() != CaptureClockError::none) return;
     const auto elapsed = elapsed_.load(std::memory_order_relaxed);
     uint64_t delay = compensation_.load(std::memory_order_relaxed);
     const auto naturalEnd = lead_ + capacity_;
@@ -61,7 +65,13 @@ void DuplexCapture::process(const float* input, float* left, float* right, uint3
     // (including pre-zero input) is discarded, never clamped onto frame zero.
     const auto first = std::max(elapsed, lead_ + delay);
     const auto last = std::min(elapsed + count, captureEnd);
-    if (last > first) writer_->writeMono(input + (first - elapsed), static_cast<uint32_t>(last - first));
+    if (last > first) {
+        const auto offset = first - elapsed;
+        if (channels_ == 2)
+            writer_->writeStereo(inputLeft + offset, inputRight + offset, static_cast<uint32_t>(last - first));
+        else
+            writer_->writeMono(inputLeft + offset, static_cast<uint32_t>(last - first));
+    }
     uint32_t audible = 0;
     if (stopClock_ == UINT64_MAX) {
         const auto renderCount = static_cast<uint32_t>(std::min<uint64_t>(count, naturalEnd > elapsed ? naturalEnd - elapsed : 0));
@@ -80,9 +90,11 @@ void DuplexCapture::process(const float* input, float* left, float* right, uint3
         // avoids a gain discontinuity when MON changes during a take.
         constexpr float step = 1.0f / 240.0f;
         monitorGain_ += std::clamp(target - monitorGain_, -step, step);
-        const float dry = std::isfinite(input[frame]) ? std::clamp(input[frame], -16.0f, 16.0f) : 0.0f;
-        const float l = left[frame] + dry * monitorGain_;
-        const float r = right[frame] + dry * monitorGain_;
+        const float dryL = std::isfinite(inputLeft[frame]) ? std::clamp(inputLeft[frame], -16.0f, 16.0f) : 0.0f;
+        const float dryRSource = channels_ == 2 ? inputRight[frame] : inputLeft[frame];
+        const float dryR = std::isfinite(dryRSource) ? std::clamp(dryRSource, -16.0f, 16.0f) : 0.0f;
+        const float l = left[frame] + dryL * monitorGain_;
+        const float r = right[frame] + dryR * monitorGain_;
         peak = std::max({peak, std::abs(l), std::abs(r)});
         if (std::abs(l) > 1.0f || std::abs(r) > 1.0f) ++clipped;
         left[frame] = std::clamp(l, -1.0f, 1.0f);
