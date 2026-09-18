@@ -1,4 +1,7 @@
 // Included once by daw.cpp after the session and transport helpers.
+// This file is included inside the bridge's extern "C" block. Internal
+// helpers return C++ values and must not inherit the exported ABI linkage.
+extern "C++" {
 namespace {
 std::vector<daw::ClipSelectionRef> clipboardSelectionRefs(const daw_clip_selection_ref *clips,
                                                         uint32_t count) {
@@ -15,7 +18,8 @@ std::vector<daw::ClipSelectionRef> clipboardSelectionRefs(const daw_clip_selecti
     }
     return refs;
 }
-}
+} // namespace
+} // extern "C++"
 
 int daw_capture_clipboard(daw_session *s, uint64_t track, uint32_t midi, const uint32_t *indices,
                           uint32_t count, uint32_t cut, uint64_t revision) {
