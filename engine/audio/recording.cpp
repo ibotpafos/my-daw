@@ -47,7 +47,7 @@ void confirm(int fd,uint64_t start,uint64_t frames) {
 RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t capacityFrames,uint64_t ringFrames,uint64_t skipFrames)
     :path_(std::move(path)),startFrame_(startFrame),capacityFrames_(capacityFrames),skipFrames_(skipFrames) {
     if(path_.empty()||!capacityFrames_||capacityFrames_>48000*60||!ringFrames) throw Error("Invalid recording writer configuration");
-    ringFrames=std::min(ringFrames,capacityFrames_); ring_.resize(static_cast<size_t>(ringFrames));
+    ringFrames=std::min(ringFrames,capacityFrames_); ring_.resize(static_cast<size_t>(ringFrames*2));
     fd_=open(path_.c_str(),O_CREAT|O_EXCL|O_RDWR,0600); if(fd_<0) throw Error("Cannot create recoverable recording");
     auto h=header(startFrame_,0); if(!writeAll(fd_,h.data(),h.size(),0)||fsync(fd_)!=0){closeFile();removeQuietly(path_);throw Error("Cannot initialize recoverable recording");}
     try{worker_=std::thread([this]{run();});}catch(...){closeFile();removeQuietly(path_);throw;}
@@ -55,28 +55,34 @@ RecordingWriter::RecordingWriter(std::string path,uint64_t startFrame,uint64_t c
 
 RecordingWriter::~RecordingWriter(){stopPreserving();if(!committedFrames())removeQuietly(path_);}
 
-void RecordingWriter::writeMono(const float* input,uint32_t count) noexcept {
-    if(!input||!count||stopping_.load(std::memory_order_relaxed)||failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
-    if(skipFrames_>0){const uint64_t drop=std::min<uint64_t>(skipFrames_,count);skipFrames_-=drop;input+=drop;count-=static_cast<uint32_t>(drop);if(!count)return;}
+void RecordingWriter::writeStereo(const float* left,const float* right,uint32_t count) noexcept {
+    if(!left||!right||!count||stopping_.load(std::memory_order_relaxed)||failed_.load(std::memory_order_relaxed)||overflow_.load(std::memory_order_relaxed))return;
+    if(skipFrames_>0){const uint64_t drop=std::min<uint64_t>(skipFrames_,count);skipFrames_-=drop;left+=drop;right+=drop;count-=static_cast<uint32_t>(drop);if(!count)return;}
+    const auto ringFrames=ring_.size()/2;
     auto write=written_.load(std::memory_order_relaxed),read=read_.load(std::memory_order_acquire);
     auto remaining=capacityFrames_-std::min(accepted_.load(std::memory_order_relaxed),capacityFrames_);
-    auto free=ring_.size()-std::min<uint64_t>(write-read,ring_.size());
+    auto free=ringFrames-std::min<uint64_t>(write-read,ringFrames);
     auto accepted=std::min<uint64_t>({count,remaining,free});
-    for(uint64_t i=0;i<accepted;++i){auto value=std::isfinite(input[i])?std::clamp(input[i],-16.0f,16.0f):0.0f;ring_[static_cast<size_t>((write+i)%ring_.size())]=value;}
+    for(uint64_t i=0;i<accepted;++i){
+        const auto l=std::isfinite(left[i])?std::clamp(left[i],-16.0f,16.0f):0.0f;
+        const auto r=std::isfinite(right[i])?std::clamp(right[i],-16.0f,16.0f):0.0f;
+        const auto frame=static_cast<size_t>((write+i)%ringFrames)*2;
+        ring_[frame]=l;ring_[frame+1]=r;
+    }
     accepted_.fetch_add(accepted,std::memory_order_relaxed);written_.store(write+accepted,std::memory_order_release);
     if(accepted<count)overflow_.store(true,std::memory_order_release);
 }
 
 void RecordingWriter::run() noexcept {
     try{
-        std::vector<float> stereo(std::min<uint64_t>(4096,ring_.size())*2); uint64_t lastConfirmed=0;
+        const auto ringFrames=ring_.size()/2; uint64_t lastConfirmed=0;
         for(;;){
             auto read=read_.load(std::memory_order_relaxed),write=written_.load(std::memory_order_acquire);
             if(read==write){if(stopping_.load(std::memory_order_acquire))break;std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
-            auto count=std::min<uint64_t>({write-read,ring_.size()-read%ring_.size(),stereo.size()/2});
-            for(uint64_t i=0;i<count;++i){auto value=ring_[static_cast<size_t>((read+i)%ring_.size())];stereo[static_cast<size_t>(i*2)]=value;stereo[static_cast<size_t>(i*2+1)]=value;}
+            auto count=std::min<uint64_t>({write-read,ringFrames-read%ringFrames,uint64_t(4096)});
+            const auto begin=static_cast<size_t>(read%ringFrames)*2;
             auto offset=static_cast<off_t>(headerSize+read*2*sizeof(float));
-            if(!writeAll(fd_,stereo.data(),static_cast<size_t>(count*2*sizeof(float)),offset))throw Error("Cannot write recording audio");
+            if(!writeAll(fd_,ring_.data()+begin,static_cast<size_t>(count*2*sizeof(float)),offset))throw Error("Cannot write recording audio");
             read+=count;read_.store(read,std::memory_order_release);
             if(read-lastConfirmed>=confirmInterval){confirm(fd_,startFrame_,read);committed_.store(read,std::memory_order_release);lastConfirmed=read;}
         }
