@@ -10,9 +10,10 @@
 
 Одна физическая clock domain: вход и выход должны быть одним Core Audio
 устройством либо заранее настроенным aggregate. Разные независимые устройства
-не соединяются скрытым ресемплингом. Проект остаётся 48 kHz, mono input
-дублируется в stereo-файл, захват ограничен 60 секундами и прежним бюджетом
-памяти/медиа. Stereo/disk streaming — P0-05; этот срез не снимает лимиты.
+не соединяются скрытым ресемплингом. Проект остаётся 48 kHz. P0-05A добавляет
+явный Mono/Stereo input pair: Mono дублируется в L/R, Stereo сохраняет два
+независимых dry-канала. Захват пока ограничен 60 секундами и прежним бюджетом
+памяти/медиа; file-backed long recording остаётся P0-05B.
 
 ## Пользовательский путь
 
@@ -41,9 +42,10 @@ take больше не ошибочно трактуется как набор l
 
 ## Аудиотракт
 
-`MacDuplex` получает вход через `AudioUnitRender`, затем вызывает общий
-`DuplexCapture::process`. Порядок: dry input → RecordingWriter SPSC ring;
-независимо Renderer → stereo backing; в конце при MON добавляется direct input.
+`MacDuplex` получает paired input/output timestamps через `AudioDeviceIOProc` и
+извлекает выбранный Mono либо Stereo input pair, затем вызывает общий
+`DuplexCapture`. Порядок: dry input L/R → RecordingWriter SPSC ring; независимо
+Renderer → stereo backing; в конце при MON добавляется direct input L/R.
 Метроном, подложка и мониторная сумма никогда не направляются в записываемый файл.
 
 Direct MON обходит inserts/master FX/PDC и master fader; это не мониторинг через
