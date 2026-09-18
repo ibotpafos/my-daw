@@ -135,6 +135,39 @@ int main() {
             } else reject([&]{ (void)recoverTake(path); });
             capture.discard();
         }
+        // A partial final capture must still validate the WHOLE hardware block.
+        // Otherwise HAL may reject its timestamp while capture accepts stale
+        // input scratch data for the shorter remaining prefix.
+        for (const double anchor : {CaptureClock::maximumSampleTime - 128,
+                                    -CaptureClock::maximumSampleTime + 64}) {
+            Renderer render;
+            const auto path = (root / "clock-partial-cap.mydawtake").string();
+            DuplexCapture capture(render, empty, 65, path, 0, 0, 0, 0, true);
+            render.playing = true;
+            float input[256], left[256], right[256]; std::fill_n(input, 256, 0.25f);
+            capture.process(input, left, right, 64, {anchor, 1, true, true});
+            check(capture.frames() == 64, "valid near-limit prefix recorded");
+            capture.process(input, left, right, 256, {anchor + 64, 2, true, true});
+            check(capture.clockError() == CaptureClockError::sampleTimeInvalid, "full callback bounds apply to partial final cap");
+            check(capture.frames() == 64 && !capture.progress().complete, "bad partial final callback is not accepted as success");
+            check(std::all_of(left, left+256, [](float v){return v==0;}) && std::equal(left,left+256,right), "partial-cap fault silences entire output");
+            reject([&]{ (void)capture.finish(); });
+            check(recoverTake(path).clip->frames() == 64, "partial-cap fault preserves valid prefix");
+            capture.discard();
+        }
+        {
+            Renderer render;
+            const auto path = (root / "clock-valid-partial-cap.mydawtake").string();
+            DuplexCapture capture(render, empty, 65, path, 0, 0, 0, 0, false);
+            render.playing = true;
+            float input[256]{}, left[256]{}, right[256]{};
+            capture.process(input, left, right, 64, {-64, 1, true, true});
+            capture.process(input, left, right, 256, {0, 2, true, true});
+            check(capture.frames() == 65 && capture.progress().complete, "valid oversized final block records only remaining prefix");
+            check(capture.clockError() == CaptureClockError::none, "valid partial cap has no clock error");
+            check(capture.finish()->frames() == 65, "valid partial cap is committable");
+            capture.discard();
+        }
         {
             const auto path = (root / "bad.mydawtake").string(); Renderer render;
             for (uint64_t capacity : {uint64_t(0), uint64_t(48000 * 60 + 1), UINT64_MAX})

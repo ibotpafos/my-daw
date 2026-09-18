@@ -30,7 +30,8 @@ void DuplexCapture::process(const float* input, float* left, float* right, uint3
     const auto remaining = lead_ + capacity_ - elapsed;
     const auto count = static_cast<uint32_t>(std::min<uint64_t>(frames, remaining));
     if (!count) return; // A late callback after the deliberate cap is harmless.
-    const auto error = clock_.observe(time, count);
+    // Validate the whole hardware block, even when only its prefix fits the cap.
+    const auto error = clock_.observe(time, frames);
     if (error != CaptureClockError::none) {
         clockError_.store(error, std::memory_order_release);
         renderer_.playing.store(false, std::memory_order_release);
