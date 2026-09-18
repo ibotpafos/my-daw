@@ -74,10 +74,10 @@ int main() {
         // recording factory and preserves the two dry channels end-to-end.
         {
             Bridge session; auto* s=session.get(); const auto before=rev(s);
-            auto config=abi<daw_audio_device_config>(); config.version=DAW_AUDIO_DEVICE_CONFIG_VERSION;
-            CHECK_OK(s,daw_get_audio_device_config(s,&config));
-            config.recording_channels=2;config.input_channel=0;config.input_right=1;
-            CHECK_OK(s,daw_set_audio_device_config(s,&config));
+            auto config=abi<daw_record_input_config>(); config.version=DAW_RECORD_INPUT_CONFIG_VERSION;
+            CHECK_OK(s,daw_get_record_input_config(s,&config));
+            config.channels=2;config.left=0;config.right=1;
+            CHECK_OK(s,daw_set_record_input_config(s,&config));
             const auto raw=(root/"stereo-e2e.mydawtake").string();
             CHECK_OK(s,daw_record_start(s,0,raw.c_str()));
             auto monitored=pumpStereo(0.2f,-0.4f,256);
