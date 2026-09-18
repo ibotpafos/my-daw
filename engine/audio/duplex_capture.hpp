@@ -15,6 +15,7 @@ class DuplexCapture {
     Renderer& renderer_;
     std::unique_ptr<RecordingWriter> writer_;
     uint64_t start_ = 0, capacity_ = 0, lead_ = 0, loopStart_ = 0, loopEnd_ = 0;
+    uint32_t channels_ = 1;
     std::atomic<uint64_t> elapsed_{0};
     std::atomic<bool> monitor_{false};
     float monitorGain_ = 0;
@@ -29,9 +30,18 @@ public:
     static constexpr uint32_t maximumSlice = 4096;
     DuplexCapture(Renderer&, const State&, uint64_t capacity, const std::string& path,
                   uint64_t start, uint64_t loopStart, uint64_t loopEnd,
-                  uint64_t preroll, bool monitor, RecordingLatency latency = {});
+                  uint64_t preroll, bool monitor, RecordingLatency latency = {},
+                  uint32_t recordingChannels = 1);
     // Valid buffers, frames <= maximumSlice. Allocation/file I/O-free.
-    void process(const float* input, float* left, float* right, uint32_t frames, CaptureTimestamp time, CaptureTimestamp inputTime = {}) noexcept;
+    // process() preserves the historical mono contract. processStereo() is the
+    // production two-channel path; mono mode may pass the same pointer twice.
+    void processStereo(const float* inputLeft, const float* inputRight,
+                       float* left, float* right, uint32_t frames,
+                       CaptureTimestamp time, CaptureTimestamp inputTime = {}) noexcept;
+    void process(const float* input, float* left, float* right, uint32_t frames,
+                 CaptureTimestamp time, CaptureTimestamp inputTime = {}) noexcept {
+        processStereo(input, input, left, right, frames, time, inputTime);
+    }
     // Idempotent, nonblocking; a timed take drains at the next callback boundary.
     void requestStop() noexcept { stopRequested_.store(true, std::memory_order_release); }
     RecordingTimingInfo timing() const noexcept;

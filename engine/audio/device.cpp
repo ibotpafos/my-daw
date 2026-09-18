@@ -9,7 +9,9 @@ void validateAudioDeviceConfiguration(const AudioDeviceConfiguration& config) {
         if (uid->size() > audioDeviceUIDBytes || uid->find('\0') != std::string::npos)
             throw Error("Invalid audio device UID");
     }
-    if (config.inputChannel >= audioDeviceChannelLimit ||
+    if ((config.recordingChannels != 1 && config.recordingChannels != 2) ||
+        config.inputChannel >= audioDeviceChannelLimit || config.inputRight >= audioDeviceChannelLimit ||
+        (config.recordingChannels == 2 && config.inputChannel == config.inputRight) ||
         config.outputLeft >= audioDeviceChannelLimit ||
         config.outputRight >= audioDeviceChannelLimit || config.outputLeft == config.outputRight)
         throw Error("Invalid audio channel selection");
@@ -28,7 +30,10 @@ const AudioDeviceInfo& resolveAudioDevice(const AudioDeviceConfiguration& config
                           : "Selected output device is unavailable. Check Audio Settings.");
     if (!found->id || found->uid.empty())
         throw Error("Audio device has no stable identity");
-    if (input ? config.inputChannel >= found->inputChannels
+    const auto selectedInput = config.recordingChannels == 2
+                                   ? std::max(config.inputChannel, config.inputRight)
+                                   : config.inputChannel;
+    if (input ? selectedInput >= found->inputChannels
               : std::max(config.outputLeft, config.outputRight) >= found->outputChannels)
         throw Error("Selected audio channels are unavailable. Check Audio Settings.");
     if (!std::isfinite(found->sampleRate) || std::abs(found->sampleRate - 48000.0) > 0.5)

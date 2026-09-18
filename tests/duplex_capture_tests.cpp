@@ -99,6 +99,24 @@ int main() {
         }
         {
             Renderer render;
+            const auto path = (root / "stereo.mydawtake").string();
+            DuplexCapture capture(render, empty, 256, path, 0, 0, 0, 0, true, {}, 2);
+            render.playing = true;
+            std::vector<float> inputLeft(256, 0.2f), inputRight(256, -0.4f), l(256), r(256);
+            capture.processStereo(inputLeft.data(), inputRight.data(), l.data(), r.data(), 256,
+                                  {0, 1, true, true});
+            check(l[255] == 0.2f && r[255] == -0.4f, "stereo MON preserves channel identity");
+            auto raw = capture.finish();
+            check(raw && raw->frames() == 256, "stereo capture finishes exact frame count");
+            bool distinct = true;
+            for (size_t frame = 0; frame < raw->frames(); ++frame)
+                distinct = distinct && raw->samples()[frame * 2] == 0.2f &&
+                           raw->samples()[frame * 2 + 1] == -0.4f;
+            check(distinct, "stereo dry PCM remains independent on disk");
+            capture.discard();
+        }
+        {
+            Renderer render;
             const auto path = (root / "preroll-only.mydawtake").string();
             DuplexCapture capture(render, empty, 100, path, 100, 0, 0, 1000, false);
             check(capture.progress().prerollRemaining == 100, "pre-roll clamps at project zero");

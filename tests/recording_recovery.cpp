@@ -24,6 +24,21 @@ int main(int argc,char** argv){try{
     daw::RecordingWriter writer(normal,12000,20,16);writer.writeMono(values,5);auto clip=writer.finish();
     CHECK(clip->frames()==5&&clip->samples()[0]==0.25f&&clip->samples()[1]==0.25f&&clip->samples()[4]==0&&clip->samples()[6]==16);
     auto recovered=daw::recoverTake(normal);CHECK(recovered.startFrame==12000&&recovered.clip->samples()==clip->samples());
+    auto stereoPath=(root/"stereo.mydawtake").string();
+    {
+        daw::RecordingWriter stereo(stereoPath,16000,16,8);
+        float left[]={0.1f,0.2f,NAN,20.0f};
+        float right[]={-0.1f,-0.2f,-0.3f,-20.0f};
+        stereo.writeStereo(left,right,4);
+        auto stereoClip=stereo.finish();
+        CHECK(stereoClip->frames()==4);
+        CHECK(std::abs(stereoClip->samples()[0]-0.1f)<1e-6f&&std::abs(stereoClip->samples()[1]+0.1f)<1e-6f);
+        CHECK(stereoClip->samples()[4]==0.0f&&std::abs(stereoClip->samples()[5]+0.3f)<1e-6f);
+        CHECK(stereoClip->samples()[6]==16.0f&&stereoClip->samples()[7]==-16.0f);
+    }
+    auto stereoRecovered=daw::recoverTake(stereoPath);
+    CHECK(stereoRecovered.startFrame==16000&&stereoRecovered.clip->frames()==4);
+    CHECK(stereoRecovered.clip->samples()[0]!=stereoRecovered.clip->samples()[1]);
     std::vector<float> loopAudio(20);for(size_t i=0;i<10;++i)loopAudio[i*2]=loopAudio[i*2+1]=float(i);
     daw::Clip loopRecording(std::move(loopAudio));auto passes=daw::splitLoopPasses(loopRecording,4);
     CHECK(passes.size()==3&&passes[0]->frames()==4&&passes[1]->frames()==4&&passes[2]->frames()==2);

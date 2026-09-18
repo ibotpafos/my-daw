@@ -99,7 +99,8 @@ int main() {
     std::filesystem::create_directories(root);
     try {
         daw::AudioDeviceConfiguration config; config.inputUID = config.outputUID = "native-recording-fixture";
-        config.inputChannel = 3; config.outputLeft = 3; config.outputRight = 2;
+        config.inputChannel = 2; config.inputRight = 3; config.recordingChannels = 2;
+        config.outputLeft = 3; config.outputRight = 2;
         daw::Session model;
         std::vector<float> source(4096*2);
         for (size_t f=0;f<4096;++f) { source[2*f]=0.125f;source[2*f+1]=-0.125f; }
@@ -141,7 +142,11 @@ int main() {
         check(io->progress().complete&&io->frames()==512&&io->timing().compensationFrames==324,"native paired-stamp compensation and drained cap");
         const auto clip=io->stop();
         check(!running&&!callback&&stops==1&&destroys==1,"native registration quiesced/destroyed");
-        check(std::all_of(clip->samples().begin(),clip->samples().end(),[](float v){return v==0.25f;}),"only selected dry input reaches file");
+        check(clip->frames()==512,"stereo native take keeps expected frame count");
+        bool stereoOkay=true;
+        for(size_t frame=0;frame<clip->frames();++frame)
+            stereoOkay=stereoOkay&&clip->samples()[frame*2]==0.8f&&clip->samples()[frame*2+1]==0.25f;
+        check(stereoOkay,"selected dry stereo pair reaches file without mono folding");
         io->discardRecovery();io.reset();
         // A changed report is not silently adopted halfway through a take.
         auto changed=daw::makeDuplex(model.state(),512,(root/"change.mydawtake").string(),0,0,0,0,false,config);

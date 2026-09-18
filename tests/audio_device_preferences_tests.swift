@@ -14,7 +14,7 @@ struct AudioPreferencesTests {
         expect(try AudioDevicePreferences.read(from: defaults) == AudioDevicePreferences())
         var config = AudioDevicePreferences()
         config.inputUID = "Студия:микрофон"; config.outputUID = "Studio:output"
-        config.inputChannel = 3; config.outputLeft = 4; config.outputRight = 5
+        config.inputChannel = 3; config.inputRight = 4; config.outputLeft = 4; config.outputRight = 5
         defaults.set(try config.encoded(), forKey: AudioDevicePreferences.key)
         expect(try AudioDevicePreferences.read(from: defaults) == config)
         let reopened = UserDefaults(suiteName: name)!
@@ -29,6 +29,22 @@ struct AudioPreferencesTests {
         rejects { _ = try bad.encoded() }
         bad = config; bad.inputChannel = 128
         rejects { _ = try bad.encoded() }
+        bad = config; bad.recordingChannels = 3
+        rejects { _ = try bad.encoded() }
+        bad = config; bad.recordingChannels = 2; bad.inputRight = bad.inputChannel
+        rejects { _ = try bad.encoded() }
+        var stereo = config
+        stereo.recordingChannels = 2; stereo.inputChannel = 2; stereo.inputRight = 3
+        defaults.set(try stereo.encoded(), forKey: AudioDevicePreferences.key)
+        expect(try AudioDevicePreferences.read(from: defaults) == stereo)
+        defaults.removeObject(forKey: AudioDevicePreferences.key)
+        let legacy = "{\"version\":1,\"inputUID\":\"legacy-in\",\"outputUID\":\"legacy-out\",\"inputChannel\":7,\"outputLeft\":2,\"outputRight\":3}".data(using: .utf8)!
+        defaults.set(legacy, forKey: AudioDevicePreferences.legacyKey)
+        let migrated = try AudioDevicePreferences.read(from: defaults)
+        expect(migrated.version == 2 && migrated.recordingChannels == 1 &&
+               migrated.inputChannel == 7 && migrated.inputRight == 8 &&
+               migrated.inputUID == "legacy-in" && migrated.outputUID == "legacy-out")
+        defaults.removeObject(forKey: AudioDevicePreferences.legacyKey)
         for payload in [Data("{}".utf8), Data("[]".utf8), Data(repeating: 0, count: 8193)] {
             defaults.set(payload, forKey: AudioDevicePreferences.key)
             rejects { _ = try AudioDevicePreferences.read(from: defaults) }

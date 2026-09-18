@@ -7,7 +7,8 @@ namespace daw {
 struct DuplexHardwareProfile {
     RecordingLatency latency;
     std::vector<uint32_t> inputBuffers, outputBuffers;
-    RecordingChannel input, left, right;
+    RecordingChannel inputLeft, inputRight, left, right;
+    uint32_t recordingChannels = 1;
     bool operator==(const DuplexHardwareProfile&) const = default;
 };
 // Read-only, control thread. Requires one shared native 48 kHz Float32 clock.

@@ -264,13 +264,22 @@ DuplexHardwareProfile readDuplexHardwareProfile(const AudioDeviceInfo& device, c
     DuplexHardwareProfile result;
     result.inputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeInput);
     result.outputBuffers = recordingBufferLayout(device.id, kAudioDevicePropertyScopeOutput);
-    if (!locateRecordingChannel(result.inputBuffers, config.inputChannel, result.input) ||
+    result.recordingChannels = config.recordingChannels;
+    if (!locateRecordingChannel(result.inputBuffers, config.inputChannel, result.inputLeft) ||
+        (config.recordingChannels == 2 &&
+         !locateRecordingChannel(result.inputBuffers, config.inputRight, result.inputRight)) ||
         !locateRecordingChannel(result.outputBuffers, config.outputLeft, result.left) ||
         !locateRecordingChannel(result.outputBuffers, config.outputRight, result.right))
         throw Error("Selected recording channels no longer match hardware buffers");
-    const auto input = recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputChannel);
+    if (config.recordingChannels == 1) result.inputRight = result.inputLeft;
+    const auto inputLeft = recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputChannel);
+    const auto inputRight = config.recordingChannels == 2
+        ? recordingStream(device.id, kAudioDevicePropertyScopeInput, config.inputRight)
+        : inputLeft;
     const auto left = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputLeft);
     const auto right = recordingStream(device.id, kAudioDevicePropertyScopeOutput, config.outputRight);
+    if (inputLeft.latency != inputRight.latency)
+        throw Error("Stereo input streams report different latency; select one synchronous input pair");
     if (left.latency != right.latency)
         throw Error("Master L/R streams report different latency; select one synchronous output pair");
     mach_timebase_info_data_t timebase{};
@@ -282,8 +291,8 @@ DuplexHardwareProfile readDuplexHardwareProfile(const AudioDeviceInfo& device, c
     l.outputDevice = read<UInt32>(device.id, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeOutput);
     l.inputSafety = read<UInt32>(device.id, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyScopeInput);
     l.outputSafety = read<UInt32>(device.id, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyScopeOutput);
-    l.inputStream = input.latency; l.outputStream = left.latency;
-    l.inputStreamID = input.id; l.outputLeftStreamID = left.id; l.outputRightStreamID = right.id;
+    l.inputStream = inputLeft.latency; l.outputStream = left.latency;
+    l.inputStreamID = inputLeft.id; l.outputLeftStreamID = left.id; l.outputRightStreamID = right.id;
     l.hostTicksPerSecond = 1e9 * double(timebase.denom) / timebase.numer;
     l.validate();
     checkAudioDevice(device, false, AudioDeviceDirection::Output);
