@@ -13,7 +13,8 @@ class DeviceFixture final : public daw::Duplex {
     daw::State state_;
     uint64_t capacity_, start_, loopStart_, loopEnd_, preroll_, callbacks_ = 0, clockFrames_ = 0;
     std::string path_;
-    bool monitor_, active_ = false;\n    uint32_t inputChannels_ = 1;
+    bool monitor_, active_ = false;
+    uint32_t inputChannels_ = 1;
     daw::RecordingLatency latency_ = fixtureLatency;
     uint32_t separation_ = fixtureSeparation;
     std::unique_ptr<daw::DuplexCapture> capture_;
