@@ -239,12 +239,20 @@ extension AudioDevicePreferences {
         value.struct_size = UInt32(MemoryLayout<daw_audio_device_config>.size)
         value.version = UInt32(DAW_AUDIO_DEVICE_CONFIG_VERSION)
         value.input_channel = inputChannel
-        value.input_right = inputRight
-        value.recording_channels = recordingChannels
         value.output_left = outputLeft
         value.output_right = outputRight
         withUnsafeMutableBytes(of: &value.input_uid) { $0.copyBytes(from: inputUID.utf8CString.map { UInt8(bitPattern: $0) }) }
         withUnsafeMutableBytes(of: &value.output_uid) { $0.copyBytes(from: outputUID.utf8CString.map { UInt8(bitPattern: $0) }) }
+        return value
+    }
+    func recordingInputBridgeValue() throws -> daw_record_input_config {
+        try validate()
+        var value = daw_record_input_config()
+        value.struct_size = UInt32(MemoryLayout<daw_record_input_config>.size)
+        value.version = UInt32(DAW_RECORD_INPUT_CONFIG_VERSION)
+        value.channels = recordingChannels
+        value.left = inputChannel
+        value.right = inputRight
         return value
     }
 }
@@ -259,7 +267,10 @@ extension DraftApp {
     @discardableResult
     func restoreAudioDeviceConfiguration(_ target: OpaquePointer) -> Bool {
         do {
-            var raw = try AudioDevicePreferences.read(from: audioPreferences).bridgeValue()
+            let config = try AudioDevicePreferences.read(from: audioPreferences)
+            var input = try config.recordingInputBridgeValue()
+            guard daw_set_record_input_config(target, &input) == 0 else { throw audioConfigurationError(target) }
+            var raw = try config.bridgeValue()
             guard daw_set_audio_device_config(target, &raw) == 0 else { throw audioConfigurationError(target) }
             return true
         } catch {
@@ -286,6 +297,8 @@ extension DraftApp {
     }
     func applyAudioDeviceConfiguration(_ config: AudioDevicePreferences) throws {
         let data = try config.encoded()
+        var input = try config.recordingInputBridgeValue()
+        guard daw_set_record_input_config(session, &input) == 0 else { throw audioConfigurationError() }
         var raw = try config.bridgeValue()
         guard daw_set_audio_device_config(session, &raw) == 0 else { throw audioConfigurationError() }
         audioPreferences.set(data, forKey: AudioDevicePreferences.key)
