@@ -79,6 +79,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let trackHeaderRows = NSStackView()
     let consoleRows = NSStackView()
     let mixerWorkspace = MixerWorkspaceView(frame: .zero)
+    let recordingWorkspace = RecordingWorkspaceView(frame: .zero)
     let mixerSummary = NSTextField(labelWithString: "0 CH · 0 BUS · MASTER")
     let timelineRuler = TimelineRulerView(frame: .zero)
     var timelineDocument: DraftCanvas!
@@ -473,7 +474,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         trackTimelineSplit.setContentHuggingPriority(.defaultLow, for: .vertical)
         let dock = WorkspaceDockView(devices: channelRack, midi: inspectorBrowser.midiEditor, mixer: console)
         workspaceDock = dock
-        let workspace = WorkspaceView(library: libraryBrowser, arrangement: arrangement, inspector: inspectorBrowser, dock: dock)
+        let workspace = WorkspaceView(library: libraryBrowser, arrangement: arrangement, inspector: inspectorBrowser, dock: dock, recording: recordingWorkspace)
         self.workspace = workspace
         content.addArrangedSubview(workspace)
         workspace.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
@@ -1204,6 +1205,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if let track=inspectorTrackID,let clip=inspectorClipIndex {updateClipInspector(track,clip)}
         else if let selected=selectedMixerID,mixerKinds[selected] != nil {updateMixerInspector(selected)}
         refreshWorkspaceSelection()
+        refreshRecordingWorkspace()
         updateWorkspaceChrome()
     }
     func insertOwnerKey(_ owner: Int32, _ ownerID: UInt64) -> String { "\(owner):\(ownerID)" }
@@ -1431,6 +1433,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         stopButton.isEnabled = isRecording || isPlaying
         recordMonitorButton.isEnabled = true
         updateMixExportAvailability()
+        updateRecordingWorkspaceRuntime()
     }
     func recordingAlert(_ message: String) {
         DAWLog.audio.error("Запись недоступна: \(message, privacy: .public)")
@@ -1438,6 +1441,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     @objc func toggleRecording() {
         if isRecording { finishRecording(); return }
+        guard !recordingWorkspace.isGesturing else { return }
         guard !midiTakeArmed else { storageMessage("Сначала заверши запись MIDI с клавиатуры."); return }
         guard !exportBusy else { storageMessage("Дождись завершения экспорта или отмени его перед записью."); return }
         finishEditing()
@@ -1634,7 +1638,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func changeGrid(_ sender:NSPopUpButton) { updateTimelineTools() }
     func pollTransport() {
         guard session != nil else { return }
-        defer { updateWorkspaceChrome(); updateMixExportAvailability(); for view in midiArrangementViews { view.playhead = playheadFrame } }
+        defer { updateWorkspaceChrome(); updateRecordingWorkspaceRuntime(); updateMixExportAvailability(); for view in midiArrangementViews { view.playhead = playheadFrame } }
         updateInsertRuntimeBadges()
         var recording=daw_recording(); recording.struct_size=UInt32(MemoryLayout<daw_recording>.size)
         guard daw_get_recording(session, &recording) == 0 else {

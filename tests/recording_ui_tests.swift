@@ -53,6 +53,9 @@ func runWorkspaceIntegrationTests() {
             URL(fileURLWithPath: "build/recording-ui/\(name).png"))
     }
 
+    app.workspace?.present(.recording)
+    expect(!app.recordingWorkspace.isHiddenOrHasHiddenAncestor, "record screen is real mounted UI")
+
     // Start in an empty project beyond its former zero-length playback end.
     let initial = snapshot().revision
     app.rangeStart = 1000
@@ -66,7 +69,9 @@ func runWorkspaceIntegrationTests() {
     expect(app.playheadFrame == 512 && app.timelineRuler.playhead == 512, "shared cursor advances during pre-roll")
     expect(snapshot().revision == initial && snapshot().track_count == 0, "no project mutation before stop")
     screenshot("recording-preroll")
-    app.stopButton.performClick(nil)
+    expect(app.recordingWorkspace.record.isEnabled && app.recordingWorkspace.monitor.isEnabled, "record screen Stop and MON available during pre-roll")
+    expect(!app.recordingWorkspace.apply.isEnabled, "comp disabled during capture")
+    app.recordingWorkspace.record.performClick(nil)
     expect(!app.isRecording && recording_fixture_active() == 0, "native Stop quiesces recording")
     expect(snapshot().revision == initial && snapshot().track_count == 0, "no empty pre-roll clip")
     expect(app.activeRecordingURL == nil, "no dangling active recovery")
@@ -76,7 +81,7 @@ func runWorkspaceIntegrationTests() {
     app.rangeStart = 0
     app.beginRecording()
     expect(pump(512).allSatisfy { $0 == 0 }, "MON initially off: output silent, recording not silent")
-    app.recordMonitorButton.performClick(nil)
+    app.recordingWorkspace.monitor.performClick(nil)
     let monitored = pump(512)
     expect(abs(monitored.last! - 0.25) < 0.000001, "native MON applies to the running capture")
     expect(app.recordMonitorOn && app.playheadFrame == 1024, "MON state and cursor")

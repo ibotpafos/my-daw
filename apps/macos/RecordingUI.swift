@@ -3,7 +3,7 @@ import AppKit
 extension DraftApp {
     func beginRecording() {
         // Also recheck after the asynchronous microphone permission response.
-        guard !isRecording, !midiTakeArmed, !exportBusy else { return }
+        guard !isRecording, !midiTakeArmed, !exportBusy, !importBusy, !recordingWorkspace.isGesturing else { return }
         guard let recordingRoot else {
             setProjectMessage("Не удалось подготовить папку восстановления записи.")
             return
