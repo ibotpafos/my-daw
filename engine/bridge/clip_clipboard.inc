@@ -42,3 +42,29 @@ int daw_clear_clipboard(daw_session *s) {
         s->clipClipboard.reset();
     });
 }
+
+int daw_edit_clip_selection(daw_session *s, const daw_clip_selection_ref *clips, uint32_t count,
+                            uint32_t action, int64_t delta, int32_t trackOffset,
+                            uint64_t revision) {
+    return guard(s, [&] {
+        if (!clips || count == 0 || count > 256 || action < DAW_CLIP_SELECTION_MOVE ||
+            action > DAW_CLIP_SELECTION_DELETE)
+            throw daw::Error("Invalid clip selection edit");
+        if (recordingActive(s) || s->midiRecorder)
+            throw daw::Error("Stop recording and MIDI capture before group edits");
+        std::vector<daw::ClipSelectionRef> refs;
+        refs.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto &ref = clips[i];
+            if (ref.struct_size != sizeof(daw_clip_selection_ref) ||
+                ref.version != DAW_CLIP_SELECTION_REF_VERSION || (ref.kind != 1 && ref.kind != 2))
+                throw daw::Error("Clip selection reference ABI mismatch");
+            refs.push_back({ref.track_id, ref.clip_index, ref.kind == 2});
+        }
+        const auto before = s->model.state().revision;
+        s->model.editClipSelection(refs, static_cast<daw::ClipSelectionEdit>(action), delta,
+                                   trackOffset, revision);
+        if (s->model.state().revision != before)
+            resetTransport(s);
+    });
+}

@@ -227,6 +227,7 @@ func runArrangementEditingTests(_ app: DraftApp) -> Int {
     app.midiDocumentID = oldDocument; editor.bindProjection()
     editor.selectTool(.pointer); app.setTimelineZoom(1); app.restoreArrangementViewport(.zero)
     checks += runArrangementClipboardTests(app)
+    checks += runArrangementMixedGroupTests(app)
     print("PASS: \(checks) native arrangement editing assertions")
     return checks
 }

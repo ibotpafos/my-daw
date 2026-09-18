@@ -1,6 +1,9 @@
 #include "domain/clip_clipboard.hpp"
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <set>
+#include <tuple>
 
 namespace daw {
 namespace {
@@ -149,6 +152,92 @@ void Session::transferClips(uint64_t source, std::vector<uint32_t> indices, bool
     clipboard.pasteInto(next, target, start);
     if (next.tracks == current.tracks)
         return;
+    commit(std::move(next));
+}
+
+void Session::editClipSelection(const std::vector<ClipSelectionRef> &selection,
+                                ClipSelectionEdit action, int64_t delta, int32_t trackOffset,
+                                uint64_t expected) {
+    check(expected);
+    if (selection.empty() || selection.size() > 256)
+        throw Error("Select 1–256 clips for a group edit");
+    if (action != ClipSelectionEdit::Move && action != ClipSelectionEdit::Copy &&
+        action != ClipSelectionEdit::Delete)
+        throw Error("Unknown clip selection action");
+    if (action == ClipSelectionEdit::Delete && (delta != 0 || trackOffset != 0))
+        throw Error("Delete does not accept a time or track offset");
+    // Build every source batch against the same immutable revision BEFORE any
+    // erase/insert/sort. Moving onto another selected track cannot rebind indices.
+    std::map<std::pair<size_t, bool>, std::vector<uint32_t>> groups;
+    std::set<std::tuple<uint64_t, bool, uint32_t>> unique;
+    for (const auto &ref : selection) {
+        if (!unique.emplace(ref.trackID, ref.midi, ref.index).second)
+            throw Error("Duplicate clip selection reference");
+        const auto found = std::find_if(current.tracks.begin(), current.tracks.end(),
+                                        [&](const Track &t) { return t.id == ref.trackID; });
+        if (found == current.tracks.end())
+            throw Error("Selected track no longer exists");
+        if (ref.index >= (ref.midi ? found->midiClips.size() : found->regions.size()))
+            throw Error("Selected clip no longer exists");
+        groups[{static_cast<size_t>(found - current.tracks.begin()), ref.midi}].push_back(ref.index);
+    }
+    if (action == ClipSelectionEdit::Move && delta == 0 && trackOffset == 0)
+        return; // Validate references first; a stale no-op must still be rejected.
+    struct Batch {
+        size_t source = 0, target = 0;
+        bool midi = false;
+        uint64_t start = 0;
+        std::vector<uint32_t> indices;
+        ClipClipboard board;
+    };
+    std::vector<Batch> batches;
+    for (auto &[key, indices] : groups) {
+        std::sort(indices.begin(), indices.end());
+        const auto [source, midi] = key;
+        Batch batch;
+        batch.source = source; batch.midi = midi; batch.indices = indices;
+        if (action != ClipSelectionEdit::Delete) {
+            const auto destination = static_cast<int64_t>(source) + trackOffset;
+            if (destination < 0 || static_cast<uint64_t>(destination) >= current.tracks.size())
+                throw Error("The entire selection must fit within existing tracks");
+            batch.target = static_cast<size_t>(destination);
+            const auto &track = current.tracks[source];
+            uint64_t anchor = std::numeric_limits<uint64_t>::max();
+            for (auto index : indices)
+                anchor = std::min(anchor, midi ? track.midiClips[index].start : track.regions[index].start);
+            // Avoid signed conversion/negation overflow, even for INT64_MIN.
+            if (delta < 0) {
+                const auto magnitude = static_cast<uint64_t>(-(delta + 1)) + 1;
+                if (magnitude > anchor)
+                    throw Error("The entire selection must remain after frame zero");
+                batch.start = anchor - magnitude;
+            } else {
+                const auto limit = midi ? kMaxMidiFrame : audioLimit;
+                if (static_cast<uint64_t>(delta) > limit - anchor)
+                    throw Error("The entire selection must fit within the timeline");
+                batch.start = anchor + static_cast<uint64_t>(delta);
+            }
+            batch.board = captureClips(track.id, indices, midi, false, expected);
+        }
+        batches.push_back(std::move(batch));
+    }
+    State next = current;
+    if (action != ClipSelectionEdit::Copy) {
+        for (const auto &batch : batches)
+            erase(next.tracks[batch.source], batch.indices, batch.midi);
+    }
+    if (action != ClipSelectionEdit::Delete) {
+        for (const auto &batch : batches) {
+            auto &target = next.tracks[batch.target];
+            // The current arrangement projects one type per row. Never insert
+            // invisible MIDI under a retained audio source, or hide MIDI with audio.
+            if ((batch.midi && target.audio) || (!batch.midi && !target.midiClips.empty()))
+                throw Error("Destination track has an incompatible audio/MIDI type");
+            batch.board.pasteInto(next, target.id, batch.start);
+        }
+    }
+    // validate/commit owns overlaps, budgets and Undo. No clipboard is touched,
+    // and failure in a later batch discards ALL earlier candidate changes.
     commit(std::move(next));
 }
 }

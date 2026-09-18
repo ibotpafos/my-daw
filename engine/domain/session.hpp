@@ -125,6 +125,13 @@ std::vector<WorkflowOperation> prepareVocalTracks(const State& state,
                                                    const std::vector<uint64_t>& selectedTrackIDs,
                                                    const std::string& namingBase,
                                                    const std::vector<VocalGainSuggestion>& suggestions);
+// Revision-scoped references: never keep them after a project mutation.
+enum class ClipSelectionEdit : uint8_t { Move=1, Copy=2, Delete=3 };
+struct ClipSelectionRef {
+    uint64_t trackID = 0;
+    uint32_t index = 0;
+    bool midi = false;
+};
 class ClipClipboard;
 class Session {
 public:
@@ -280,6 +287,10 @@ public:
     void pasteClips(const ClipClipboard&, uint64_t target, uint64_t start, uint64_t expected);
     void transferClips(uint64_t source, std::vector<uint32_t> indices, bool midi,
                        uint64_t target, uint64_t start, bool copy, uint64_t expected);
+    // One atomic edit for a bounded mixed audio/MIDI selection across tracks.
+    // trackOffset refers to the current project order, including unselected rows.
+    void editClipSelection(const std::vector<ClipSelectionRef>&, ClipSelectionEdit,
+                           int64_t deltaFrames, int32_t trackOffset, uint64_t expected);
     void copyClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     void moveClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);
     void copyMidiClipToTrack(uint64_t sourceTrack, uint32_t index, uint64_t targetTrack, uint64_t start, uint64_t expected);

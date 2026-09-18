@@ -534,7 +534,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         menu("My DAW", [("Настройки аудио…", #selector(showAudioDeviceSettings), ",", false), ("Завершить My DAW", #selector(quit), "q", false)])
         menu("Файл", [("Новый черновик", #selector(newDraft), "n", false), ("Открыть…", #selector(openDraft), "o", false), ("Сохранить", #selector(saveDraft), "s", false), ("Сохранить как…", #selector(saveAs), "s", true), ("Упаковать проект…", #selector(packageProject), "", false), ("Открыть проект из архива…", #selector(openPackage), "", false), ("Экспорт WAV…", #selector(exportMix), "e", true), ("Экспортировать стемы…", #selector(exportStems), "", false), ("Экспорт DAWproject…", #selector(exportDawproject), "d", true), ("Восстановить черновик…", #selector(restoreDraft), "r", true)])
-        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выбранный клип (D)", #selector(menuClipDuplicate), "", false), ("Удалить выбранный клип (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вырезать выбранные клипы (⌘X)", #selector(menuCutClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
+        menu("Проект", [("Начать или закончить запись", #selector(toggleRecording), "r", false), ("Отменить изменение проекта", #selector(undo), "z", false), ("Повторить изменение проекта", #selector(redo), "z", true), ("Добавить дорожку", #selector(addTrack), "t", false), ("Добавить MIDI-дорожку", #selector(addMidiTrack), "", false), ("Переместить выбранную дорожку выше", #selector(moveSelectedTrackUp), "", false), ("Переместить выбранную дорожку ниже", #selector(moveSelectedTrackDown), "", false), ("Удалить выбранную дорожку", #selector(deleteCurrentSelectedTrack), "\u{7f}", false), ("Добавить bus", #selector(addBus), "b", true), ("Импорт WAV…", #selector(importWav), "i", false), ("Цикл выбранного диапазона", #selector(toggleLoop), "l", false), ("Воспроизвести с позиции", #selector(playAudio), "p", false), ("Остановить", #selector(stopAudio), ".", false), ("Разделить выбранный клип (S в фокусе волны)", #selector(menuClipSplit), "", false), ("Дублировать выделенные клипы (⌘D)", #selector(menuClipDuplicate), "", false), ("Удалить выделенные клипы (Delete)", #selector(menuClipDelete), "", false), ("Дублировать дорожку", #selector(menuTrackDuplicate), "t", true), ("Добавить маркер в позицию курсора", #selector(menuAddMarkerAtPlayhead), "m", true), ("Копировать выбранный клип (C в фокусе волны)", #selector(menuCopyClip), "", false), ("Вырезать выбранные клипы (⌘X)", #selector(menuCutClip), "", false), ("Вставить клип в курсор (V)", #selector(menuPasteClip), "", false)])
         if let projectMenu = main.items.last?.submenu {
             let prerollRoot=NSMenuItem(title:"Преролл записи",action:nil,keyEquivalent:""); let prerollMenu=NSMenu(title:"Преролл записи"); prerollMenu.autoenablesItems=false
             for (label,seconds) in [("Выключен",0.0),("1 секунда",1.0),("2 секунды",2.0),("4 секунды",4.0),("8 секунд",8.0)] {
@@ -606,8 +606,7 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             return canUseArrangementClipboard(menuItem.action)
         }
         if menuItem.action == #selector(menuClipSplit) || menuItem.action == #selector(menuClipDuplicate) || menuItem.action == #selector(menuClipDelete) {
-            let selected = inspectorTrackID ?? selectedMixerID
-            return !isRecording && selected.map { mixerKinds[$0] == .track && $0 != 0 } == true && trackIDs.values.contains(selected ?? 0)
+            return canEditArrangementSelection(menuItem.action)
         }
         return true
     }
@@ -2063,11 +2062,11 @@ final class DraftApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         stopAudio()
         if check(daw_set_midi_clip_color(session,p.trackID,UInt32(p.clipIndex),p.color,revision)){refresh(); updateMixerInspector(p.trackID)}
     }
-    @objc func menuClipSplit(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(splitClipAtCursor(_:))) }
-    @objc func menuClipDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(duplicateSelectedClip(_:))) }
-    @objc func menuClipDelete(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; performTrackAction(id,#selector(deleteSelectedClip(_:))) }
+    @objc func menuClipSplit() { editArrangementSelection(#selector(menuClipSplit)) }
+    @objc func menuClipDuplicate() { editArrangementSelection(#selector(menuClipDuplicate)) }
+    @objc func menuClipDelete() { editArrangementSelection(#selector(menuClipDelete)) }
     @objc func menuTrackDuplicate(){ guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return}; duplicateTrackNow(id) }
-    func deleteCurrentSelectedClip(){guard let id=inspectorTrackID ?? selectedMixerID,mixerKinds[id] == .track else{return};performTrackAction(id,#selector(deleteSelectedClip(_:)))}
+    func deleteCurrentSelectedClip() { editArrangementSelection(#selector(menuClipDelete)) }
     @objc func deleteCurrentSelectedTrack() {
         guard let id = inspectorTrackID ?? selectedMixerID, mixerKinds[id] == .track else { return }
         deleteTrack(id)

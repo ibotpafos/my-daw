@@ -197,6 +197,12 @@ int main() {
             CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 0, revision));
             CHECK_REJ(s, daw_capture_clipboard(s, 1, 0, &index, 1, 1, revision));
             CHECK_REJ(s, daw_paste_clipboard(s, 1, 4096, revision));
+            auto selection = abi<daw_clip_selection_ref>();
+            selection.version = DAW_CLIP_SELECTION_REF_VERSION;
+            selection.track_id = 1; selection.clip_index = 0; selection.kind = 1;
+            for (uint32_t action : {DAW_CLIP_SELECTION_MOVE, DAW_CLIP_SELECTION_COPY, DAW_CLIP_SELECTION_DELETE})
+                CHECK_REJ(s, daw_edit_clip_selection(s, &selection, 1, action,
+                    action == DAW_CLIP_SELECTION_DELETE ? 0 : 4096, 0, revision));
             auto board = abi<daw_clipboard_info>();
             CHECK_OK(s, daw_get_clipboard(s, &board));
             CHECK(board.kind == 1 && board.clip_count == 1 && board.length == 4096);

@@ -1882,8 +1882,16 @@ void Session::splitMidiClip(uint64_t trackID, uint32_t index, uint64_t atFrame, 
             auto moved = note;
             moved.start -= leftLength;
             right.push_back(moved);
-        } else
-            throw Error("A MIDI note cannot cross the split position");
+        } else {
+            // Scissors produce two positive-length notes. The right part
+            // retriggers at the cut; Undo restores the original sustained note.
+            auto leftPart = note, rightPart = note;
+            leftPart.length = leftLength - note.start;
+            rightPart.start = 0;
+            rightPart.length = note.start + note.length - leftLength;
+            left.push_back(leftPart);
+            right.push_back(rightPart);
+        }
     }
     scope.track->midiClips[index] = {original.start, leftLength, std::move(left), original.track,
                                      original.color};

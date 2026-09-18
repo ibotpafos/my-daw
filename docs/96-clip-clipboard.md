@@ -3,7 +3,7 @@
 Продолжение [редактора аранжировки](95-arrangement-editing.md). Этот срез снимает
 ограничение «скопировать заново после каждой вставки», заменяет отложенный перенос
 на настоящее вырезание и разрешает удалить последний аудиорегион. Это не полный
-паритет Studio One / Logic и не реализация mixed-track editing.
+паритет Studio One / Logic и не реализация mixed-track clipboard. [Групповые операции](arrangement-mixed-groups.md) реализованы отдельно.
 
 ## Пользовательский путь
 
@@ -80,9 +80,10 @@ struct size. Неуспешный захват сохраняет предыду
 Буфер дополнительно удерживает исходники одного захвата до его замены/очистки;
 он не является неограниченной историей. Отказ capacity/overlap не меняет проект.
 
-Copy/cut/paste — однотипная группа одной дорожки. Multi-track/mixed-kind groups,
-групповой MIDI drag/nudge/Delete, настоящий media pool, nondestructive MIDI trim,
-MIDI split через ноту, ripple/range/slip/stretch/glue пока не реализованы.
+Copy/cut/paste — однотипная группа одной дорожки. Смешанные clipboard-группы,
+настоящий media pool, nondestructive MIDI trim, ripple/range/slip/stretch/glue
+пока не реализованы. Mixed drag/nudge/Delete/duplicate и MIDI split через ноту
+добавлены в [следующем срезе](arrangement-mixed-groups.md).
 Не добавляются притворные fallback-операции с частичным commit.
 
 ## Проверки и повторное использование

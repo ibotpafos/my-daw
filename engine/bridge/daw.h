@@ -740,6 +740,21 @@ int daw_move_midi_clip_to_track(daw_session*, uint64_t source_track, uint32_t so
  * Commit validates the entire batch before creating one revision/Undo entry. */
 int daw_preview_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision,daw_workflow_change* changes,uint32_t capacity,uint32_t* change_count,uint64_t* after_revision);
 int daw_commit_workflow(daw_session*,const daw_workflow_operation* operations,uint32_t operation_count,uint64_t expected_revision);
+/* Atomic mixed audio/MIDI selection editing. References name the expected
+ * revision, not durable clip IDs. 1..256 refs, no duplicates. kind: 1 audio/2 MIDI.
+ * All clips use one signed time delta and one signed offset in project track order.
+ * DELETE requires both offsets to be zero. Invalid targets/overlaps/budgets reject
+ * the ENTIRE command without changing project, Undo or the value clipboard. */
+#define DAW_CLIP_SELECTION_REF_VERSION 1u
+enum { DAW_CLIP_SELECTION_MOVE=1, DAW_CLIP_SELECTION_COPY=2, DAW_CLIP_SELECTION_DELETE=3 };
+typedef struct daw_clip_selection_ref {
+    uint32_t struct_size, version;
+    uint64_t track_id;
+    uint32_t clip_index, kind;
+} daw_clip_selection_ref;
+int daw_edit_clip_selection(daw_session*,const daw_clip_selection_ref* clips,uint32_t count,
+                            uint32_t action,int64_t delta_frames,int32_t track_offset,
+                            uint64_t expected_revision);
 /* Built-in vocal.prepare action. selected_track_ids order defines Lead then Doubles.
  * Preview may be queried with items=NULL/capacity=0. Commit recomputes the same
  * deterministic pre-fader analysis against expected_revision. */

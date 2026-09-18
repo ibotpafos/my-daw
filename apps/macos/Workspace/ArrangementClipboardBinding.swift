@@ -38,3 +38,44 @@ extension DraftApp {
         return editor.items.contains { $0.key.track == track }
     }
 }
+
+
+extension DraftApp {
+    /// All three edit-menu actions use the same selection and atomic command
+    /// as keyboard/drag editing. Never silently reinterpret MIDI as audio.
+    func arrangementMenuSelection() -> (ArrangementEditingController, ArrangementEditingController.Lane,
+                                         [ArrangementEditingController.Item])? {
+        guard !isEditingText, !isRecording, !midiTakeArmed,
+              automationGesture == nil, pluginParameterGesture == nil,
+              let editor = window.arrangementEditing as? ArrangementEditingController,
+              editor.gesture == nil, editor.documentID == midiDocumentID,
+              editor.projectionRevision == editor.currentRevision(),
+              let track = inspectorTrackID ?? selectedMixerID,
+              let lane = editor.lanes.first(where: { $0.track == track }) else { return nil }
+        if editor.focusTrack == track, !editor.selection.isEmpty {
+            let group = editor.items.filter { editor.selection.contains($0.key) }
+            guard !group.isEmpty, group.count <= 256 else { return nil }
+            return (editor, lane, group)
+        }
+        guard let kind = lane.kind else { return nil }
+        let index = kind == .midi ? (midiClipIndex ?? 0) : (selectedClips[track] ?? 0)
+        guard let item = editor.items.first(where: {
+            $0.key.track == track && $0.key.kind == kind && $0.key.index == index
+        }) else { return nil }
+        return (editor, lane, [item])
+    }
+    func canEditArrangementSelection(_ action: Selector?) -> Bool {
+        guard let (_, _, group) = arrangementMenuSelection() else { return false }
+        if action == #selector(menuClipSplit) {
+            return group.count == 1 && playheadFrame > group[0].bounds.start && playheadFrame < group[0].bounds.end
+        }
+        return true
+    }
+    func editArrangementSelection(_ action: Selector) {
+        guard let (editor, lane, group) = arrangementMenuSelection() else { return }
+        editor.selection = Set(group.map(\.key)); editor.focus(lane); editor.syncSelection()
+        if action == #selector(menuClipDuplicate) { editor.duplicateSelection() }
+        else if action == #selector(menuClipDelete) { editor.deleteSelection() }
+        else if action == #selector(menuClipSplit), group.count == 1 { editor.split(group[0], at: playheadFrame) }
+    }
+}

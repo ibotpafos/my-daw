@@ -67,24 +67,12 @@ extension ArrangementEditingController {
                 return daw_add_midi_clip(app.session, g.lane.track, &clip, nil, 0, revision)
             }
         case .move:
-            guard g.dragged, let primary = g.primary, !g.proposed.isEmpty else { return }
-            if g.items.count > 1 {
-                guard !g.copy, g.target == g.lane.track,
-                      g.items.allSatisfy({ $0.key.kind == .audio && $0.key.track == g.lane.track }) else {
-                    message("Групповой перенос пока доступен для аудиоклипов внутри одной дорожки. Другие группы не изменены."); return
-                }
-                let delta = Int64(g.proposed[0].start) - Int64(g.items[0].bounds.start)
-                guard delta != 0 else { return }
-                let restoring = zip(g.items, g.proposed).map { ($0.0.key.track, $0.0.key.kind, $0.1) }
-                perform(expected: g.revision, restoring: restoring) { app, revision in
-                    let indices = g.items.map { UInt32($0.key.index) }
-                    return indices.withUnsafeBufferPointer { daw_nudge_clips(app.session, g.lane.track, $0.baseAddress, UInt32($0.count), delta, revision) }
-                }
-            } else {
-                guard let moved = g.proposed.first,
-                      g.copy || g.target != primary.key.track || moved.start != primary.bounds.start else { return }
-                transfer(primary, target: g.target, start: moved.start, copy: g.copy, expected: g.revision)
-            }
+            guard g.dragged, let moved = g.proposed.first, let original = g.items.first,
+                  let source = lanes.firstIndex(where: { $0.track == g.lane.track }),
+                  let target = lanes.firstIndex(where: { $0.track == g.target }) else { return }
+            let delta = Int64(moved.start) - Int64(original.bounds.start)
+            editSelection(g.items, action: g.copy ? UInt32(DAW_CLIP_SELECTION_COPY) : UInt32(DAW_CLIP_SELECTION_MOVE),
+                          delta: delta, trackOffset: target - source, expected: g.revision)
         case .trimLeft, .trimRight, .fadeLeft, .fadeRight:
             guard g.dragged, let primary = g.primary, let b = g.proposed.first, b != primary.bounds else { return }
             perform(expected: g.revision, restoring: [(primary.key.track, primary.key.kind, b)]) { app, revision in
@@ -97,28 +85,68 @@ extension ArrangementEditingController {
         }
     }
 
+    /// Map every source row by the same offset, including unselected rows.
+    /// Kept identical between the ghost preview and the commit adapter.
+    func groupDestinations(_ group: [Item], trackOffset: Int) -> [Lane]? {
+        var result: [Lane] = []
+        for item in group {
+            guard let source = lanes.firstIndex(where: { $0.track == item.key.track }) else { return nil }
+            let target = source + trackOffset
+            guard lanes.indices.contains(target) else { return nil }
+            result.append(lanes[target])
+        }
+        return result
+    }
+
+    @discardableResult
+    func editSelection(_ group: [Item], action: UInt32, delta: Int64 = 0, trackOffset: Int = 0,
+                       expected: UInt64?) -> Bool {
+        guard !group.isEmpty, group.count <= 256 else {
+            message("Выбери от 1 до 256 клипов для одной операции."); return false
+        }
+        let deleting = action == UInt32(DAW_CLIP_SELECTION_DELETE)
+        if action == UInt32(DAW_CLIP_SELECTION_MOVE), delta == 0, trackOffset == 0 { return false }
+        guard let offset = Int32(exactly: trackOffset),
+              let destinations = groupDestinations(group, trackOffset: trackOffset) else {
+            message("Вся группа должна помещаться в существующие дорожки. Ничего не изменено."); return false
+        }
+        var restoring: [(UInt64, ArrangementClipKey.Kind, ArrangementClipBounds)] = []
+        if !deleting {
+            guard ArrangementEditMath.moveDelta(delta, clips: group.map(\.bounds), limit: Self.limit) == delta else {
+                message("Вся группа должна помещаться в таймлайн. Ничего не изменено."); return false
+            }
+            restoring = zip(group, destinations).map { item, lane in
+                var bounds = item.bounds; bounds.start = UInt64(Int64(bounds.start) + delta)
+                return (lane.track, item.key.kind, bounds)
+            }
+        }
+        let refs: [daw_clip_selection_ref] = group.map { item in
+            var ref = daw_clip_selection_ref()
+            ref.struct_size = UInt32(MemoryLayout<daw_clip_selection_ref>.size)
+            ref.version = UInt32(DAW_CLIP_SELECTION_REF_VERSION)
+            ref.track_id = item.key.track; ref.clip_index = UInt32(item.key.index)
+            ref.kind = item.key.kind == .midi ? 2 : 1
+            return ref
+        }
+        let oldFocus = focusTrack
+        if !deleting, let index = group.firstIndex(where: { $0.key.track == focusTrack }) {
+            focusTrack = destinations[index].track
+        }
+        let success = perform(expected: expected, restoring: restoring) { app, revision in
+            refs.withUnsafeBufferPointer {
+                daw_edit_clip_selection(app.session, $0.baseAddress, UInt32($0.count), action, delta, offset, revision)
+            }
+        }
+        if !success { focusTrack = oldFocus }
+        return success
+    }
+
     func transfer(_ item: Item, target: UInt64, start: UInt64, copy: Bool, expected: UInt64) {
-        guard let targetLane = lanes.first(where: { $0.track == target }),
-              targetLane.kind == nil || targetLane.kind == item.key.kind else {
-            message("Выбери дорожку того же типа: аудио и MIDI не смешиваются в одной полосе."); return
-        }
-        guard start <= Self.limit, item.bounds.length <= Self.limit - start else {
-            message("Клип выходит за доступную длину проекта."); return
-        }
-        var moved = item.bounds; moved.start = start; focusTrack = target
-        perform(expected: expected, restoring: [(target, item.key.kind, moved)]) { app, revision in
-            let index = UInt32(item.key.index)
-            if item.key.kind == .midi {
-                if copy { return daw_copy_midi_clip_to_track(app.session, item.key.track, index, target, start, revision) }
-                return target == item.key.track ? daw_move_midi_clip(app.session, target, index, start, revision) :
-                    daw_move_midi_clip_to_track(app.session, item.key.track, index, target, start, revision)
-            }
-            if copy { return daw_copy_clip_to_track(app.session, item.key.track, index, target, start, revision) }
-            if target == item.key.track {
-                return daw_edit_clip_full(app.session, target, index, start, moved.offset, moved.length, moved.fadeIn, moved.fadeOut, revision)
-            }
-            return daw_move_clip_to_track(app.session, item.key.track, index, target, start, revision)
-        }
+        guard start <= Self.limit, item.bounds.start <= Self.limit,
+              let from = lanes.firstIndex(where: { $0.track == item.key.track }),
+              let to = lanes.firstIndex(where: { $0.track == target }) else { return }
+        editSelection([item], action: copy ? UInt32(DAW_CLIP_SELECTION_COPY) : UInt32(DAW_CLIP_SELECTION_MOVE),
+                      delta: Int64(start) - Int64(item.bounds.start), trackOffset: to - from, expected: expected)
     }
     func singleSelection() -> Item? {
         guard selection.count == 1 else {
@@ -143,19 +171,14 @@ extension ArrangementEditingController {
     }
     func deleteSelection() {
         let selected = items.filter { selection.contains($0.key) }
-        guard let first = selected.first else { return }
-        guard selected.allSatisfy({ $0.key.track == first.key.track && $0.key.kind == .audio }) || selected.count == 1 else {
-            message("Удаление группы пока доступно для аудиоклипов одной дорожки; другие группы не изменены."); return
-        }
-        perform(expected: projectionRevision) { app, revision in
-            if first.key.kind == .midi { return daw_remove_midi_clip(app.session, first.key.track, UInt32(first.key.index), revision) }
-            let indices = selected.map { UInt32($0.key.index) }
-            return indices.withUnsafeBufferPointer { daw_delete_clips(app.session, first.key.track, $0.baseAddress, UInt32($0.count), revision) }
-        }
+        guard !selected.isEmpty else { return }
+        editSelection(selected, action: UInt32(DAW_CLIP_SELECTION_DELETE), expected: projectionRevision)
     }
     func duplicateSelection() {
-        guard let item = singleSelection(), let revision = projectionRevision else { return }
-        transfer(item, target: item.key.track, start: item.bounds.end, copy: true, expected: revision)
+        let selected = items.filter { selection.contains($0.key) }
+        guard let start = selected.map(\.bounds.start).min(), let end = selected.map(\.bounds.end).max() else { return }
+        guard end > start, end - start <= UInt64(Int64.max) else { return }
+        editSelection(selected, action: UInt32(DAW_CLIP_SELECTION_COPY), delta: Int64(end - start), expected: projectionRevision)
     }
     func copySelection(cut: Bool) {
         guard let app, editable, let revision = currentRevision(), revision == projectionRevision,
@@ -197,15 +220,21 @@ extension ArrangementEditingController {
               lane.kind == nil || lane.kind == board.kind else {
             message("Вставь клипы на дорожку того же типа или пустую дорожку."); return
         }
-        let start = snapped(app.playheadFrame, flags: [])
+        let continuation = board.continuation
+        let start = continuation?.track == track && continuation?.frame == app.playheadFrame ?
+            app.playheadFrame : snapped(app.playheadFrame, flags: [])
         guard board.relativeBounds.allSatisfy({ $0.end <= Self.limit - min(Self.limit, start) }) else {
             message("Недостаточно места до конца таймлайна; буфер сохранён."); return
         }
         let restoring = board.relativeBounds.map { source -> (UInt64, ArrangementClipKey.Kind, ArrangementClipBounds) in
             var bounds = source; bounds.start += start; return (track, board.kind, bounds)
         }
-        perform(expected: projectionRevision, restoring: restoring) { app, revision in
+        if perform(expected: projectionRevision, restoring: restoring, { app, revision in
             daw_paste_clipboard(app.session, track, start, revision)
+        }) {
+            let end = start + (board.relativeBounds.map(\.end).max() ?? 0)
+            seekPlayhead(end)
+            var next = board; next.continuation = (track, end); clipboard = next
         }
     }
     func playableEnd() -> UInt64 {
@@ -242,6 +271,9 @@ extension ArrangementEditingController {
             // uncommitted preview before the responder chain executes them.
             if flags.contains(.command) { cancelGesture(); return false }
             return true
+        }
+        if flags == [.command, .shift], event.keyCode == 0 {
+            selection = Set(items.map(\.key)); syncSelection(); return true
         }
         if flags == [.command] {
             switch event.keyCode {
@@ -296,19 +328,7 @@ extension ArrangementEditingController {
         let quantum = max(1, app.gridSnap(atFrame: Int64(first.bounds.start)).quantum)
         let delta = ArrangementEditMath.moveDelta(direction * Int64(quantum), clips: group.map(\.bounds), limit: Self.limit)
         guard delta != 0 else { return }
-        if group.count == 1 {
-            guard let revision = projectionRevision else { return }
-            transfer(first, target: first.key.track, start: UInt64(Int64(first.bounds.start) + delta), copy: false, expected: revision)
-        } else if group.allSatisfy({ $0.key.kind == .audio && $0.key.track == first.key.track }) {
-            let restoring = group.map { item -> (UInt64, ArrangementClipKey.Kind, ArrangementClipBounds) in
-                var bounds = item.bounds; bounds.start = UInt64(Int64(bounds.start) + delta)
-                return (item.key.track, item.key.kind, bounds)
-            }
-            perform(expected: projectionRevision, restoring: restoring) { app, revision in
-                let indices = group.map { UInt32($0.key.index) }
-                return indices.withUnsafeBufferPointer { daw_nudge_clips(app.session, first.key.track, $0.baseAddress, UInt32($0.count), delta, revision) }
-            }
-        } else { message("Групповой сдвиг пока доступен для аудиоклипов одной дорожки.") }
+        editSelection(group, action: UInt32(DAW_CLIP_SELECTION_MOVE), delta: delta, expected: projectionRevision)
     }
     func seekPlayhead(_ frame: UInt64) {
         guard let app else { return }

@@ -36,6 +36,7 @@ final class ArrangementEditingController: ArrangementWindowEditing {
         let kind: ArrangementClipKey.Kind
         /// Geometry is UI metadata only. The session owns the immutable content.
         let relativeBounds: [ArrangementClipBounds]
+        var continuation: (track: UInt64, frame: UInt64)? = nil
     }
     weak var app: DraftApp?
     weak var toolbar: ArrangementToolBar?
@@ -368,10 +369,15 @@ final class ArrangementEditingController: ArrangementWindowEditing {
             let delta = ArrangementEditMath.moveDelta(Int64(snappedStart) - Int64(primary.bounds.start),
                 clips: g.items.map(\.bounds), limit: Self.limit)
             g.proposed = g.items.map { var b = $0.bounds; b.start = UInt64(Int64(b.start) + delta); return b }
-            overlay.rectangles = g.proposed.enumerated().compactMap { index, b in
-                let source = g.items[index]
-                let lane = g.items.count == 1 ? targetLane : lanes.first { $0.track == source.key.track }
-                return lane.map { $0.view.convert(rect(b, in: $0), to: overlay) }
+            if let from = lanes.firstIndex(where: { $0.track == g.lane.track }),
+               let to = lanes.firstIndex(where: { $0.track == targetLane.track }),
+               let destinations = groupDestinations(g.items, trackOffset: to - from) {
+                overlay.rectangles = zip(g.proposed, destinations).map { bounds, lane in
+                    lane.view.convert(rect(bounds, in: lane), to: overlay)
+                }
+                (g.copy ? NSCursor.dragCopy : NSCursor.closedHand).set()
+            } else {
+                overlay.rectangles = []; NSCursor.operationNotAllowed.set()
             }
         case .trimLeft, .trimRight, .fadeLeft, .fadeRight:
             guard let primary = g.primary else { return }
