@@ -28,6 +28,13 @@ typedef struct {
     uint32_t struct_size, version, input_channel, output_left, output_right;
     char input_uid[481], output_uid[481];
 } daw_audio_device_config;
+enum { DAW_RECORD_INPUT_CONFIG_VERSION = 1 };
+/* Recording source is machine/session configuration, not musical project
+ * state. channels is 1 (mono) or 2 (stereo). left/right are zero-based
+ * hardware input channels; right is ignored for mono. */
+typedef struct {
+    uint32_t struct_size, version, channels, left, right;
+} daw_record_input_config;
 /* Owner-thread, read-only hardware discovery. Refresh atomically replaces the
  * enumeration snapshot used by get; indices are not persistent identities.
  * Non-Apple: empty catalog. No microphone is opened and no TCC prompt requested. */
@@ -41,6 +48,8 @@ int daw_get_audio_device(daw_session*, uint32_t index, daw_audio_device*);
  * Selection does not change hardware rate/buffer; use the explicit hardware job. */
 int daw_set_audio_device_config(daw_session*, const daw_audio_device_config*);
 int daw_get_audio_device_config(daw_session*, daw_audio_device_config*);
+int daw_set_record_input_config(daw_session*, const daw_record_input_config*);
+int daw_get_record_input_config(daw_session*, daw_record_input_config*);
 
 /* Hardware format controls v1: explicit UID, 48 kHz project target, buffer
  * 1..4096 within HAL bounds. Selection/preferences/project data are unchanged.
