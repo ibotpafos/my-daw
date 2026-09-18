@@ -15,7 +15,9 @@ struct AudioDeviceChoice {
 final class AudioDeviceSettingsController: NSWindowController {
     let inputDevice = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputDevice = NSPopUpButton(frame: .zero, pullsDown: false)
+    let recordingMode = NSPopUpButton(frame: .zero, pullsDown: false)
     let inputChannel = NSPopUpButton(frame: .zero, pullsDown: false)
+    let inputRight = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputLeft = NSPopUpButton(frame: .zero, pullsDown: false)
     let outputRight = NSPopUpButton(frame: .zero, pullsDown: false)
     let inputInfo = NSTextField(wrappingLabelWithString: "")
@@ -64,8 +66,11 @@ final class AudioDeviceSettingsController: NSWindowController {
             root.addArrangedSubview(line)
             line.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -40).isActive = true
         }
+        recordingMode.addItem(withTitle: "Mono"); recordingMode.lastItem?.tag = 1
+        recordingMode.addItem(withTitle: "Stereo"); recordingMode.lastItem?.tag = 2
         row("Устройство входа", [inputDevice])
-        row("Mono-вход", [inputChannel])
+        row("Режим записи", [recordingMode])
+        row("Вход L / R", [inputChannel, inputRight])
         let inputState = NSStackView(views: [inputInfo, inputFormat])
         inputInfo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         root.addArrangedSubview(inputState)
@@ -77,7 +82,7 @@ final class AudioDeviceSettingsController: NSWindowController {
         root.addArrangedSubview(outputState)
         outputState.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -40).isActive = true
         let note = NSTextField(wrappingLabelWithString:
-            "Проект: 48 кГц. Частота и буфер ниже — реальные настройки устройства, а не измеренная задержка. Изменить их можно кнопками «Формат входа/выхода» при остановленном движке. Для loop-записи вход и выход должны принадлежать одному устройству.")
+            "Проект: 48 кГц. Частота и буфер ниже — реальные настройки устройства, а не измеренная задержка. Изменить их можно кнопками «Формат входа/выхода» при остановленном движке. Для записи вход и выход должны принадлежать одному устройству или заранее настроенному aggregate. Stereo пишет два выбранных входа без суммирования.")
         note.textColor = .secondaryLabelColor
         note.font = .systemFont(ofSize: 11)
         root.addArrangedSubview(note)
@@ -91,7 +96,9 @@ final class AudioDeviceSettingsController: NSWindowController {
         }
         status.setAccessibilityLabel("Результат настройки аудио")
         for (control, title) in [(inputDevice, "Устройство аудиовхода"), (outputDevice, "Устройство аудиовыхода"),
-                                 (inputChannel, "Канал монофонической записи"), (outputLeft, "Левый канал мастера"),
+                                 (recordingMode, "Режим записи Mono или Stereo"),
+                                 (inputChannel, "Левый или монофонический канал записи"),
+                                 (inputRight, "Правый канал стереозаписи"), (outputLeft, "Левый канал мастера"),
                                  (outputRight, "Правый канал мастера")] {
             control.target = self
             control.action = #selector(selectionChanged(_:))
@@ -160,6 +167,10 @@ final class AudioDeviceSettingsController: NSWindowController {
         let input = choice(uid: draft.inputUID, input: true)
         let output = choice(uid: draft.outputUID, input: false)
         populateChannels(inputChannel, count: input?.inputs ?? 0, selection: draft.inputChannel)
+        populateChannels(inputRight, count: input?.inputs ?? 0, selection: draft.inputRight)
+        recordingMode.selectItem(withTag: Int(draft.recordingChannels))
+        recordingMode.item(withTag: 2)?.isEnabled = (input?.inputs ?? 0) >= 2
+        inputRight.isEnabled = draft.recordingChannels == 2
         populateChannels(outputLeft, count: output?.outputs ?? 0, selection: draft.outputLeft)
         populateChannels(outputRight, count: output?.outputs ?? 0, selection: draft.outputRight)
         inputFormat.isEnabled = input != nil && hardwareService != nil
@@ -177,11 +188,17 @@ final class AudioDeviceSettingsController: NSWindowController {
         if sender === inputDevice {
             draft.inputUID = sender.selectedItem?.representedObject as? String ?? draft.inputUID
             draft.inputChannel = 0
+            draft.inputRight = 1
+            draft.recordingChannels = 1
         } else if sender === outputDevice {
             draft.outputUID = sender.selectedItem?.representedObject as? String ?? draft.outputUID
             draft.outputLeft = 0; draft.outputRight = 1
+        } else if sender === recordingMode, let selected = sender.selectedItem,
+                  let channels = UInt32(exactly: selected.tag) {
+            draft.recordingChannels = channels
         } else if let selected = sender.selectedItem, let channel = UInt32(exactly: selected.tag) {
             if sender === inputChannel { draft.inputChannel = channel }
+            if sender === inputRight { draft.inputRight = channel }
             if sender === outputLeft { draft.outputLeft = channel }
             if sender === outputRight { draft.outputRight = channel }
         }
@@ -221,7 +238,11 @@ extension AudioDevicePreferences {
         var value = daw_audio_device_config()
         value.struct_size = UInt32(MemoryLayout<daw_audio_device_config>.size)
         value.version = UInt32(DAW_AUDIO_DEVICE_CONFIG_VERSION)
-        value.input_channel = inputChannel; value.output_left = outputLeft; value.output_right = outputRight
+        value.input_channel = inputChannel
+        value.input_right = inputRight
+        value.recording_channels = recordingChannels
+        value.output_left = outputLeft
+        value.output_right = outputRight
         withUnsafeMutableBytes(of: &value.input_uid) { $0.copyBytes(from: inputUID.utf8CString.map { UInt8(bitPattern: $0) }) }
         withUnsafeMutableBytes(of: &value.output_uid) { $0.copyBytes(from: outputUID.utf8CString.map { UInt8(bitPattern: $0) }) }
         return value
