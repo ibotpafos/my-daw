@@ -43,6 +43,12 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/test-mix-export-ui.sh 2>&1 | tee build/workspace-ui/mix-export.log
+      - name: Preserve native crash symbols
+        if: ${{ !cancelled() }}
+        run: |
+          if test -f build/mix-export-ui/export-tests && test -d build/mix-export-ui/export-tests.dSYM; then
+            tar -czf build/mix-export-ui/export-symbols.tar.gz -C build/mix-export-ui export-tests export-tests.dSYM
+          fi
       - name: Verify and package application
         run: |
           APP_PATH="$(sed -n 's/^Built //p' build/workspace-ui/build.log | tail -1)"
@@ -64,6 +70,8 @@ jobs:
             build/workspace-ui/*.txt
             build/workspace-ui/source.zip
             build/recording-ui/*.png
+            build/mix-export-ui/diagnostics/
+            build/mix-export-ui/export-symbols.tar.gz
             build/mix-export-ui/proof.json
             build/mix-export-ui/midi-only.wav
           if-no-files-found: error
