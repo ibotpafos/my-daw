@@ -243,7 +243,8 @@ class Renderer {
   // published graph latency and is tracked independently for transport UI.
   uint64_t cursor = 0, length = 0, loopBegin = 0, loopEnd = 0, processTime = 0,
            transportStart = 0, renderedInputFrames = 0;
-  bool looping = false;
+  bool looping = false, recordingTimeline = false;
+  void mixRecordingMetronome(float*, float*, uint32_t) noexcept;
   std::atomic<uint64_t> touchPluginID{0};
   std::atomic<uint32_t> touchParameterID{0};
   std::atomic<float> touchNormalized{0};
@@ -350,6 +351,6 @@ public:
   }
   // Offline-only tail drain. It advances the prepared track/bus/master
   // graph and its PDC edges with silence; it never advances transport.
-  void renderTail(float *left, float *right, uint32_t frames) noexcept;
+  void renderTail(float *left, float *right, uint32_t frames, bool recordingClick = false) noexcept;
 };
 } // namespace daw

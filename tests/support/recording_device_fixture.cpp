@@ -7,11 +7,15 @@ namespace {
 class DeviceFixture;
 DeviceFixture* current = nullptr;
 int failure = 0;
+daw::RecordingLatency fixtureLatency;
+uint32_t fixtureSeparation = 0;
 class DeviceFixture final : public daw::Duplex {
     daw::State state_;
     uint64_t capacity_, start_, loopStart_, loopEnd_, preroll_, callbacks_ = 0, clockFrames_ = 0;
     std::string path_;
     bool monitor_, active_ = false;
+    daw::RecordingLatency latency_ = fixtureLatency;
+    uint32_t separation_ = fixtureSeparation;
     std::unique_ptr<daw::DuplexCapture> capture_;
 public:
     DeviceFixture(const daw::State& state, uint64_t capacity, const std::string& path,
@@ -22,7 +26,7 @@ public:
     void start() override {
         if (failure == 1) throw daw::Error("Test device refused to start");
         if (current) throw daw::Error("Test already has an active input device");
-        capture_ = std::make_unique<daw::DuplexCapture>(renderer, state_, capacity_, path_, start_, loopStart_, loopEnd_, preroll_, monitor_);
+        capture_ = std::make_unique<daw::DuplexCapture>(renderer, state_, capacity_, path_, start_, loopStart_, loopEnd_, preroll_, monitor_, latency_);
         renderer.playing = true; active_ = true; current = this;
     }
     void pump(const float* input, uint32_t frames, float* left, float* right) {
@@ -30,9 +34,18 @@ public:
         daw::CaptureTimestamp time{double(clockFrames_), clockFrames_ + 1, true, true};
         if (failure == 3) time.sampleTime += 1; // one missing sample, not device loss
         if (failure == 4) time.sampleTimeValid = false;
-        capture_->process(input, left, right, frames, time);
+        daw::CaptureTimestamp inputTime{};
+        if (latency_.enabled) {
+            inputTime = {double(clockFrames_), clockFrames_ + 100000, true, true};
+            time.sampleTime += separation_;
+            time.hostTime = clockFrames_ + 100000 + separation_;
+            if (failure == 5) inputTime.sampleTimeValid = false;
+        }
+        capture_->process(input, left, right, frames, time, inputTime);
         clockFrames_ += frames; ++callbacks_;
     }
+    void requestStop() noexcept override { if (capture_) capture_->requestStop(); }
+    daw::RecordingTimingInfo timing() const noexcept override { return capture_ ? capture_->timing() : daw::RecordingTimingInfo{}; }
     std::shared_ptr<const daw::Clip> stop() override {
         active_ = false; renderer.playing = false;
         return capture_->finish();
@@ -67,3 +80,20 @@ extern "C" int recording_fixture_pump(const float* input, uint32_t frames, float
 }
 extern "C" void recording_fixture_failure(int mode) { failure = mode; }
 extern "C" int recording_fixture_active() { return current != nullptr; }
+
+extern "C" int recording_fixture_latency(uint32_t separation, uint32_t input, uint32_t output) {
+    if (current || separation > 96000 || input > 48000 || output > 48000) return 1;
+    fixtureLatency = {};
+    fixtureLatency.enabled = true;
+    fixtureLatency.deviceID = 7; fixtureLatency.bufferFrames = 256;
+    fixtureLatency.inputStreamID = 11; fixtureLatency.outputLeftStreamID = fixtureLatency.outputRightStreamID = 12;
+    fixtureLatency.inputDevice = input; fixtureLatency.outputDevice = output;
+    fixtureLatency.inputSafety = 17; fixtureLatency.outputSafety = 29;
+    fixtureLatency.hostTicksPerSecond = 48000;
+    fixtureSeparation = separation;
+    return 0;
+}
+extern "C" int recording_fixture_no_latency() {
+    if (current) return 1;
+    fixtureLatency = {}; fixtureSeparation = 0; return 0;
+}

@@ -12,6 +12,8 @@ public:
     Renderer renderer;
     virtual ~Duplex() = default;
     virtual void start() = 0;
+    virtual void requestStop() noexcept {}
+    virtual RecordingTimingInfo timing() const noexcept { return {}; }
     virtual std::shared_ptr<const Clip> stop() = 0;
     virtual void cancel() noexcept = 0;
     virtual void markStalled() noexcept = 0;
