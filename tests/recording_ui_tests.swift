@@ -125,5 +125,30 @@ func runWorkspaceIntegrationTests() {
     expect(!app.isRecording && recording_fixture_active() == 0, "failed start never claims success")
     expect(snapshot().revision == beforeFailure, "failed start preserves project")
     recording_fixture_failure(0)
+    // Timestamp failure through actual application controls: no damaged take
+    // is committed whether status polling or the user's Stop handles it first.
+    for stopFirst in [false, true] {
+        app.rangeStart = 1000
+        let beforeClockFailure = snapshot()
+        app.beginRecording(); _ = pump(64)
+        let clockRecovery = app.activeRecordingURL!
+        let input = [Float](repeating: 0.75, count: 64)
+        var left = [Float](repeating: 99, count: 64), right = left
+        expect(recording_fixture_pump_timestamped(input, 64, &left, &right, 128, 129, 3) != 0, "inject an actual sample gap")
+        expect(left.allSatisfy { $0 == 0 } && left == right, "fault immediately silences output")
+        var clock = daw_recording_clock()
+        clock.struct_size = UInt32(MemoryLayout<daw_recording_clock>.size)
+        clock.version = UInt32(DAW_RECORDING_CLOCK_VERSION)
+        expect(daw_get_recording_clock(app.session, &clock) == 0 && clock.fault == 2 && clock.validated_frames == 64,
+               "production ABI publishes clock fault without mutation")
+        if stopFirst { app.stopButton.performClick(nil) } else { app.pollTransport() }
+        expect(!app.isRecording && recording_fixture_active() == 0, "clock failure ends device lifetime")
+        expect(snapshot().revision == beforeClockFailure.revision && snapshot().track_count == beforeClockFailure.track_count,
+               "clock failure does not commit compressed audio or add Undo")
+        expect(FileManager.default.fileExists(atPath: clockRecovery.path), "confirmed prefix survives Stop/status failure")
+        expect(app.transportLabel.stringValue.contains("восстановления"), "non-modal recovery explanation")
+        expect(app.recordButton.isEnabled, "record controls recover after failure")
+        if stopFirst { screenshot("recording-clock-failure") }
+    }
     print("Recording native UI: \(checks) checks passed (simulated device, real AppKit/bridge/writer)")
 }

@@ -17,6 +17,22 @@ extern "C" {
  * Snapshot sizes must equal sizeof(struct). All mutations use expected_revision.
  */
 typedef struct daw_session daw_session;
+/* Recording clock diagnostics v1. Read-only, no polling of HAL or I/O.
+ * validated_frames includes pre-roll and the full validated device block; it
+ * is NOT the count of samples committed to disk. Anchors describe the first
+ * valid callback, not physical ADC/DAC timestamps or measured round-trip delay.
+ * initial_flags: bit0 sample valid, bit1 host valid (raw platform ticks).
+ * fault: 0 none, 1 invalid timestamp, 2 sample gap/repeat, 3 host reversal/repeat.
+ * Fault sample values are sanitized; meaningful only when fault != 0. An idle
+ * session has a zero report. Session's owner thread only. Never mutates Undo. */
+enum { DAW_RECORDING_CLOCK_VERSION = 1 };
+typedef struct {
+    uint32_t struct_size, version, initial_flags, fault;
+    uint64_t validated_frames, first_host_time;
+    double first_sample_time, expected_sample_time, observed_sample_time;
+} daw_recording_clock;
+int daw_get_recording_clock(daw_session*, daw_recording_clock*);
+
 enum { DAW_AUDIO_DEVICE_VERSION = 1, DAW_AUDIO_DEVICE_CONFIG_VERSION = 1 };
 typedef struct {
     uint32_t struct_size, version, device_id, input_channels, output_channels, buffer_frames;

@@ -24,7 +24,7 @@ void DuplexCapture::process(const float* input, float* left, float* right, uint3
     if (!left || !right) return; // HAL adapter validates its actual buffer list.
     std::fill_n(left, frames, 0.0f);
     std::fill_n(right, frames, 0.0f);
-    if (!input || !frames || frames > maximumSlice) return;
+    if (!input || !frames || frames > maximumSlice || clock_.fault() != CaptureClockFault::none) return;
     const auto elapsed = elapsed_.load(std::memory_order_relaxed);
     const auto remaining = lead_ + capacity_ - elapsed;
     const auto count = static_cast<uint32_t>(std::min<uint64_t>(frames, remaining));
@@ -54,6 +54,23 @@ void DuplexCapture::process(const float* input, float* left, float* right, uint3
     // Hitting a deliberate capture limit is not a dropped callback/ring xrun.
     if (elapsed + count == lead_ + capacity_) renderer_.playing.store(false, std::memory_order_release);
 }
+bool DuplexCapture::processTimed(const CaptureTimestamp& time, const float* input,
+                                  float* left, float* right, uint32_t frames) noexcept {
+    // Pointers and storage sizes belong to the adapter. Do not write an invalid
+    // span; known valid HAL buffers are silenced by the adapter on any failure.
+    if (!input || !left || !right || !frames || frames > maximumSlice) return false;
+    if (progress().complete && clock_.fault() == CaptureClockFault::none) {
+        std::fill_n(left, frames, 0.0f); std::fill_n(right, frames, 0.0f);
+        return true;
+    }
+    if (!clock_.accept(time, frames)) {
+        std::fill_n(left, frames, 0.0f); std::fill_n(right, frames, 0.0f);
+        renderer_.playing.store(false, std::memory_order_release);
+        return false;
+    }
+    process(input, left, right, frames);
+    return true;
+}
 DuplexCaptureProgress DuplexCapture::progress() const noexcept {
     const auto elapsed = elapsed_.load(std::memory_order_acquire);
     DuplexCaptureProgress result{capacity_, elapsed < lead_ ? lead_ - elapsed : 0, start_, elapsed == lead_ + capacity_};
@@ -64,6 +81,8 @@ DuplexCaptureProgress DuplexCapture::progress() const noexcept {
 }
 std::shared_ptr<const Clip> DuplexCapture::finish() {
     writer_->stopPreserving();
+    if (clock_.fault() != CaptureClockFault::none)
+        throw Error("Recording clock discontinuity: recording stopped; the confirmed prefix remains recoverable");
     if (!writer_->frames()) return {};
     return writer_->finish();
 }

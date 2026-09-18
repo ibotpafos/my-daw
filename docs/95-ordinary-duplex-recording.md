@@ -113,3 +113,6 @@ Undo/storage/recovery и AppKit controls. Новых библиотек и со�
 кроме ограниченного UX-перехода громкости direct MON.
 Первичные системные контракты: [Apple TN2091](https://developer.apple.com/library/archive/technotes/tn2091/_index.html)
 и [AudioOutputUnitStop](https://developer.apple.com/documentation/audiotoolbox/audiooutputunitstop(_:)).
+
+Контроль разрывов callback timestamps и отказ commit после сбоя описаны в
+[первом срезе P0-04](96-recording-clock.md); он не подменяет аппаратную компенсацию.

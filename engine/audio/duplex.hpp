@@ -19,6 +19,7 @@ public:
     virtual uint64_t frames() const noexcept = 0;
     virtual uint64_t callbacks() const noexcept = 0;
     virtual bool overflowed() const noexcept = 0;
+    virtual CaptureClockReport clockReport() const noexcept { return {}; }
     virtual DuplexCaptureProgress progress() const noexcept = 0;
     virtual void setMonitor(bool on) noexcept = 0;
     virtual void discardRecovery() noexcept = 0;

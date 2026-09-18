@@ -1,5 +1,6 @@
 #pragma once
 #include "audio/recording.hpp"
+#include "audio/capture_clock.hpp"
 #include "audio/renderer.hpp"
 
 namespace daw {
@@ -11,6 +12,7 @@ struct DuplexCaptureProgress {
 // stop/quiesce its callback before finish/cancel/destruction. One producer;
 // only the monitor target and published progress are accessed concurrently.
 class DuplexCapture {
+    CaptureClock clock_;
     Renderer& renderer_;
     std::unique_ptr<RecordingWriter> writer_;
     uint64_t start_ = 0, capacity_ = 0, lead_ = 0, loopStart_ = 0, loopEnd_ = 0;
@@ -24,6 +26,11 @@ public:
                   uint64_t preroll, bool monitor);
     // Valid buffers, frames <= maximumSlice. Allocation/file I/O-free.
     void process(const float* input, float* left, float* right, uint32_t frames) noexcept;
+    // Platform adapters must use this entry point. A broken clock silences
+    // output and latches a failure before any of that block reaches the writer.
+    bool processTimed(const CaptureTimestamp&, const float* input, float* left,
+                      float* right, uint32_t frames) noexcept;
+    CaptureClockReport clockReport() const noexcept { return clock_.report(); }
     void setMonitor(bool on) noexcept { monitor_.store(on, std::memory_order_release); }
     DuplexCaptureProgress progress() const noexcept;
     uint64_t frames() const noexcept { return writer_->frames(); }

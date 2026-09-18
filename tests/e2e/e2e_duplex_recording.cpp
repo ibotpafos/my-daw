@@ -31,6 +31,86 @@ static float fader(uint64_t processed) {
 int main() {
     try {
         TempRoot root("duplex");
+        // Clock query is read-only, versioned and validates before touching caller output.
+        {
+            Bridge session; auto* s = session.get();
+            auto clock = abi<daw_recording_clock>(); clock.version = DAW_RECORDING_CLOCK_VERSION;
+            CHECK_OK(s, daw_get_recording_clock(s, &clock));
+            CHECK(clock.initial_flags == 0 && clock.fault == 0 && clock.validated_frames == 0);
+            CHECK_REJ(s, daw_get_recording_clock(s, nullptr));
+            clock.version = 99; const auto unchanged = clock;
+            CHECK_REJ(s, daw_get_recording_clock(s, &clock));
+            CHECK(std::memcmp(&clock, &unchanged, sizeof(clock)) == 0);
+            clock.version = DAW_RECORDING_CLOCK_VERSION; --clock.struct_size;
+            CHECK_REJ(s, daw_get_recording_clock(s, &clock));
+            CHECK(daw_get_recording_clock(nullptr, &clock) != 0);
+            CHECK(rev(s) == 0 && snapshotOf(s).track_count == 0);
+        }
+        // A later callback must never be pasted over a missing block. Includes
+        // direct Stop before any status poll and faults during pre-roll/loops.
+        for (int route = 0; route < 4; ++route) {
+            Bridge session; auto* s = session.get();
+            const bool preroll = route == 2, loop = route == 3;
+            const auto raw = (root / ("clock-" + std::to_string(route) + ".mydawtake")).string();
+            if (loop) {
+                const auto bed = root / "clock-bed.wav";
+                writeWavFixture(bed, std::vector<float>(1024 * 2, 0.125f), kProjectRate, 2, "f32");
+                CHECK_OK(s, daw_import_wav(s, bed.c_str(), "Bed", rev(s)));
+                CHECK_OK(s, daw_set_loop(s, 1, 100, 356));
+            }
+            CHECK_OK(s, daw_set_record_preroll(s, preroll ? 1000 : 0));
+            const auto before = dumpOf(s); const auto beforeUndo = snapshotOf(s).can_undo;
+            if (loop) CHECK_OK(s, daw_record_start_take(s, 1, 100, raw.c_str()));
+            else CHECK_OK(s, daw_record_start(s, 1000, raw.c_str()));
+            pump(0.25f, 64);
+            auto clock = abi<daw_recording_clock>(); clock.version = DAW_RECORDING_CLOCK_VERSION;
+            CHECK_OK(s, daw_get_recording_clock(s, &clock));
+            CHECK(clock.validated_frames == 64 && clock.initial_flags == 3 && clock.first_sample_time == 0 && clock.first_host_time == 1);
+            std::array<float, 64> input, left, right; input.fill(0.75f); left.fill(99); right.fill(99);
+            const double unexpected = route == 1 ? 0 : 128;
+            CHECK(recording_fixture_pump_timestamped(input.data(), 64, left.data(), right.data(), unexpected, 129, 3) != 0);
+            CHECK(std::all_of(left.begin(), left.end(), [](float v) { return v == 0; }) && left == right);
+            CHECK_OK(s, daw_get_recording_clock(s, &clock));
+            CHECK(clock.fault == 2 && clock.expected_sample_time == 64 && clock.observed_sample_time == unexpected && clock.validated_frames == 64);
+            // Correct timestamps after a fault do not restart capture silently.
+            CHECK(recording_fixture_pump_timestamped(input.data(), 64, left.data(), right.data(), 64, 130, 3) != 0);
+            if (route == 1 || loop) {
+                auto status = abi<daw_recording>();
+                CHECK_REJ(s, daw_get_recording(s, &status));
+                CHECK_OK(s, daw_record_cancel(s));
+            } else {
+                CHECK_REJ(s, daw_record_stop(s, "Must not commit a compressed recording", rev(s)));
+            }
+            CHECK(!recording_fixture_active() && sameContent(dumpOf(s), before) && snapshotOf(s).can_undo == beforeUndo);
+            if (preroll) CHECK(!std::filesystem::exists(raw)); // no confirmed PCM yet
+            else {
+                CHECK(std::filesystem::exists(raw));
+                // Independent recovery-file oracle, not the engine's own reader.
+                std::ifstream stream(raw, std::ios::binary);
+                std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(stream)), {});
+                CHECK(bytes.size() == 64 + 64 * 2 * sizeof(float));
+                auto u64 = [&](size_t offset) {
+                    uint64_t value = 0;
+                    for (unsigned i = 0; i < 8; ++i) value |= uint64_t(bytes[offset + i]) << (i * 8);
+                    return value;
+                };
+                CHECK(u64(24) == (loop ? 100 : 1000) && u64(32) == 64);
+                for (size_t f = 64; f < bytes.size(); f += sizeof(float)) {
+                    float value; std::memcpy(&value, bytes.data() + f, sizeof(float)); CHECK(value == 0.25f);
+                }
+                CHECK_OK(s, daw_recover_take(s, raw.c_str(), "Confirmed prefix", rev(s)));
+                CHECK(rev(s) == before.revision + 1);
+                CHECK_OK(s, daw_undo(s, rev(s))); CHECK(sameContent(dumpOf(s), before));
+                CHECK_OK(s, daw_redo(s, rev(s)));
+                saveDraftAndWait(s, root / "clock-recovery.mydaw");
+                Bridge reopened; CHECK_OK(reopened.get(), daw_open_draft(reopened.get(), (root / "clock-recovery.mydaw").c_str()));
+                CHECK(sameContent(dumpOf(reopened.get()), dumpOf(s)));
+            }
+            CHECK_OK(s, daw_set_record_preroll(s, 0));
+            CHECK_OK(s, daw_record_start(s, 0, (root / "clock-restart.mydawtake").c_str()));
+            CHECK_OK(s, daw_get_recording_clock(s, &clock)); CHECK(clock.initial_flags == 0 && clock.fault == 0);
+            pump(0.5f, 32); CHECK_OK(s, daw_record_stop(s, "New clock", rev(s)));
+        }
         // 1. Record into an empty project; no dummy backing clip is needed.
         {
             Bridge session; auto* s = session.get(); const auto before = rev(s);

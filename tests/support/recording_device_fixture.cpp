@@ -12,6 +12,8 @@ class DeviceFixture final : public daw::Duplex {
     uint64_t capacity_, start_, loopStart_, loopEnd_, preroll_, callbacks_ = 0;
     std::string path_;
     bool monitor_, active_ = false;
+    double nextSample_ = 0;
+    uint64_t nextHost_ = 1;
     std::unique_ptr<daw::DuplexCapture> capture_;
 public:
     DeviceFixture(const daw::State& state, uint64_t capacity, const std::string& path,
@@ -27,7 +29,13 @@ public:
     }
     void pump(const float* input, uint32_t frames, float* left, float* right) {
         if (!active_) throw daw::Error("Fixture is not running");
-        capture_->process(input, left, right, frames); ++callbacks_;
+        pumpTimed({nextSample_, nextHost_, 3}, input, frames, left, right);
+    }
+    bool pumpTimed(const daw::CaptureTimestamp& stamp, const float* input, uint32_t frames, float* left, float* right) {
+        if (!active_) throw daw::Error("Fixture is not running");
+        const bool accepted = capture_->processTimed(stamp, input, left, right, frames);
+        nextSample_ += frames; nextHost_ += frames; ++callbacks_;
+        return accepted;
     }
     std::shared_ptr<const daw::Clip> stop() override {
         active_ = false; renderer.playing = false;
@@ -35,10 +43,15 @@ public:
     }
     void cancel() noexcept override { active_ = false; renderer.playing = false; if (capture_) capture_->cancel(); }
     void markStalled() noexcept override { cancel(); }
-    void checkDevices() override { if (failure == 2) { cancel(); throw daw::Error("Test audio device disconnected"); } }
+    void checkDevices() override {
+        if (capture_ && capture_->clockReport().fault != daw::CaptureClockFault::none) {
+            cancel(); throw daw::Error("Recording clock discontinuity; captured prefix remains recoverable");
+        }
+        if (failure == 2) { cancel(); throw daw::Error("Test audio device disconnected"); } }
     uint64_t frames() const noexcept override { return capture_ ? capture_->frames() : 0; }
     uint64_t callbacks() const noexcept override { return callbacks_; }
     bool overflowed() const noexcept override { return capture_ && capture_->overflowed(); }
+    daw::CaptureClockReport clockReport() const noexcept override { return capture_ ? capture_->clockReport() : daw::CaptureClockReport{}; }
     daw::DuplexCaptureProgress progress() const noexcept override { return capture_ ? capture_->progress() : daw::DuplexCaptureProgress{}; }
     void setMonitor(bool on) noexcept override { monitor_ = on; if (capture_) capture_->setMonitor(on); }
     void discardRecovery() noexcept override { if (capture_) capture_->discard(); }
@@ -63,3 +76,10 @@ extern "C" int recording_fixture_pump(const float* input, uint32_t frames, float
 }
 extern "C" void recording_fixture_failure(int mode) { failure = mode; }
 extern "C" int recording_fixture_active() { return current != nullptr; }
+
+extern "C" int recording_fixture_pump_timestamped(const float* input, uint32_t frames, float* left,
+    float* right, double sampleTime, uint64_t hostTime, uint32_t flags) {
+    if (!current || !input || !left || !right || !frames || frames > daw::DuplexCapture::maximumSlice) return 1;
+    try { return current->pumpTimed({sampleTime, hostTime, flags}, input, frames, left, right) ? 0 : 1; }
+    catch (...) { return 1; }
+}

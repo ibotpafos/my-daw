@@ -918,6 +918,7 @@ int daw_get_audio_device_config(daw_session *s, daw_audio_device_config *out) {
     });
 }
 #include "audio_hardware.inc"
+#include "recording_clock.inc"
 
 int daw_get_snapshot(daw_session *s, daw_snapshot *out) {
     return guard(s, [&] {
