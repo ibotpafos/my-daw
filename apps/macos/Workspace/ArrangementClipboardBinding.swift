@@ -1,6 +1,8 @@
 import AppKit
 
-extension DraftApp {
+// The implementation in DraftApp must be visible to AppKit's Objective-C
+// menu update path; a same-named Swift method alone is not a validator.
+extension DraftApp: NSMenuItemValidation {
     /// The menu, context menu and keyboard share the document clipboard. Resolve
     /// selection from the current projection; never copy via a remembered index
     /// from another track or silently reinterpret MIDI as an audio region.
