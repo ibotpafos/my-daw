@@ -32,7 +32,7 @@ jobs:
           git archive --format=zip --output=build/qa-source/source.zip HEAD
           git rev-parse HEAD > build/qa-source/commit.txt
           shasum -a 256 build/qa-source/source.zip > build/qa-source/SHA256SUMS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: piano-roll-tested-source-${{ github.run_id }}
           path: build/qa-source/
@@ -44,7 +44,7 @@ jobs:
         run: bash scripts/test-piano-roll-appkit.sh
       - name: Preserve native UI screenshots
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: piano-roll-ui-${{ github.run_id }}
           path: build/qa-ui/
@@ -75,7 +75,7 @@ jobs:
           bash scripts/test-piano-roll-bridge.sh 2>&1 | tee build/qa-app/midi-bridge-tests.log
       - name: Preserve build evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: piano-roll-app-${{ github.run_id }}
           path: build/qa-app/
